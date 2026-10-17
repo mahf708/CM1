@@ -1,8 +1,9 @@
-"""cm1x.sound.sound vs. the Fortran sound (src/sound.F), psolver=3, periodic."""
+"""cm1x.sound.sound vs. the Fortran sound (src/sound.F), psolver=3, periodic and open/wall lateral BCs."""
 
 import numpy as np
 import pytest
 
+from cm1x import bc
 from cm1x import constants as C
 from cm1x.grid import Grid
 from cm1x.sound import bcp, sound
@@ -16,7 +17,7 @@ CFG = dict(nsound=NSOUND, alph=0.6, kdiv=0.1, smeps=1.0e-30)
 OUT_S = ["pp3d", "ppd", "ppx", "fpk", "qk", "pk1", "pk2", "mm", "dum1", "dum2"]
 
 
-def make_inputs(g, seed=0):
+def make_inputs(g, seed=0, bcs=(1, 1, 1, 1)):
     """Stable hydrostatic base state plus random perturbations."""
     rng = np.random.default_rng(seed)
     S, U, V, W = g.s_shape, g.u_shape, g.v_shape, g.w_shape
@@ -80,7 +81,22 @@ def make_inputs(g, seed=0):
         d[nm] = np.zeros(S[1:])
     for nm in ("ppd", "fpk", "qk", "pk1", "pk2", "mm", "dum1", "dum2"):
         d[nm] = np.zeros(S)
+    # open-boundary phase speeds: outward (west/south <= 0, east/north >= 0)
+    d["radbcw"] = -30.0 * rng.random((S[0], S[1]))
+    d["radbce"] = 30.0 * rng.random((S[0], S[1]))
+    d["radbcs"] = -30.0 * rng.random((S[0], S[2]))
+    d["radbcn"] = 30.0 * rng.random((S[0], S[2]))
+    if bcs != (1, 1, 1, 1):  # param.F masks (zero on non-periodic edges)
+        from cm1x import get_backend
+
+        nb = get_backend("numpy")
+        d["dtu0"], d["dtv0"] = (
+            np.asarray(a) for a in bc.dtu0_dtv0(nb, g, dict(zip(BCN, bcs)))
+        )
     return d
+
+
+BCN = ("wbc", "ebc", "sbc", "nbc")
 
 
 def out_shapes(g):
@@ -99,7 +115,7 @@ def out_shapes(g):
     return o
 
 
-def fortran_sound(g, d, nrk):
+def fortran_sound(g, d, nrk, bcs=(1, 1, 1, 1)):
     params = np.array(
         [
             g.ni,
@@ -114,15 +130,16 @@ def fortran_sound(g, d, nrk):
             g.dy,
             g.dz,
             CFG["smeps"],
+            *bcs,
         ],
         dtype=float,
     )
     return run_driver("sound", {"params": params, **d}, out_shapes(g))
 
 
-def py_sound(bk, g, d, nrk):
+def py_sound(bk, g, d, nrk, bcs=(1, 1, 1, 1)):
     a = {k: bk.asarray(v) for k, v in d.items()}
-    return sound(bk, g, CFG, dt=DT, nrk=nrk, **a)
+    return sound(bk, g, {**CFG, **dict(zip(BCN, bcs))}, dt=DT, nrk=nrk, **a)
 
 
 @pytest.fixture(scope="module")
@@ -148,6 +165,20 @@ def test_sound_vs_fortran(bk, grid, nrk):
 
 
 @requires_gfortran
+@pytest.mark.parametrize(
+    "bcs",
+    [(2, 2, 2, 2), (2, 1, 3, 2), (4, 2, 1, 1)],
+    ids=lambda c: "bc" + "".join(map(str, c)),
+)
+@pytest.mark.parametrize("nrk", [1, 3])
+def test_sound_openbc_vs_fortran(bk, grid, nrk, bcs):
+    d = make_inputs(grid, seed=10 + nrk, bcs=bcs)
+    ref = fortran_sound(grid, d, nrk, bcs)
+    res = py_sound(bk, grid, d, nrk, bcs)
+    _compare(bk, res, ref)
+
+
+@requires_gfortran
 def test_sound_jit(grid):
     pytest.importorskip("jax")
     import jax
@@ -155,9 +186,11 @@ def test_sound_jit(grid):
     from cm1x import get_backend
 
     bk = get_backend("jax", "float64")
-    d = make_inputs(grid, seed=7)
-    ref = fortran_sound(grid, d, 3)
-    f = jax.jit(lambda a: sound(bk, grid, CFG, dt=DT, nrk=3, **a))
+    bcs = (2, 2, 2, 2)
+    d = make_inputs(grid, seed=7, bcs=bcs)
+    ref = fortran_sound(grid, d, 3, bcs)
+    cfg = {**CFG, **dict(zip(BCN, bcs))}
+    f = jax.jit(lambda a: sound(bk, grid, cfg, dt=DT, nrk=3, **a))
     res = f({k: bk.asarray(v) for k, v in d.items()})
     _compare(bk, res, ref)
 
@@ -178,7 +211,9 @@ def test_unsupported(bk, grid):
     for opt in (
         dict(terrain_flag=True),
         dict(axisymm=1),
-        dict(wbc=2),
+        dict(wbc=5),
+        dict(wbc=2, irbc=2),
+        dict(roflux=1),
         dict(convinit=1),
     ):
         with pytest.raises(NotImplementedError):

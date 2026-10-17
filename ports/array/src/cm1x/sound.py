@@ -2,9 +2,10 @@
 
 Split-explicit, vertically implicit sound-wave integration (Klemp-Wilhelmson
 style) as used by CM1's RK3 large step. Only the code path of the reference
-case is supported: no terrain, Cartesian (axisymm=0), periodic lateral
-boundaries (wbc=ebc=sbc=nbc=1), no convergence forcing / updraft nudging /
-immersed boundaries. Rayleigh damping of w is *not* applied inside ``sound``
+cases are supported: no terrain, Cartesian (axisymm=0), any non-MPI lateral
+boundary type (wbc/ebc/sbc/nbc = 1 periodic, 2 open -- with irbc=4 the
+radiative phase speeds radbc* come in from solve2's radbcew4/radbcns4 -- or
+3/4 walls), no convergence forcing / updraft nudging / immersed boundaries. Rayleigh damping of w is *not* applied inside ``sound``
 (CM1 adds it to ``wten`` before the call), so ``irdamp`` is irrelevant here.
 
 Index conventions follow cm1x.grid: arrays are ``a[k, j, i]`` with halos, and a
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import math
 
+from . import bc as _bc
 from . import constants as C
 
 nrkmax = 3  # constants.F: integer, parameter :: nrkmax = 3
@@ -52,11 +54,12 @@ def _check_options(cfg):
         raise NotImplementedError("sound: terrain_flag=.true. not ported")
     if _opt(cfg, "axisymm") != 0:
         raise NotImplementedError("sound: axisymm != 0 not ported")
-    for b in ("wbc", "ebc", "sbc", "nbc"):
-        if _opt(cfg, b) != 1:
-            raise NotImplementedError(
-                f"sound: {b}={_opt(cfg, b)} (only periodic, 1, ported)"
-            )
+    bcs = [int(_opt(cfg, b)) for b in ("wbc", "ebc", "sbc", "nbc")]
+    for b, v in zip(("wbc", "ebc", "sbc", "nbc"), bcs):
+        if v not in (1, 2, 3, 4):
+            raise NotImplementedError(f"sound: {b}={v} not supported")
+    if int(_opt(cfg, "irbc")) == 2 and any(v != 1 for v in bcs):
+        raise NotImplementedError("sound: irbc=2 (radbcew/radbcns) not ported")
     if _opt(cfg, "roflux") != 0:
         raise NotImplementedError("sound: roflux=1 not ported")
     if _opt(cfg, "convinit") != 0:
@@ -87,22 +90,21 @@ def small_steps(dt, nrk, nsound):
 
 
 def bcp(bk, g, cfg, p):
-    """bc.F ``bcp`` (periodic branch, non-MPI): 1-point halo of a pressure
-    array, k=1..nk.  West/east over j=0..nj+1, then south/north over
-    i=0..ni+1 (so corners come out doubly periodic)."""
-    for b in ("wbc", "ebc", "sbc", "nbc"):
-        if _opt(cfg, b) != 1:
-            raise NotImplementedError(f"bcp: {b}={_opt(cfg, b)} not ported")
-    ni, nj, nk = g.ni, g.nj, g.nk
-    K = slice(1, nk + 1)
-    J0 = slice(2, nj + 4)  # Fortran j = 0..nj+1
-    I0 = slice(2, ni + 4)
-    # Fortran 0 -> py 2, 1 -> 3, ni -> ni+2, ni+1 -> ni+3
-    p = bk.set(p, (K, J0, 2), p[K, J0, ni + 2])
-    p = bk.set(p, (K, J0, ni + 3), p[K, J0, 3])
-    p = bk.set(p, (K, 2, I0), p[K, nj + 2, I0])
-    p = bk.set(p, (K, nj + 3, I0), p[K, 3, I0])
-    return p
+    """bc.F ``bcp``; kept here for backward compatibility, see cm1x.bc.bcp."""
+    return _bc.bcp(bk, g, p, _BcCfg(cfg))
+
+
+class _BcCfg:
+    """Read lateral-BC options through sound's defaults (Config returns 0 for
+    unset names)."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+
+    def get(self, name, default=None):
+        if name in _DEFAULTS:
+            return _opt(self.cfg, name)
+        return default
 
 
 def sound(
@@ -153,9 +155,13 @@ def sound(
     mm=None,
     dum1=None,
     dum2=None,
+    radbcw=None,
+    radbce=None,
+    radbcs=None,
+    radbcn=None,
     **unused,
 ):
-    """Port of sound.F ``sound`` (psolver=3), no terrain, periodic.
+    """Port of sound.F ``sound`` (psolver=3), no terrain, any non-MPI lateral BCs.
 
     Shapes: scalars ``g.s_shape`` (mh, c1, c2, rr0, rf0, ppi, pp3d, piadv,
     ppten, ppx, thv, ppterm and the scratch arrays), ``g.u_shape`` (ua, u3d,
@@ -166,8 +172,12 @@ def sound(
     Python numbers (they set the number of small steps).
 
     Optional intent(inout) work arrays default to zeros; only their ranges
-    written by the Fortran are meaningful. Unused Fortran dummy arguments
-    (xh, arh1, gz, radbcw, ...) may be passed and are ignored.
+    written by the Fortran are meaningful. ``radbcw``/``radbce`` (``[k, j]``)
+    and ``radbcs``/``radbcn`` (``[k, i]``) are the open-boundary phase speeds
+    (from cm1x.bc.radbcew4/radbcns4; zeros if omitted); with wbc=2 etc. the
+    boundary-normal velocity is advanced by cm1x.bc.ssopenbc* each small step
+    (dtu0/dtv0 must then be zero there, see cm1x.bc.dtu0_dtv0). Unused Fortran
+    dummy arguments (xh, arh1, gz, ...) may be passed and are ignored.
 
     Returns a dict with u3d, v3d, w3d, pp3d, ppd, ppx, rru, rrv, rrw, dtu, dtv
     and the work arrays fpk, qk, pk1, pk2, mm, dum1, dum2.
@@ -191,6 +201,12 @@ def sound(
     dtu, dtv = z(S[1:], dtu), z(S[1:], dtv)
     ppd, fpk, qk, pk1, pk2, mm = (z(S, a) for a in (ppd, fpk, qk, pk1, pk2, mm))
     dum1, dum2 = z(S, dum1), z(S, dum2)
+    bcfg = _BcCfg(cfg)
+    wbc, ebc, sbc, nbc = (int(_opt(cfg, b)) for b in ("wbc", "ebc", "sbc", "nbc"))
+    radbcw = bk.zeros((S[0], S[1])) if radbcw is None else radbcw
+    radbce = bk.zeros((S[0], S[1])) if radbce is None else radbce
+    radbcs = bk.zeros((S[0], S[2])) if radbcs is None else radbcs
+    radbcn = bk.zeros((S[0], S[2])) if radbcn is None else radbcn
     u3d, v3d, w3d, pp3d, ppx = (bk.copy(a) for a in (u3d, v3d, w3d, pp3d, ppx))
 
     beta = 1.0 - alph
@@ -269,6 +285,24 @@ def sound(
     zero = bk.asarray(0.0)
 
     for n in range(1, nloop + 1):
+        # --- open boundaries: boundary-normal velocities (bc.F ssopenbc*)
+        if wbc == 2:
+            u3d = _bc.ssopenbcw(
+                bk, g, bcfg, uh=uh, radbcw=radbcw, u3d=u3d, uten=uten, dts=dts
+            )
+        if ebc == 2:
+            u3d = _bc.ssopenbce(
+                bk, g, bcfg, uh=uh, radbce=radbce, u3d=u3d, uten=uten, dts=dts
+            )
+        if sbc == 2:
+            v3d = _bc.ssopenbcs(
+                bk, g, bcfg, vh=vh, radbcs=radbcs, v3d=v3d, vten=vten, dts=dts
+            )
+        if nbc == 2:
+            v3d = _bc.ssopenbcn(
+                bk, g, bcfg, vh=vh, radbcn=radbcn, v3d=v3d, vten=vten, dts=dts
+            )
+
         # --- integrate u, v forward (k=1..nk, j=1..nj+1, i=1..ni+1)
         pc = ppd[K, Jp, Ip]
         u3d = bk.set(
@@ -362,7 +396,7 @@ def sound(
         dum1 = bk.set(dum1, (K, Ji, Ii), d1)
         ppd = bk.set(ppd, (K, Ji, Ii), ppnew + d1)
         if n < nloop:
-            ppd = bcp(bk, g, cfg, ppd)
+            ppd = _bc.bcp(bk, g, ppd, bcfg)
 
         # --- time-averaged velocities
         R = (K, Jp, Ip)

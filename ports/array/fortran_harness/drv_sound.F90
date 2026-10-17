@@ -1,5 +1,5 @@
-! Harness driver for sound (src/sound.F), no terrain, periodic, psolver=3.
-! params = [ni, nj, nk, nsound, nrk, dt, alph, kdiv, dx, dy, dz, smeps]
+! Harness driver for sound (src/sound.F), no terrain, psolver=3.
+! params = [ni, nj, nk, nsound, nrk, dt, alph, kdiv, dx, dy, dz, smeps, wbc, ebc, sbc, nbc]
 program drv_sound
   use harness_io
   use input
@@ -7,7 +7,7 @@ program drv_sound
   use sound_module
   use constants, only : set_constants
   implicit none
-  real :: params(12), dt, rtime
+  real :: params(16), dt, rtime
   double precision :: mtime
   integer :: nrk
   logical :: get_time_avg
@@ -23,7 +23,7 @@ program drv_sound
   real, allocatable :: pw(:,:), ps(:,:)
 
   call set_constants(0)
-  call rd('params', params, 12)
+  call rd('params', params, 16)
   ni = nint(params(1)); nj = nint(params(2)); nk = nint(params(3))
   nsound = nint(params(4)); nrk = nint(params(5)); dt = params(6)
   alph = params(7); kdiv = params(8)
@@ -35,7 +35,12 @@ program drv_sound
   ibib = 1; ieib = 1; jbib = 1; jeib = 1; kbib = 1; keib = 1
   imp = 1; jmp = 1; kmp = 1; rmp = 1
   terrain_flag = .false.; axisymm = 0; irbc = 4; roflux = 0
-  wbc = 1; ebc = 1; sbc = 1; nbc = 1; ibw = 0; ibe = 0; ibs = 0; ibn = 0
+  wbc = nint(params(13)); ebc = nint(params(14)); sbc = nint(params(15)); nbc = nint(params(16))
+  ibw = 0; ibe = 0; ibs = 0; ibn = 0
+  if (wbc.ne.1) ibw = 1
+  if (ebc.ne.1) ibe = 1
+  if (sbc.ne.1) ibs = 1
+  if (nbc.ne.1) ibn = 1
   convinit = 0; wnudge = 0; do_ib = .false.; timestats = 0
   rtime = 0.0; mtime = 0.0d0; get_time_avg = .true.
 
@@ -51,7 +56,8 @@ program drv_sound
   allocate(zs(ib:ie,jb:je),gz(1,1),dzdx(1,1),gx(1,1,1))
   zs=0; gz=1; dzdx=0; gx=0
   allocate(radbcw(jb:je,kb:ke),radbce(jb:je,kb:ke),radbcs(ib:ie,kb:ke),radbcn(ib:ie,kb:ke))
-  radbcw=0; radbce=0; radbcs=0; radbcn=0
+  call rd('radbcw',radbcw,size(radbcw)); call rd('radbce',radbce,size(radbce))
+  call rd('radbcs',radbcs,size(radbcs)); call rd('radbcn',radbcn,size(radbcn))
   allocate(dtu(ib:ie,jb:je),dtu0(ib:ie,jb:je),dtv(ib:ie,jb:je),dtv0(ib:ie,jb:je))
   allocate(dum1(ib:ie,jb:je,kb:ke),dum2(ib:ie,jb:je,kb:ke),dum3(ib:ie,jb:je,kb:ke),dum4(ib:ie,jb:je,kb:ke))
   allocate(mm(ib:ie,jb:je,kb:ke),bk(ib:ie,jb:je,kb:ke),ppd(ib:ie,jb:je,kb:ke),fpk(ib:ie,jb:je,kb:ke))
