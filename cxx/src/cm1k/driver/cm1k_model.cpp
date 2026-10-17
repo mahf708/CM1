@@ -18,6 +18,13 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   if (b.nx <= 0 || b.ny <= 0 || b.nz <= 0)
     throw std::runtime_error("cm1k: nx, ny and nz must be set in the namelist");
   m_grid.allocate(b);
+  // grid spacings (param.F)
+  m_grid.dx = nl.getr("dx", 0.0);
+  m_grid.dy = nl.getr("dy", 0.0);
+  m_grid.dz = nl.getr("dz", 0.0);
+  m_grid.rdx = 1.0 / m_grid.dx;
+  m_grid.rdy = 1.0 / m_grid.dy;
+  m_grid.rdz = 1.0 / m_grid.dz;
   m_base.allocate(b);
   m_state.allocate(b);
   if (nl.geti("imoist", 0) == 1) {

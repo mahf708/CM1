@@ -1,0 +1,37 @@
+# Python package `cm1k` (pybind11 bindings for the C++/Kokkos port of CM1).
+#
+#   pip install ./cxx                                   # Serial backend
+#   pip install ./cxx -Ccmake.define.Kokkos_ENABLE_OPENMP=ON
+#   pip install ./cxx -Ccmake.define.Kokkos_ENABLE_CUDA=ON -Ccmake.define.Kokkos_ARCH_AMPERE80=ON
+#
+# Any CMake cache variable can be passed with -Ccmake.define.<VAR>=<value>
+# (or the CMAKE_ARGS environment variable). See python/README.md.
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cm1k"
+version = "0.1.0"
+description = "Python bindings for cm1k, the C++/Kokkos port of the CM1 cloud model"
+readme = "python/README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.version = ">=3.18"
+cmake.build-type = "Release"
+build.targets = ["_cm1k"]
+install.components = ["python"]
+wheel.packages = []
+wheel.license-files = []
+sdist.exclude = ["externals/ekat/extern/kokkos/.git"]
+
+[tool.scikit-build.cmake.define]
+CM1K_ENABLE_PYTHON = "ON"
+CM1K_ENABLE_TESTS = "OFF"
+CM1K_ENABLE_FORTRAN_BRIDGE = "OFF"
