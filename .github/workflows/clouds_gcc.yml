@@ -9,12 +9,14 @@ on:
 
 jobs:
   setup:
+    # NCAR's self-hosted CIRRUS runners exist only for NCAR/CM1; skip on forks.
+    if: github.repository == 'NCAR/CM1'
     runs-on:
       group: CIRRUS-4x8
     container:
       image: docker.io/halehawk/gnu_io:latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       #- name: Build and run CM1
       #  run: |

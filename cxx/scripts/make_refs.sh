@@ -74,8 +74,9 @@ exe="$build/run/cm1.exe"
 [ -x "$exe" ] || die "build finished but $exe is missing"
 
 # ---------------------------------------------------------------- manifest
-manifest="$out/MANIFEST.txt"
-{
+# OUT/<case>/MANIFEST.txt describes one case; OUT/MANIFEST.txt is rebuilt
+# from all case manifests present (so partial reruns keep other cases).
+build_info=$(
   echo "format_version 1"
   echo "git_commit $(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "git_dirty $(git -C "$root" status --porcelain -- src cxx/cases 2>/dev/null | grep -q . && echo yes || echo no)"
@@ -84,13 +85,13 @@ manifest="$out/MANIFEST.txt"
   echo "make_options ${make_opts[*]}"
   echo "omp_num_threads $threads"
   echo "created_utc $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-} >"$manifest"
+)
 
 # Every .bin must be 8*prod(ub-lb+1) bytes as index.txt says.
 check_dump() {
-  local dir=$1 n=0 name kind nd rest bytes want
+  local dir=$1 n=0 name kind rest bytes want
   [ -s "$dir/index.txt" ] || die "$dir/index.txt is missing or empty"
-  while read -r name kind nd rest; do
+  while read -r name kind _ rest; do
     [ "${name:0:1}" = "#" ] && continue
     [ "$kind" = 8 ] || die "$dir: $name has kind $kind, expected 8 (double precision build?)"
     want=$(echo "$rest" | awk -v k="$kind" '{p=k; for(i=1;i<=NF;i+=2) p*=($(i+1)-$i+1); print p}')
@@ -131,8 +132,13 @@ for c in "${cases[@]}"; do
   [ ${#steps[@]} -gt 0 ] || die "case $c: no step_* dumps written (is src/cm1dump.F hooked in?)"
   for s in "${steps[@]}"; do check_dump "$s"; done
   last=$(basename "${steps[-1]}")
-  echo "case $c every $every steps ${#steps[@]} last $last" >>"$manifest"
+  { echo "$build_info"; echo "case $c every $every steps ${#steps[@]} last $last"; } >"$run/MANIFEST.txt"
   echo "   ${#steps[@]} dumps, last $last, $(du -sh "$run" | cut -f1)"
 done
 
+manifest="$out/MANIFEST.txt"
+{
+  echo "$build_info" | grep -v '^created_utc'
+  for m in "$out"/*/MANIFEST.txt; do grep '^case ' "$m"; done
+} >"$manifest"
 echo "== reference dumps written to $out (manifest: $manifest)"

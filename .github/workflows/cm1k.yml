@@ -1,0 +1,225 @@
+# cm1k: C++/Kokkos port of CM1 (cxx/), tested against Fortran reference dumps.
+#
+# Jobs:
+#   fortran-refs         build the Fortran (double precision) and run every case in
+#                        cxx/cases with the dump hook; upload the dumps as artifact
+#                        `cm1-refs` (layout: cxx/cases/README.md). Cached by the hash
+#                        of src/, cxx/cases/ and the scripts that make the dumps.
+#   fortran-determinism  run-to-run and OpenMP thread-count reproducibility of the
+#                        Fortran dumps (cxx/scripts/check_determinism.sh).
+#   cm1k                 build cm1k and run ctest against the references, for the
+#                        Kokkos OpenMP (Release) and Serial (Debug + bounds checks)
+#                        backends; the OpenMP leg also runs cxx/scripts/ci_python.sh.
+#   cm1k-cuda-compile    compile-only check for CUDA (no GPU on hosted runners).
+name: cm1k
+
+on:
+  push:
+    branches:
+      - "claude/**"
+      - "cm1k/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cm1k-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Bump to invalidate the reference cache without touching the sources.
+  REFS_CACHE_VERSION: v1
+  OMPI_ALLOW_RUN_AS_ROOT: 1
+  OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+  # OpenMPI on hosted runners: allow more ranks than cores.
+  OMPI_MCA_rmaps_base_oversubscribe: 1
+
+jobs:
+  fortran-refs:
+    name: Fortran reference dumps
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore cached references
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: refs
+          key: cm1-refs-${{ env.REFS_CACHE_VERSION }}-${{ hashFiles('src/**', 'cxx/cases/**', 'cxx/scripts/make_refs.sh') }}
+
+      - name: Install Fortran toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gfortran libnetcdff-dev libopenmpi-dev
+
+      - name: Build Fortran CM1 and write reference dumps
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: JOBS=4 cxx/scripts/make_refs.sh refs
+
+      - name: Show manifest
+        run: |
+          cat refs/MANIFEST.txt
+          du -sh refs/*
+
+      - name: Upload references
+        uses: actions/upload-artifact@v4
+        with:
+          name: cm1-refs
+          path: refs
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
+  fortran-determinism:
+    name: Fortran reproducibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Fortran toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gfortran libnetcdff-dev libopenmpi-dev python3-numpy
+
+      - name: Run twice, and with 1 and 2 OpenMP threads
+        run: JOBS=4 cxx/scripts/check_determinism.sh "$RUNNER_TEMP/det" dry_shear kessler_tke kessler_saturated kessler_periodic
+
+  cm1k:
+    name: cm1k (${{ matrix.name }})
+    needs: fortran-refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: openmp-release
+            build_type: Release
+            cmake_args: -DKokkos_ENABLE_OPENMP=ON
+            python: true
+          - name: serial-debug
+            build_type: Debug
+            cmake_args: -DKokkos_ENABLE_DEBUG_BOUNDS_CHECK=ON
+            python: false
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPRESS: "true"
+      OMP_NUM_THREADS: 2
+      OMP_PROC_BIND: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout submodules (EKAT, Kokkos)
+        run: |
+          # EKAT's Kokkos submodule has an ssh URL; fetch it over https.
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule update --init --recursive --depth 1 cxx/externals/ekat
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gfortran g++ cmake ninja-build ccache libopenmpi-dev openmpi-bin \
+            python3-dev python3-numpy python3-pytest pybind11-dev
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-cm1k-${{ matrix.name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-cm1k-${{ matrix.name }}-
+
+      - name: Download references
+        uses: actions/download-artifact@v4
+        with:
+          name: cm1-refs
+          path: refs
+
+      - name: Configure
+        run: |
+          cmake -S cxx -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCM1K_REF_DIR="$GITHUB_WORKSPACE/refs" \
+            ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: |
+          ccache -z
+          cmake --build build -j4
+          ccache -s
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure --timeout 1800
+
+      - name: Python bindings
+        if: matrix.python
+        env:
+          CM1K_REF_DIR: ${{ github.workspace }}/refs
+        run: |
+          if [ -f cxx/scripts/ci_python.sh ]; then
+            bash cxx/scripts/ci_python.sh
+          else
+            echo "cxx/scripts/ci_python.sh not present; skipping Python tests"
+          fi
+
+  cm1k-cuda-compile:
+    name: cm1k (CUDA, compile only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: nvidia/cuda:12.6.3-devel-ubuntu24.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPRESS: "true"
+    steps:
+      - name: Install toolchain
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git ca-certificates g++ cmake ninja-build ccache libopenmpi-dev openmpi-bin
+
+      - uses: actions/checkout@v4
+
+      - name: Checkout submodules (EKAT, Kokkos)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule update --init --recursive --depth 1 cxx/externals/ekat
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-cm1k-cuda-${{ github.sha }}
+          restore-keys: |
+            ccache-cm1k-cuda-
+
+      - name: Configure
+        run: |
+          cmake -S cxx -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER="$GITHUB_WORKSPACE/cxx/externals/ekat/extern/kokkos/bin/nvcc_wrapper" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DKokkos_ENABLE_CUDA=ON \
+            -DKokkos_ARCH_AMPERE80=ON \
+            -DCM1K_ENABLE_FORTRAN_BRIDGE=OFF \
+            -DCM1K_ENABLE_TESTS=ON
+
+      - name: Build (no GPU on hosted runners; tests are built, not run)
+        run: |
+          ccache -z
+          cmake --build build -j4
+          ccache -s
