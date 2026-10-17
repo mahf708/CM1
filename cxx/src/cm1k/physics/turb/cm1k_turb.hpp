@@ -31,7 +31,10 @@
 // out3d, the timers, and the nstep=0 print in tkekm.
 //
 //------------------------------------------------------------------------------
-// Where the time step calls each piece (cm1.F / solve1.F order, kessler_tke):
+// Where the time step calls each piece (cm1.F / solve1.F order, kessler_tke).
+// Wired in Dyncore (solve1/solve2/solve3, Dyncore::sfc_and_turb) and
+// Model::step, which makes call (A) at the start of every step:
+
 //
 // (A) cm1.F:3748, at the end of every pass of the time loop, after solve,
 //     mtime += dt, the reference dump, writeout and radiation. The first pass

@@ -1,6 +1,7 @@
 #include "cm1k_dyncore.hpp"
 
 #include "dynamics/cm1k_adv.hpp"
+#include "init/cm1k_init.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -94,13 +95,17 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
     if (c.ptype == 0) { c.numq = 1; c.nqv = 1; }   // water vapor only
     if (c.ptype == 1) { c.numq = 3; c.nqv = 1; c.nqc = 2; c.nql1 = 2; c.nql2 = 3; c.iice = 0; }
   }
+  // subgrid turbulence (LES): only sgsmodel=1 is ported (physics/turb)
+  c.turb = (c.idoles && c.sgsmodel >= 1);
+  if (c.turb && c.sgsmodel == 1) c.turb_opt = turb::Options::from_namelist(nl);
   return c;
 }
 
 void DynConfig::check() const {
   if (psolver != 3) unsupported("psolver=" + std::to_string(psolver) + " (only 3)");
   if (cm1setup != 0 && cm1setup != 1) unsupported("cm1setup=" + std::to_string(cm1setup) + " (only 0,1)");
-  if (sgsmodel != 0) unsupported("sgsmodel=" + std::to_string(sgsmodel) + " (only 0)");
+  if (sgsmodel != 0 && sgsmodel != 1) unsupported("sgsmodel=" + std::to_string(sgsmodel) + " (only 0, 1)");
+  if (turb) turb_opt.check();   // throws for every turbulence option that is not ported
   if (ipbl != 0) unsupported("ipbl");
   if (idiff != 0) unsupported("idiff");
   if (imoist == 1 && ptype != 0 && ptype != 1)
@@ -118,8 +123,9 @@ void DynConfig::check() const {
   if (iinit == 10 || iinit == 11 || iinit == 12) unsupported("iinit=" + std::to_string(iinit) + " (forcing in sound/solve1)");
   // idiss=1 adds epsd/(cp*pi) with epsd from dissten, which only the subgrid
   // turbulence / PBL schemes set: with sgsmodel=0 and ipbl=0 it is exactly
-  // zero and the term is a no-op (bbc=3 adds a surface term: not ported).
-  if (idiss != 0 && (sgsmodel != 0 || ipbl != 0 || bbc == 3)) unsupported("idiss=1 with dissipation");
+  // zero and the term is a no-op; with sgsmodel=1 it is turb::dissheat
+  // (bbc=3 adds a surface term: not ported).
+  if (idiss != 0 && (ipbl != 0 || bbc == 3)) unsupported("idiss=1 with PBL or bbc=3 dissipation");
   if (rterm != 0) unsupported("rterm");
   if (adapt_dt != 0) unsupported("adapt_dt");
   if (isfcflx != 0 || sfcmodel != 0) unsupported("surface fluxes (isfcflx/sfcmodel)");
@@ -217,6 +223,21 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     tauh.deep_copy_from(th); taus.deep_copy_from(ts); tauf.deep_copy_from(tf);
   }
 
+  // 2nd-order extrapolation coefficients for rf at the surface and top (param.F)
+  {
+    const auto ex = init::extrap_coeffs(grid.sigma.to_host(), grid.sigmaf.to_host(), nk);
+    m_cgs1 = ex.cgs1; m_cgs2 = ex.cgs2; m_cgs3 = ex.cgs3;
+    m_cgt1 = ex.cgt1; m_cgt2 = ex.cgt2; m_cgt3 = ex.cgt3;
+  }
+
+  if (m_cfg.turb) {
+    tke3d = FArray3("tke3d", {B.ibt, B.jbt, B.kbt}, {B.iet, B.jet, B.ket});
+    tketen = FArray3("tketen", {B.ibt, B.jbt, B.kbt}, {B.iet, B.jet, B.ket});
+    cvm = s3("cvm");
+    ts.allocate(B);
+    m_tw.allocate(B);
+  }
+
   AdvOptions ao = AdvOptions::from_namelist(nl);
   ao.check();
   m_adv = std::make_unique<Advection>(m_g, m_b, ao);
@@ -232,7 +253,7 @@ void Dyncore::start_from_state() {
   // but with km = kh = 0 every turbulent tendency is exactly zero (the
   // implicit vertical solve returns s unchanged, all fluxes are 0*x), so
   // they are skipped. Make sure that premise holds.
-  if (m_cfg.dohturb || m_cfg.dovturb) {
+  if ((m_cfg.dohturb || m_cfg.dovturb) && !m_cfg.turb) {
     for (auto* a : {&s.kmh, &s.kmv, &s.khh, &s.khv}) {
       auto h = a->to_host();
       for (size_t n = 0; n < h.size(); ++n)
@@ -265,7 +286,17 @@ void Dyncore::start_from_state() {
     auto rr_ = rr; auto rho = s.rho;
     Kokkos::parallel_for("rr0", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) { rr_(i, j, k) = 1.0 / rho(i, j, k); });
   }
+  compute_rf();
   qpten.fill(0.0); qtten.fill(0.0); qvten.fill(0.0); qcten.fill(0.0);
+
+  if (m_cfg.turb) {
+    // init3d.F: cm0, cme/ce1/ce2/csm; tke3d = tkea (the previous step's last
+    // RK stage, whose halos bcw filled); tketen is set by solve1
+    ts.init_constants(B);
+    tke3d.deep_copy_from(s.tkea);
+    turb::bcw(m_cfg.turb_opt, B, tke3d, 1);
+    tketen.fill(0.0);
+  }
 
   // init3d.F (getset): mass1 = total dry-air mass
   {
@@ -281,6 +312,31 @@ void Dyncore::start_from_state() {
     for (int k = 1; k <= nk; ++k) v[k - 1] = h(k);
     m_mass1 = qp_sum(v);
   }
+}
+
+//===========================================================================
+// solve3.F (and init3d.F getset): rf from rho on 0..ni+1, 0..nj+1
+void Dyncore::compute_rf() {
+  const auto& B = m_g.b;
+  const int ni = B.ni, nj = B.nj, nk = B.nk;
+  auto rf_ = rf; auto rho = m_s.rho; auto c1 = m_g.c1; auto c2 = m_g.c2;
+  const Real cgs1 = m_cgs1, cgs2 = m_cgs2, cgs3 = m_cgs3, cgt1 = m_cgt1, cgt2 = m_cgt2, cgt3 = m_cgt3;
+  Kokkos::parallel_for("rf", box3(0, ni + 1, 0, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    rf_(i, j, k) = (c1(i, j, k) * rho(i, j, k - 1) + c2(i, j, k) * rho(i, j, k));
+  });
+  Kokkos::parallel_for("rf_bt", box2(0, ni + 1, 0, nj + 1), KOKKOS_LAMBDA(int i, int j) {
+    rf_(i, j, 1) = cgs1 * rho(i, j, 1) + cgs2 * rho(i, j, 2) + cgs3 * rho(i, j, 3);
+    rf_(i, j, nk + 1) = cgt1 * rho(i, j, nk) + cgt2 * rho(i, j, nk - 1) + cgt3 * rho(i, j, nk - 2);
+  });
+}
+
+//===========================================================================
+// cm1.F:3748 sfc_and_turb (LES path), on the 3d arrays as CM1 passes them
+void Dyncore::sfc_and_turb(double rtime) {
+  if (!m_cfg.turb) return;
+  auto& s = m_s;
+  turb::sfc_and_turb(m_cfg.turb_opt, m_c, m_g, m_b, Real(rtime), u3d, v3d, w3d, pp3d, th3d, q3d, s.prs,
+                     s.rho, rf, s.tkea, tke3d, s.kmh, s.kmv, s.khh, s.khv, ts, m_tw);
 }
 
 //===========================================================================
@@ -315,7 +371,19 @@ void Dyncore::solve1() {
       Kokkos::parallel_for("qten0", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) { qten_(i, j, k, n) = 0.0; });
   }
 
-  // (subgrid turbulence: exact no-op with km=kh=0; see start_from_state)
+  // subgrid turbulence (sgsmodel=0: exact no-op with km=kh=0; see
+  // start_from_state)
+  if (cfg.turb) {
+    const auto& to = cfg.turb_opt;
+    // RHS of the TKE equation (solve1.F ~315): sources, then diffusion
+    turb::tke_source(to, B, ts.nm, ts.defv, ts.defh, ts.dissten, m_s.kmh, m_s.kmv, m_s.khv, tketen);
+    turb::turbt(to, m_g, m_dt, rho, rf, m_s.tkea, tketen, m_s.kmh, m_s.kmv, m_tw);
+    // dissipative heating (~919), before the turbulent fluxes of theta
+    turb::dissheat(to, c, B, pi0, ppi, qa, ts.dissten, thten1, cvm);
+    // doturb block (~1119)
+    turb::turb_tendencies(to, m_g, m_b, m_dt, rho, rr, rf, ua, va, wa, tha, qa, uten1, vten1, wten1, thten1,
+                          qten, m_s.kmh, m_s.kmv, m_s.khh, m_s.khv, ts, m_tw);
+  }
 
   //  contribution to pressure tendency from potential temperature
   auto ppten_ = ppten;
@@ -634,6 +702,16 @@ void Dyncore::solve2() {
           bcs(m_bc, FArray3(Kokkos::subview(q3d.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm}));
     }
 
+    //  TKE (solve2.F ~1709): wten = tketen, advection of tke3d, step forward
+    if (cfg.turb) {
+      auto tketen_ = tketen;
+      Kokkos::parallel_for("wten_tke", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        wten_(i, j, k) = tketen_(i, j, k);
+      });
+      m_adv->advw(nrk, dttmp, fl, tke3d, wten, cfg.hadvordrs, cfg.vadvordrs, m_adv->options().advwenos);
+      turb::tke_rk_update(cfg.turb_opt, B, dttmp, s.tkea, wten, tke3d);
+    }
+
     //  Finish pressure, density (apmasscon)
     if (dopf) {
       auto h3 = dumk3.to_host(), h4 = dumk4.to_host();
@@ -714,11 +792,15 @@ void Dyncore::solve3() {
       });
   }
 
-  //  rr (rf is only used by the subgrid turbulence, which is not ported)
+  //  TKE (solve3.F ~563)
+  if (cfg.turb) turb::tke_copy(B, tke3d, s.tkea);
+
+  //  rr, rf
   auto rr_ = rr; auto rho = s.rho;
   Kokkos::parallel_for("rr", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     rr_(i, j, k) = 1.0 / rho(i, j, k);
   });
+  compute_rf();
 }
 
 } // namespace cm1k
