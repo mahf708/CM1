@@ -31,6 +31,11 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     else if (ptype == 1) m_state.qname = {"qv", "qc", "qr"};
   }
   m_dt = nl.getr("dtl", 0.0);
+  m_sfc_opt = sfc::Options::from_namelist(nl);
+  if (m_sfc_opt.active()) {
+    m_sfc.allocate(b);
+    sfc::set_defaults(m_sfc);   // cm1.F
+  }
   build_registry();
 }
 
@@ -53,6 +58,8 @@ void Model::build_registry() {
   for (auto* a : {&s.ua, &s.va, &s.wa, &s.ppi, &s.tha, &s.rho, &s.prs, &s.tkea, &s.kmh, &s.kmv,
                   &s.khh, &s.khv, &s.rain})
     m_reg.add(a->label(), *a);
+  if (m_sfc_opt.active())
+    for (auto& [name, a] : m_sfc.dumped()) m_reg.add(name, a);
 }
 
 bool Model::has_field(const std::string& name) const {
@@ -101,6 +108,7 @@ void Model::init_from_dump(const std::string& step_dir) {
     if (field_rank(name) == 1) r.read_into<1>(name, field1(name));
     else                       r.read_into<3>(name, field3(name));
   }
+  if (m_sfc_opt.active()) sfc::set_dsxy(m_sfc_opt, m_grid, m_sfc);   // not in the dumps
   m_nstep = r.nstep();
   m_mtime = r.mtime();
   m_dyn.reset();           // the dynamical core is set up again from these arrays
@@ -121,6 +129,7 @@ void Model::init() {
   auto info = init::init_grid(m_nl, m_grid);
   init::init_base(m_nl, m_c, m_grid, info, m_base);
   init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
+  if (m_sfc_opt.active()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
   m_nstep = 0;
   m_mtime = 0;
   m_dyn.reset();            // the dynamical core is set up again from the new grid
@@ -131,6 +140,7 @@ Dyncore& Model::dyncore() {
   if (!m_dyn) {
     m_dyn = std::make_unique<Dyncore>();
     m_dyn->setup(m_nl, m_c, m_grid, m_base, m_state);
+    if (m_sfc_opt.active()) m_dyn->set_surface(m_sfc);
   }
   return *m_dyn;
 }

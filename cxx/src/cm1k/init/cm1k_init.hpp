@@ -7,6 +7,7 @@
 #include "share/cm1k_state.hpp"
 
 #include <array>
+#include <cstdint>
 
 namespace cm1k {
 namespace init {
@@ -21,7 +22,8 @@ namespace init {
 //             = .false., iorigin = 1 or 2, axisymm = 0, wbc..nbc = 1..4
 //   base.F  : isnd = 1, 4, 5;  iwnd = 0, 1, 2;  imove = 0 or 1;
 //             testcase = 0;  psolver any
-//   init3d.F: iinit = 0 or 1, irandp = 0, ibalance = 0 or 1, ptype 0/1
+//   init3d.F: iinit = 0 or 1, irandp = 0 or 1 (testcase = 0, with
+//             use_truly_random_pert = .false.), ibalance = 0 or 1, ptype 0/1
 //   cm1.F / getset: kmh/kmv/khh/khv initial values, tkea, rho/prs
 
 // 2nd-order extrapolation coefficients (Fornberg 1988), param.F.
@@ -50,6 +52,23 @@ InitInfo init_grid(const Namelist& nl, Grid& g);
 
 // base.F: pi0, th0, prs0, rho0, thv0, rth0, qv0, qc0, qi0, rr0, rf0, rrf0, u0, v0.
 void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& info, BaseState& bs);
+
+// gfortran's random_number for real(8) (libgfortran, gfortran >= 7:
+// xoshiro256**), seeded as init3d.F does it (use_truly_random_pert =
+// .false.):
+//   random_seed(size=k) -> k = 8 (four 64-bit words as eight 32-bit ints)
+//   sand(n) = nint(2e9*(2*(n-1)/(k-1)-1)); random_seed(put=sand)
+// put copies the int32 seed into the state words in reverse order and xors
+// them with libgfortran's fixed keys (scramble_seed). next() is
+// random_number(rand): the top 53 bits of the xoshiro256** output, times 2^-64.
+class GfortranRandom {
+public:
+  GfortranRandom();                          // the CM1 seed above
+  explicit GfortranRandom(const std::array<std::int32_t, 8>& put);   // random_seed(put=...)
+  double next();
+private:
+  std::uint64_t m_s[4];
+};
 
 // init3d.F + getset (init3d.F) + the initial values cm1.F gives kmh..khv.
 void init_state(const Namelist& nl, const Constants& c, const Grid& g, const InitInfo& info,

@@ -39,6 +39,8 @@ struct DynConfig {
   // subgrid turbulence (sgsmodel=1 with cm1setup=1): physics/turb options
   bool turb = false;
   turb::Options turb_opt;
+  // surface layer (sfcmodel=1, bbc=3): physics/sfc options
+  sfc::Options sfc_opt;
 
   // explicit diffusion: 6th order inside advection, or diff2.F
   bool diff6() const { return idiff >= 1 && difforder == 6; }
@@ -96,6 +98,9 @@ public:
   // in the sequence (between mtime=mtime+dt and the next solve1).
   bool turb_enabled() const { return m_cfg.turb; }
   void sfc_and_turb(double rtime);
+  // The surface-layer arrays (sfcmodel=1), owned by the Model; sfc_and_turb
+  // updates them and solve1 reads them. Call after setup().
+  void set_surface(const sfc::SfcState& s);
   // solve3.F/init3d.F: rf from rho on 0..ni+1, 0..nj+1 (public: it launches
   // device lambdas, which nvcc does not allow in private member functions)
   void compute_rf();
@@ -127,6 +132,8 @@ private:
 
   turb::Work m_tw;
   Diff2Work m_d2;   // idiff=1, difforder=2
+  sfc::SfcState m_sfc;
+  bool m_has_sfc = false;
   Real m_cgs1 = 0, m_cgs2 = 0, m_cgs3 = 0, m_cgt1 = 0, m_cgt2 = 0, m_cgt3 = 0;
 
   DynConfig m_cfg;

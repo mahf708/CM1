@@ -71,12 +71,16 @@ TEST_CASE("init: kessler_periodic_long", "[init][ref]") { check_case("kessler_pe
 //   init_variants_dry: stretch_z=1, open E/W walls, iwnd=2, imove=1, ibalance=1, dry
 TEST_CASE("init: init_variants", "[init][ref]") { check_case("init_variants"); }
 TEST_CASE("init: init_variants_dry", "[init][ref]") { check_case("init_variants_dry"); }
+// irandp=1 (gfortran random_number, +-0.25 K on theta) and the surface layer
+// (init_surface.F with LANDUSE.TBL: land lu0=3 with set_znt=1; water lu0=16)
+TEST_CASE("init: cbl_sfc", "[init][ref][sfc]") { check_case("cbl_sfc"); }
+TEST_CASE("init: cbl_sfc_moist", "[init][ref][sfc]") { check_case("cbl_sfc_moist"); }
 
 TEST_CASE("init: unsupported options throw", "[init]") {
   const auto nl0 = Namelist::from_file(testing::case_namelist("dry_bubble"));
   const std::vector<std::pair<std::string, std::string>> bad = {
       {"isnd", "7"},      {"iwnd", "5"},           {"iinit", "4"},  {"stretch_z", "2"},
-      {"stretch_x", "1"}, {"terrain_flag", ".true."}, {"irandp", "1"}, {"ibalance", "2"},
+      {"stretch_x", "1"}, {"terrain_flag", ".true."}, {"irandp", "2"}, {"ibalance", "2"},
       {"testcase", "1"},  {"iorigin", "3"},        {"wbc", "5"}};
   for (const auto& kv : bad) {
     INFO(kv.first << " = " << kv.second);

@@ -3,6 +3,7 @@
 #include "init/cm1k_cm1libs.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
@@ -598,6 +599,48 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
 }
 
 //---------------------------------------------------------------------------
+// gfortran random_number (libgfortran/intrinsics/random.c)
+namespace {
+inline std::uint64_t rotl64(std::uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
+std::array<std::int32_t, 8> cm1_seed() {
+  constexpr int k = 8;
+  std::array<std::int32_t, 8> sand{};
+  for (int n = 1; n <= k; ++n)
+    sand[n - 1] = std::int32_t(std::lround(2.0e9 * (2.0 * double(n - 1) / double(k - 1) - 1.0)));
+  return sand;
+}
+} // namespace
+
+GfortranRandom::GfortranRandom() : GfortranRandom(cm1_seed()) {}
+
+GfortranRandom::GfortranRandom(const std::array<std::int32_t, 8>& put) {
+  // random_seed(put=): the int32 array is copied in reverse order, then
+  // xor'ed with the scramble keys
+  std::int32_t rev[8];
+  for (int i = 0; i < 8; ++i) rev[i] = put[7 - i];
+  std::uint64_t seed[4];
+  std::memcpy(seed, rev, sizeof(seed));
+  constexpr std::uint64_t xor_keys[4] = {0xbd0c5b6e50c2df49ULL, 0xd46061cd46e1df38ULL,
+                                         0xbb4f4d4ed6103544ULL, 0x114a583d0756ad39ULL};
+  for (int i = 0; i < 4; ++i) m_s[i] = seed[i] ^ xor_keys[i];
+}
+
+double GfortranRandom::next() {
+  // xoshiro256**
+  const std::uint64_t result = rotl64(m_s[1] * 5, 7) * 9;
+  const std::uint64_t t = m_s[1] << 17;
+  m_s[2] ^= m_s[0];
+  m_s[3] ^= m_s[1];
+  m_s[1] ^= m_s[2];
+  m_s[0] ^= m_s[3];
+  m_s[2] ^= t;
+  m_s[3] = rotl64(m_s[3], 45);
+  // rnd_8: keep the top 53 bits, scale by 2^-64
+  const std::uint64_t v = result & (~std::uint64_t(0) << 11);
+  return double(v) * 0x1p-64;
+}
+
+//---------------------------------------------------------------------------
 // init3d.F, getset (init3d.F) and the k/tke allocations in cm1.F
 void init_state(const Namelist& nl, const Constants& c, const Grid& g, const InitInfo& info,
                 BaseState& bs, State& s) {
@@ -611,7 +654,9 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
   const int cm1setup = nl.geti("cm1setup", 1), sgsmodel = nl.geti("sgsmodel", 0), ipbl = nl.geti("ipbl", 0);
   const bool idoles = (cm1setup == 1 || cm1setup == 4);
   const bool idopbl = (cm1setup == 2 || cm1setup == 4);
-  if (nl.geti("irandp", 0) != 0) unsupported("irandp = 1 (gfortran random_number sequence)");
+  const int irandp = nl.geti("irandp", 0);
+  if (irandp != 0 && irandp != 1) unsupported("irandp = " + std::to_string(irandp));
+  if (irandp == 1 && nl.getb("use_truly_random_pert", false)) unsupported("use_truly_random_pert = .true.");
   if (nl.geti("iptra", 0) != 0) unsupported("iptra = 1");
   if (nl.getb("do_ib", false)) unsupported("do_ib = .true.");
   if ((idopbl && (ipbl == 4 || ipbl == 5)) || nl.geti("sfcmodel", 0) == 6) unsupported("MYNN tke");
@@ -690,6 +735,23 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
     unsupported("iinit = " + std::to_string(iinit));
   }
   // (maintain_rh is .false. for iinit = 0, 1)
+
+  // random perturbations (testcase = 0): +-0.25 K on theta, two draws per
+  // point of (0:nx+2, 0:ny+2, 1:nk), i fastest (serial: i = ii, j = jj).
+  // init3d.F seeds the generator and draws one number ("rand-1") first.
+  if (irandp == 1) {
+    GfortranRandom rng;
+    (void)rng.next();   // rand-1
+    const Real amplitude = 0.25;
+    for (int k = 1; k <= nk; ++k)
+      for (int jj = 0; jj <= B.ny + 2; ++jj)
+        for (int ii = 0; ii <= B.nx + 2; ++ii) {
+          const Real rand = rng.next();
+          (void)rng.next();   // rand2
+          const int i = ii, j = jj;
+          if (i >= ib && i <= ie && j >= jb && j <= je) tha(i, j, k) = tha(i, j, k) + amplitude * (2.0 * rand - 1.0);
+        }
+  }
 
   // ---- 3d pressure (setppi) ----
   for (int k = kb; k <= ke; ++k)

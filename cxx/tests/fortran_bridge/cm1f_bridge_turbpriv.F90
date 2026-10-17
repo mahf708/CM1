@@ -51,3 +51,25 @@ subroutine cm1f_turb_gettau(rf, mf, kmh, kmv, ua, va, wa, t11, t12, t13, t22, t2
               rf, mf, s1, s2, s3, s4, s5, s6, kmh, kmv, t11, t12, t13, t22, t23, t33, &
               ua, ua, va, va, wa, avg, avg, avg, avg, avg, bndy, kbdy)
 end subroutine cm1f_turb_gettau
+
+! gettau with bbc=3: the surface stress from sfcstress (semi-slip), from
+! ust, u1, v1, s1 of the surface layer.
+subroutine cm1f_sfc_gettau(rf, mf, kmh, kmv, ua, va, wa, ust_, u1_, v1_, s1_, t11, t12, t13, t22, t23, t33) &
+    bind(C, name="cm1f_sfc_gettau")
+  use iso_c_binding
+  use input
+  use cm1f_turbcopy_module, only: gettau
+  use cm1f_bridge_turb_mod
+  implicit none
+  real(c_double), intent(in) :: rf(ib:ie,jb:je,kb:ke), mf(ib:ie,jb:je,kb:ke+1)
+  real(c_double), intent(in), dimension(ibc:iec,jbc:jec,kbc:kec) :: kmh, kmv
+  real(c_double), intent(in) :: ua(ib:ie+1,jb:je,kb:ke), va(ib:ie,jb:je+1,kb:ke), wa(ib:ie,jb:je,kb:ke+1)
+  real(c_double), intent(in), dimension(ib:ie,jb:je) :: ust_, u1_, v1_, s1_
+  real(c_double), intent(inout), dimension(ib:ie,jb:je,kb:ke) :: t11, t12, t13, t22, t23, t33
+  real, allocatable :: stau(:,:)
+  double precision :: avg
+  allocate(stau(ib:ie,jb:je)); stau = 0; avg = 0
+  call gettau(one_f, one_f, one_f, one_f, ust_, stau, u1_, v1_, s1_, zero2, zero2, zero2, zero2, &
+              rf, mf, s1, s2, s3, s4, s5, s6, kmh, kmv, t11, t12, t13, t22, t23, t33, &
+              ua, ua, va, va, wa, avg, avg, avg, avg, avg, bndy, kbdy)
+end subroutine cm1f_sfc_gettau
