@@ -24,11 +24,18 @@ def model(nml):
 def test_kokkos_info():
     import cm1k
 
-    assert cm1k.execution_space() in ("Serial", "OpenMP", "Threads", "Cuda", "HIP", "SYCL")
+    assert cm1k.execution_space() in (
+        "Serial",
+        "OpenMP",
+        "Threads",
+        "Cuda",
+        "HIP",
+        "SYCL",
+    )
     assert isinstance(cm1k.host_accessible(), bool)
     assert cm1k.initialize() in (True, False)
     assert cm1k.is_initialized()
-    assert cm1k.initialize() is False      # idempotent
+    assert cm1k.initialize() is False  # idempotent
     assert cm1k.concurrency() >= 1
     assert "Kokkos" in cm1k.kokkos_configuration()
 
@@ -41,7 +48,20 @@ def test_construct(model, nml):
     assert (b["nx"], b["ny"], b["nz"]) == (nl["nx"], nl["ny"], nl["nz"])
     assert model.dt == nl["dtl"] and model.nstep == 0 and model.mtime == 0.0
     names = model.field_names()
-    for n in ("ua", "va", "wa", "tha", "ppi", "rho", "xh", "zh", "th0", "qa_qv", "qa_qc", "qa_qr"):
+    for n in (
+        "ua",
+        "va",
+        "wa",
+        "tha",
+        "ppi",
+        "rho",
+        "xh",
+        "zh",
+        "th0",
+        "qa_qv",
+        "qa_qc",
+        "qa_qr",
+    ):
         assert n in names and n in model
     assert model.qname == ["qv", "qc", "qr"]
     assert model.field_rank("xh") == 1 and model.field_rank("ua") == 3
@@ -60,7 +80,7 @@ def test_overrides(nml):
     with pytest.raises(TypeError):
         cm1k.Model(42)
     with pytest.raises(RuntimeError):
-        cm1k.Model(cm1k.Namelist.from_string("&param0\n/\n"))   # nx/ny/nz missing
+        cm1k.Model(cm1k.Namelist.from_string("&param0\n/\n"))  # nx/ny/nz missing
 
 
 def test_field_get_set(model):
@@ -70,7 +90,11 @@ def test_field_get_set(model):
     b = model.bounds
     assert tha.data.flags.f_contiguous and tha.dtype == np.float64
     assert tha.lbounds == (b["ib"], b["jb"], b["kb"])
-    assert tha.shape == (b["ie"] - b["ib"] + 1, b["je"] - b["jb"] + 1, b["ke"] - b["kb"] + 1)
+    assert tha.shape == (
+        b["ie"] - b["ib"] + 1,
+        b["je"] - b["jb"] + 1,
+        b["ke"] - b["kb"] + 1,
+    )
 
     rng = np.random.default_rng(2)
     new = rng.standard_normal(tha.shape)
@@ -98,7 +122,7 @@ def test_field_get_set(model):
         view.f[1, 1, 1] = 123.0
         assert model.field("tha", copy=True).at(1, 1, 1) == 123.0
         assert np.shares_memory(view.data, model["tha"])
-        model["tha"] = view.data         # setting a field from its own view is a no-op
+        model["tha"] = view.data  # setting a field from its own view is a no-op
 
 
 def test_field_errors(model):
@@ -133,7 +157,9 @@ for fn in (m.init, m.step):
         print("raised:", e)
 print("ok", m.nstep)
 """
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=600
+    )
     assert r.returncode == 0, r.stderr
     assert "ok" in r.stdout
 
@@ -173,8 +199,9 @@ def test_init_from_reference(case, case_ref, cases_dir, tmp_path):
     common = set(ref.field_names()) & set(m.field_names())
     assert {"ua", "va", "wa", "tha", "ppi", "zh"} <= common
     st = dump.compare(m, ref)
-    assert all(s.bounds_match and s.max_abs == 0 for s in st.values()), \
-        {k: v for k, v in st.items() if v.max_abs or not v.bounds_match}
+    assert all(s.bounds_match and s.max_abs == 0 for s in st.values()), {
+        k: v for k, v in st.items() if v.max_abs or not v.bounds_match
+    }
     # write_dump reproduces the Fortran dump bit for bit
     out = m.write_dump(str(tmp_path))
     st = dump.compare(out, ref, names=sorted(common))
@@ -211,7 +238,9 @@ except RuntimeError as e:
     print("newmodel:", e)
 print(repr(m))
 """
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=300
+    )
     assert r.returncode == 0, r.stderr
     assert "released:" in r.stdout and "reinit:" in r.stdout and "newmodel:" in r.stdout
     assert "(released)" in r.stdout
@@ -225,7 +254,9 @@ m = cm1k.Model({nml!r}); m2 = cm1k.Model({nml!r})
 v = m.field("ua"); q = m2["qa_qv"]
 print("done")
 """
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300)
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=300
+    )
     assert r.returncode == 0, r.stderr
     assert "done" in r.stdout
     assert "deallocat" not in r.stderr.lower()

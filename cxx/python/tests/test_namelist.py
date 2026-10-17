@@ -52,10 +52,10 @@ def test_set_and_copy():
     c.set_raw("timax", "60.0d0")
     assert c["dtl"] == 3.0 and c.getr("dtl", 0) == 3.0
     assert c["nx"] == 32 and c["terrain_flag"] is True
-    assert c["output_basename"] == "it''s"   # Fortran-escaped quote is kept as written
+    assert c["output_basename"] == "it''s"  # Fortran-escaped quote is kept as written
     assert c["zs"] == [1, 2]
     assert c["timax"] == 60.0
-    assert nl["dtl"] == 6.0 and nl["nx"] == 16    # original untouched
+    assert nl["dtl"] == 6.0 and nl["nx"] == 16  # original untouched
     with pytest.raises(TypeError):
         c["nx"] = object()
 

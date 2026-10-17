@@ -1,4 +1,5 @@
 """cm1k.dump and cm1k.field: pure numpy, no extension needed."""
+
 import numpy as np
 import pytest
 
@@ -8,7 +9,9 @@ from cm1k.field import FieldView
 
 def _fields(rng):
     return {
-        "ua": FieldView("ua", np.asfortranarray(rng.standard_normal((7, 6, 5))), (-2, -2, 0)),
+        "ua": FieldView(
+            "ua", np.asfortranarray(rng.standard_normal((7, 6, 5))), (-2, -2, 0)
+        ),
         "zh_like": (rng.standard_normal((4, 3, 2)), (1, 1, 1)),
         "xh": rng.standard_normal(9),
     }
@@ -44,7 +47,7 @@ def test_index_format_matches_fortran(tmp_path):
 def test_float32_and_errors(tmp_path):
     (tmp_path / "index.txt").write_text("#step_time 3 1.5\na 4 2 1 2 0 2\nb 8 1 1 4\n")
     np.arange(6, dtype="<f4").tofile(tmp_path / "a.bin")
-    np.arange(3, dtype="<f8").tofile(tmp_path / "b.bin")   # short file
+    np.arange(3, dtype="<f8").tofile(tmp_path / "b.bin")  # short file
     r = dump.read(tmp_path)
     a = r["a"]
     assert a.dtype == np.float64 and a.shape == (2, 3)
@@ -73,7 +76,9 @@ def test_compare(tmp_path):
 
 
 def test_fieldview_indexing():
-    a = np.asfortranarray(np.arange(4 * 3 * 2, dtype=float).reshape((4, 3, 2), order="F"))
+    a = np.asfortranarray(
+        np.arange(4 * 3 * 2, dtype=float).reshape((4, 3, 2), order="F")
+    )
     fv = FieldView("x", a, (-1, 0, 1))
     assert fv.ubounds == (2, 2, 2)
     assert fv.at(-1, 0, 1) == a[0, 0, 0]

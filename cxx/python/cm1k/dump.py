@@ -93,7 +93,10 @@ def read_index(path) -> Tuple[int, float, Dict[str, DumpEntry]]:
             if not tok:
                 continue
             if tok[0] == "#step_time":
-                nstep, mtime = int(tok[1]), float(tok[2].replace("D", "E").replace("d", "e"))
+                nstep, mtime = (
+                    int(tok[1]),
+                    float(tok[2].replace("D", "E").replace("d", "e")),
+                )
                 continue
             name, kind, nd = tok[0], int(tok[1]), int(tok[2])
             b = [int(x) for x in tok[3 : 3 + 2 * nd]]
@@ -171,7 +174,7 @@ def _as_fieldview(name, value) -> FieldView:
         return value
     if isinstance(value, tuple) and len(value) == 2:
         return FieldView(name, value[0], value[1])
-    return FieldView(name, value)   # lower bounds default to 1
+    return FieldView(name, value)  # lower bounds default to 1
 
 
 def write(path, fields: Mapping, nstep: int = 0, mtime: float = 0.0) -> str:
@@ -204,7 +207,7 @@ class DiffStats:
     max_abs: float = 0.0
     ref_max: float = 0.0
     rel: float = 0.0
-    where: Tuple[int, ...] = ()            # Fortran indices of the max abs difference
+    where: Tuple[int, ...] = ()  # Fortran indices of the max abs difference
     bounds_match: bool = True
     extra: dict = _dc_field(default_factory=dict)
 
@@ -227,7 +230,10 @@ def diff_fields(a: FieldView, ref: FieldView, region=None) -> DiffStats:
         raise ValueError(f"rank mismatch: {a.ndim} vs {ref.ndim}")
     match = a.lbounds == ref.lbounds and a.ubounds == ref.ubounds
     if region is None:
-        region = [(max(l1, l2), min(u1, u2)) for (l1, u1), (l2, u2) in zip(a.bounds, ref.bounds)]
+        region = [
+            (max(l1, l2), min(u1, u2))
+            for (l1, u1), (l2, u2) in zip(a.bounds, ref.bounds)
+        ]
     sa = tuple(slice(lo - lb, hi - lb + 1) for (lo, hi), lb in zip(region, a.lbounds))
     sr = tuple(slice(lo - lb, hi - lb + 1) for (lo, hi), lb in zip(region, ref.lbounds))
     x, r = np.asarray(a.data)[sa], np.asarray(ref.data)[sr]

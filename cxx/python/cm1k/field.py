@@ -44,12 +44,16 @@ class _FortranIndexer:
                 start = lb if k.start is None else k.start
                 stop = ub + 1 if k.stop is None else k.stop
                 if not (lb <= start <= ub + 1 and lb <= stop <= ub + 1):
-                    raise IndexError(f"slice {k} out of bounds {lb}:{ub} in dimension {d + 1}")
+                    raise IndexError(
+                        f"slice {k} out of bounds {lb}:{ub} in dimension {d + 1}"
+                    )
                 out.append(slice(start - lb, stop - lb, k.step))
             else:
                 k = int(k)
                 if not lb <= k <= ub:
-                    raise IndexError(f"index {k} out of bounds {lb}:{ub} in dimension {d + 1}")
+                    raise IndexError(
+                        f"index {k} out of bounds {lb}:{ub} in dimension {d + 1}"
+                    )
                 out.append(k - lb)
         return tuple(out)
 
@@ -85,7 +89,9 @@ class FieldView:
             lbounds = (1,) * data.ndim
         lbounds = tuple(int(x) for x in lbounds)
         if len(lbounds) != data.ndim:
-            raise ValueError(f"{name}: {len(lbounds)} lower bounds for a rank-{data.ndim} array")
+            raise ValueError(
+                f"{name}: {len(lbounds)} lower bounds for a rank-{data.ndim} array"
+            )
         self.name = name
         self.data = data
         self.lbounds = lbounds
@@ -126,7 +132,9 @@ class FieldView:
         return self.data[self.index(*fidx)]
 
     def copy(self):
-        return FieldView(self.name, self.data.copy(order="F"), self.lbounds, is_view=False)
+        return FieldView(
+            self.name, self.data.copy(order="F"), self.lbounds, is_view=False
+        )
 
     def __array__(self, dtype=None, copy=None):
         if copy:

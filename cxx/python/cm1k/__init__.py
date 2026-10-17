@@ -43,7 +43,7 @@ __all__ = [
 
 try:
     from . import _cm1k
-except ImportError as _e:   # allow `cm1k.dump` / `cm1k.field` without the C++ extension
+except ImportError as _e:  # allow `cm1k.dump` / `cm1k.field` without the C++ extension
     _cm1k = None
     _import_error = _e
 
@@ -77,13 +77,23 @@ else:
         ``cm1k.initialize(args=["--kokkos-device-id=1"])``. Kokkos is
         finalized automatically at interpreter exit.
         """
-        return _cm1k.initialize(num_threads=num_threads, device_id=device_id, args=list(args))
+        return _cm1k.initialize(
+            num_threads=num_threads, device_id=device_id, args=list(args)
+        )
 
     # ------------------------------------------------------------ Namelist
     Namelist = _cm1k.Namelist
 
-    _LOGICAL = {".true.": True, ".false.": False, "t": True, "f": False,
-                ".t.": True, ".f.": False, "true": True, "false": False}
+    _LOGICAL = {
+        ".true.": True,
+        ".false.": False,
+        "t": True,
+        "f": False,
+        ".t.": True,
+        ".f.": False,
+        "true": True,
+        "false": False,
+    }
 
     def _parse_value(v: str):
         s = v.strip()
@@ -105,7 +115,7 @@ else:
         out = []
         for v in raw:
             m = None
-            if "*" in v and not (v[:1] in "'\""):
+            if "*" in v and v[:1] not in "'\"":
                 n, _, val = v.partition("*")
                 if n.strip().isdigit():
                     m = [val] * int(n)
@@ -121,9 +131,11 @@ else:
             return repr(v)
         if isinstance(v, str):
             return "'" + v.replace("'", "''") + "'"
-        if hasattr(v, "item"):   # numpy scalar
+        if hasattr(v, "item"):  # numpy scalar
             return _format_value(v.item())
-        raise TypeError(f"cannot convert {type(v).__name__} to a Fortran namelist value")
+        raise TypeError(
+            f"cannot convert {type(v).__name__} to a Fortran namelist value"
+        )
 
     _MISSING = object()
 
@@ -229,7 +241,9 @@ else:
             if self.released:
                 return "<cm1k.Model (released)>"
             b = self.bounds
-            return (f"<cm1k.Model {b['nx']}x{b['ny']}x{b['nz']} nstep={self.nstep} "
-                    f"mtime={self.mtime} dt={self.dt} on {execution_space()}>")
+            return (
+                f"<cm1k.Model {b['nx']}x{b['ny']}x{b['nz']} nstep={self.nstep} "
+                f"mtime={self.mtime} dt={self.dt} on {execution_space()}>"
+            )
 
     _atexit.register(finalize)

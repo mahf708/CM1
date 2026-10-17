@@ -38,8 +38,10 @@ def ref_cases():
     if r is None or not r.is_dir():
         return []
     return sorted(
-        d.name for d in r.iterdir()
-        if (d / "step_000000" / "index.txt").is_file() and (CASES_DIR / d.name / "namelist.input").is_file()
+        d.name
+        for d in r.iterdir()
+        if (d / "step_000000" / "index.txt").is_file()
+        and (CASES_DIR / d.name / "namelist.input").is_file()
     )
 
 
@@ -51,4 +53,6 @@ def ext_available():
     return getattr(cm1k, "_cm1k", None) is not None
 
 
-requires_ext = pytest.mark.skipif(not ext_available(), reason="cm1k._cm1k extension not built")
+requires_ext = pytest.mark.skipif(
+    not ext_available(), reason="cm1k._cm1k extension not built"
+)
