@@ -72,7 +72,7 @@ jobs:
           name: cm1-refs
           path: refs
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 5
           compression-level: 6
 
   fortran-determinism:
