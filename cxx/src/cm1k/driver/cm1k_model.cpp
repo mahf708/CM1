@@ -1,5 +1,6 @@
 #include "cm1k_model.hpp"
 
+#include "init/cm1k_init.hpp"
 #include "share/cm1k_dump_io.hpp"
 
 #include <stdexcept>
@@ -99,7 +100,13 @@ void Model::write_dump(const std::string& root) const {
 }
 
 void Model::init() {
-  throw std::runtime_error("cm1k: native initialization is not implemented yet; use init_from_dump");
+  // param.F (grid), base.F (base state), init3d.F + getset (initial state);
+  // see init/cm1k_init.hpp for the supported options.
+  auto info = init::init_grid(m_nl, m_grid);
+  init::init_base(m_nl, m_c, m_grid, info, m_base);
+  init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
+  m_nstep = 0;
+  m_mtime = 0;
 }
 
 void Model::step() {
