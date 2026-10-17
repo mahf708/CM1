@@ -9565,7 +9565,7 @@
       varname(nvar) = 'mtime'
       vardesc(nvar) = 'model time (seconds since beginning of simulation)'
 
-      write(61,rec=mrec) sngl(mtime)
+      write(61,rec=mrec) real(mtime,4)
       mrec = mrec+1
 
     !---------------------------
@@ -9574,7 +9574,7 @@
       varname(nvar) = 'nstep'
       vardesc(nvar) = 'time steps (since beginning of simulation)'
 
-      write(61,rec=mrec) float(nstep)
+      write(61,rec=mrec) real(float(nstep),4)
       mrec = mrec+1
 
     !---------------------------
@@ -9583,7 +9583,7 @@
       varname(nvar) = 'dt'
       vardesc(nvar) = 'current time step (seconds)'
 
-      write(61,rec=mrec) dt
+      write(61,rec=mrec) real(dt,4)
       mrec = mrec+1
 
     !---------------------------
@@ -9595,7 +9595,7 @@
       vardesc(nvar) = 'average time step (seconds) since last call to statpack'
 
       var = adt/float(max(1,ndt))
-      write(61,rec=mrec) var
+      write(61,rec=mrec) real(var,4)
       mrec = mrec+1
 
     ENDIF
@@ -9606,7 +9606,7 @@
       varname(nvar) = 'nwrite'
       vardesc(nvar) = 'writeout number'
 
-      write(61,rec=mrec) float(nwrite)
+      write(61,rec=mrec) real(float(nwrite),4)
       mrec = mrec+1
 
     !---------------------------
@@ -9617,7 +9617,7 @@
       varname(nvar) = 'umove'
       vardesc(nvar) = 'umove (m/s)'
 
-      write(61,rec=mrec) umove
+      write(61,rec=mrec) real(umove,4)
       mrec = mrec+1
 
     !---------------------------
@@ -9626,7 +9626,7 @@
       varname(nvar) = 'vmove'
       vardesc(nvar) = 'vmove (m/s)'
 
-      write(61,rec=mrec) vmove
+      write(61,rec=mrec) real(vmove,4)
       mrec = mrec+1
 
     !---------------------------
@@ -9635,7 +9635,7 @@
       varname(nvar) = 'domainlocx'
       vardesc(nvar) = 'x location of (center of) domain (m)'
 
-      write(61,rec=mrec) sngl(domainlocx)
+      write(61,rec=mrec) real(domainlocx,4)
       mrec = mrec+1
 
     !---------------------------
@@ -9644,7 +9644,7 @@
       varname(nvar) = 'domainlocy'
       vardesc(nvar) = 'y location of (center of) domain (m)'
 
-      write(61,rec=mrec) sngl(domainlocy)
+      write(61,rec=mrec) real(domainlocy,4)
       mrec = mrec+1
 
     ENDIF
@@ -9657,7 +9657,7 @@
       varname(nvar) = 'solcon'
       vardesc(nvar) = 'solar constant (W/m^2)'
 
-      write(61,rec=mrec) rad_solcon
+      write(61,rec=mrec) real(rad_solcon,4)
       mrec = mrec+1
 
     ENDIF
@@ -9670,7 +9670,7 @@
       varname(nvar) = 'jday'
       vardesc(nvar) = 'Julian day (for radiation calculations)'
 
-      write(61,rec=mrec) rad_jday
+      write(61,rec=mrec) real(rad_jday,4)
       mrec = mrec+1
 
     ENDIF
@@ -9683,7 +9683,7 @@
       varname(nvar) = 'zenith_angle'
       vardesc(nvar) = 'solar zenith angle  (radians)'
 
-      write(61,rec=mrec) rad_zenangle
+      write(61,rec=mrec) real(rad_zenangle,4)
       mrec = mrec+1
 
     ENDIF
@@ -9696,7 +9696,7 @@
       varname(nvar) = 'declin_angle'
       vardesc(nvar) = 'solar declination (radians)'
 
-      write(61,rec=mrec) rad_declin
+      write(61,rec=mrec) real(rad_declin,4)
       mrec = mrec+1
 
     ENDIF
@@ -9709,7 +9709,7 @@
       varname(nvar) = 'hrang'
       vardesc(nvar) = 'solar hour angle (radians)'
 
-      write(61,rec=mrec) rad_hrang
+      write(61,rec=mrec) real(rad_hrang,4)
       mrec = mrec+1
 
     ENDIF
