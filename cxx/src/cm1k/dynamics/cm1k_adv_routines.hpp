@@ -120,7 +120,7 @@ KOKKOS_FORCEINLINE_FUNCTION Real flxS(const Real* s, double weps) {
   else { static_assert(S == 3, "unsupported scheme"); return 0; }
 }
 
-template <int S> constexpr int stencil_width() { return S == WENO5 ? 5 : S; }
+template <int S> KOKKOS_INLINE_FUNCTION constexpr int stencil_width() { return S == WENO5 ? 5 : S; }
 
 // Stencil values along a line: a(L + n*d), d = unit step in i, j or k.
 struct Line {

@@ -3,8 +3,10 @@
 #include "init/cm1k_cm1libs.hpp"
 
 #include <cmath>
+#include <initializer_list>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Ports of the initialization parts of param.F, base.F, init3d.F and cm1.F.
@@ -298,12 +300,12 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
       zh(i, j, nk + 1) = zf(i, j, nk + 1);
     }
 
-  for (auto p : {std::make_pair(&g.xh, &xh), {&g.rxh, &rxh}, {&g.uh, &uh}, {&g.ruh, &ruh}, {&g.xf, &xf},
+  for (auto p : std::initializer_list<decltype(std::make_pair(&g.xh, &xh))>{{&g.xh, &xh}, {&g.rxh, &rxh}, {&g.uh, &uh}, {&g.ruh, &ruh}, {&g.xf, &xf},
                  {&g.rxf, &rxf}, {&g.uf, &uf}, {&g.ruf, &ruf}, {&g.yh, &yh}, {&g.vh, &vh}, {&g.rvh, &rvh},
                  {&g.yf, &yf}, {&g.vf, &vf}, {&g.rvf, &rvf}, {&g.sigma, &sigma}, {&g.sigmaf, &sigmaf},
                  {&g.rds, &rds}, {&g.rdsf, &rdsf}})
     p.first->deep_copy_from(*p.second);
-  for (auto p : {std::make_pair(&g.zh, &zh), {&g.mh, &mh}, {&g.rmh, &rmh}, {&g.c1, &c1}, {&g.c2, &c2},
+  for (auto p : std::initializer_list<decltype(std::make_pair(&g.zh, &zh))>{{&g.zh, &zh}, {&g.mh, &mh}, {&g.rmh, &rmh}, {&g.c1, &c1}, {&g.c2, &c2},
                  {&g.zf, &zf}, {&g.mf, &mf}, {&g.rmf, &rmf}})
     p.first->deep_copy_from(*p.second);
   return info;
@@ -589,7 +591,7 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
     for (int j = jb; j <= je; ++j)
       for (int i = ib; i <= ie; ++i) rth0(i, j, k) = 1.0 / th0(i, j, k);
 
-  for (auto p : {std::make_pair(&bs.pi0, &pi0), {&bs.th0, &th0}, {&bs.prs0, &prs0}, {&bs.rho0, &rho0},
+  for (auto p : std::initializer_list<decltype(std::make_pair(&bs.pi0, &pi0))>{{&bs.pi0, &pi0}, {&bs.th0, &th0}, {&bs.prs0, &prs0}, {&bs.rho0, &rho0},
                  {&bs.thv0, &thv0}, {&bs.rth0, &rth0}, {&bs.qv0, &qv0}, {&bs.qc0, &qc0}, {&bs.qi0, &qi0},
                  {&bs.rr0, &rr0}, {&bs.rf0, &rf0}, {&bs.rrf0, &rrf0}, {&bs.u0, &u0}, {&bs.v0, &v0}})
     p.first->deep_copy_from(*p.second);
@@ -772,7 +774,7 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
         for (int i = ib; i <= ie; ++i) rho(i, j, k) = rho0(i, j, k);
   }
 
-  for (auto p : {std::make_pair(&bs.th0, &th0), {&bs.rth0, &rth0}, {&bs.u0, &u0}, {&bs.v0, &v0},
+  for (auto p : std::initializer_list<decltype(std::make_pair(&bs.th0, &th0))>{{&bs.th0, &th0}, {&bs.rth0, &rth0}, {&bs.u0, &u0}, {&bs.v0, &v0},
                  {&s.ua, &ua}, {&s.va, &va}, {&s.wa, &wa}, {&s.ppi, &ppi}, {&s.tha, &tha}, {&s.rho, &rho},
                  {&s.prs, &prs}, {&s.tkea, &tkea}, {&s.kmh, &kmh}, {&s.kmv, &kmv}, {&s.khh, &khh},
                  {&s.khv, &khv}, {&s.rain, &rain}})
