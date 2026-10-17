@@ -76,11 +76,16 @@ struct Setup {
   Pair<3> mh, mf, c1, c2, rho0, rr0, rf0, rrf0;
   Pair<3> rru, rrv, rrw, divx, rho, rr;
 
-  Setup(int ni, int nj, int nk, int ngxy) {
+  static Bounds box(int ni, int nj, int nk, int ngxy) {
+    Bounds b;
     b.nx = ni; b.ny = nj; b.nz = nk;
     b.ni = ni; b.nj = nj; b.nk = nk; b.nkp1 = nk + 1;
     b.ngxy = ngxy; b.ngz = 1;
     b.ib = 1 - ngxy; b.ie = ni + ngxy; b.jb = 1 - ngxy; b.je = nj + ngxy; b.kb = 0; b.ke = nk + 1;
+    return b;
+  }
+  Setup(int ni, int nj, int nk, int ngxy) : Setup(box(ni, nj, nk, ngxy)) {}
+  explicit Setup(const Bounds& bb) : b(bb) {
     g.allocate(b);
     base.allocate(b);
     auto a1 = [](const FArray1& d) { Pair<1> p; p.d = d; p.h = d.to_host(); return p; };
@@ -362,4 +367,129 @@ TEST_CASE("advection options: unsupported values throw", "[adv]") {
   REQUIRE(y.hadvordrs == 5);   // wenocheck
   REQUIRE(y.ibw == 1);
   REQUIRE(y.ibe == 0);
+}
+
+//------------------------------------------------------------------------------
+// Fields from the Fortran reference dumps (cases in cxx/cases)
+//------------------------------------------------------------------------------
+
+namespace {
+
+Pair<3> zeros_like(const Pair<3>& like) {
+  auto p = make_pair_arr<3>("ten", {like.h.lb(0), like.h.lb(1), like.h.lb(2)},
+                            {like.h.ub(0), like.h.ub(1), like.h.ub(2)});
+  Kokkos::deep_copy(p.h.view(), 0.0);
+  p.to_dev();
+  return p;
+}
+
+void run_dump_case(const std::string& case_name, int nstep) {
+  const auto root = testing::case_ref(case_name);
+  if (root.empty()) return;
+  const auto dir = DumpReader::step_dir(root, nstep);
+  if (!std::filesystem::exists(dir)) { WARN("missing " << dir); return; }
+  DumpReader rd(dir);
+  const auto nl = Namelist::from_file(testing::case_namelist(case_name));
+
+  Setup S(Bounds::from_namelist(nl));
+  S.o = AdvOptions::from_namelist(nl);
+  const auto& b = S.b;
+  S.g.dx = nl.getr("dx", 0); S.g.dy = nl.getr("dy", 0); S.g.dz = nl.getr("dz", 0);
+  S.g.rdx = 1.0/S.g.dx; S.g.rdy = 1.0/S.g.dy; S.g.rdz = 1.0/S.g.dz;
+  rd.read_into<1>("uh", S.g.uh); rd.read_into<1>("uf", S.g.uf);
+  rd.read_into<1>("vh", S.g.vh); rd.read_into<1>("vf", S.g.vf);
+  const std::vector<std::pair<std::string, FArray3>> f3 = {
+    {"mh", S.g.mh}, {"mf", S.g.mf}, {"c1", S.g.c1}, {"c2", S.g.c2}, {"rho0", S.base.rho0},
+    {"rr0", S.base.rr0}, {"rf0", S.base.rf0}, {"rrf0", S.base.rrf0}, {"rho", S.rho.d}};
+  for (const auto& [n, a] : f3) rd.read_into<3>(n, a);
+  for (auto* p : {&S.uh, &S.uf, &S.vh, &S.vf}) p->to_host();
+  for (auto* p : {&S.mh, &S.mf, &S.c1, &S.c2, &S.rho0, &S.rr0, &S.rf0, &S.rrf0, &S.rho}) p->to_host();
+
+  auto u3d = make_pair_arr<3>("u3d", {b.ib, b.jb, b.kb}, {b.ie + 1, b.je, b.ke});
+  auto v3d = make_pair_arr<3>("v3d", {b.ib, b.jb, b.kb}, {b.ie, b.je + 1, b.ke});
+  auto w3d = make_pair_arr<3>("w3d", {b.ib, b.jb, b.kb}, {b.ie, b.je, b.ke + 1});
+  auto tha = make_pair_arr<3>("tha", {b.ib, b.jb, b.kb}, {b.ie, b.je, b.ke});
+  rd.read_into<3>("ua", u3d.d); rd.read_into<3>("va", v3d.d); rd.read_into<3>("wa", w3d.d);
+  rd.read_into<3>("tha", tha.d);
+  u3d.to_host(); v3d.to_host(); w3d.to_host(); tha.to_host();
+
+  // solve2: rru, rrv, rrw (no terrain) and divx, same ranges
+  const int ni = b.ni, nj = b.nj, nk = b.nk;
+  for (auto* p : {&S.rru, &S.rrv, &S.rrw, &S.divx}) Kokkos::deep_copy(p->h.view(), 0.0);
+  for (int k = 1; k <= nk; ++k) {
+    for (int j = 0; j <= nj + 1; ++j) for (int i = 0; i <= ni + 2; ++i) S.rru.h(i, j, k) = S.rho0.h(1, 1, k)*u3d.h(i, j, k);
+    for (int j = 0; j <= nj + 2; ++j) for (int i = 0; i <= ni + 1; ++i) S.rrv.h(i, j, k) = S.rho0.h(1, 1, k)*v3d.h(i, j, k);
+    for (int j = 0; j <= nj + 1; ++j) for (int i = 0; i <= ni + 1; ++i)
+      S.rrw.h(i, j, k) = (k == 1) ? 0.0 : S.rf0.h(1, 1, k)*w3d.h(i, j, k);
+  }
+  for (int j = 0; j <= nj + 1; ++j) for (int i = 0; i <= ni + 1; ++i) S.rrw.h(i, j, nk + 1) = 0.0;
+  for (int k = 1; k <= nk; ++k) for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni; ++i)
+    S.divx.h(i, j, k) = ( (S.rru.h(i + 1, j, k)-S.rru.h(i, j, k))*S.g.rdx*S.uh.h(i)
+                         +(S.rrv.h(i, j + 1, k)-S.rrv.h(i, j, k))*S.g.rdy*S.vh.h(j) )
+                         +(S.rrw.h(i, j, k + 1)-S.rrw.h(i, j, k))*S.g.rdz*S.mh.h(1, 1, k);
+  for (size_t n = 0; n < S.rr.h.size(); ++n) S.rr.h.data()[n] = 1.0/S.rho.h.data()[n];
+  S.sync();
+  S.fortran_setup();
+
+  Advection adv(S.g, S.base, S.o);
+  const auto f = S.fluxes();
+  const Real dt = nl.getr("dtl", 1.0);
+  for (int nrk = 1; nrk <= 3; ++nrk) {
+    INFO(case_name << " step " << nstep << " nrk " << nrk);
+    auto uten = zeros_like(u3d), vten = zeros_like(v3d), wten = zeros_like(w3d), thten = zeros_like(tha);
+    auto uf_ = hcopy(uten.h), vf_ = hcopy(vten.h), wf_ = hcopy(wten.h), tf_ = hcopy(thten.h);
+    adv.advu(nrk, dt, f, u3d.d, uten.d);
+    adv.advv(nrk, dt, f, v3d.d, vten.d);
+    adv.advw(nrk, dt, f, w3d.d, wten.d);
+    AdvsArgs a;
+    a.weps = 10.0*phys::epsilon; a.hadvorder = S.o.hadvordrs; a.vadvorder = S.o.vadvordrs;
+    a.diffit = (S.o.idiff == 1 && S.o.difforder == 6) ? 1 : 0;
+    adv.advs(nrk, a, dt, f, tha.d, tha.d, thten.d);
+    uten.to_host(); vten.to_host(); wten.to_host(); thten.to_host();
+
+#define CM1F_ARGS S.uh.p(), S.uf.p(), S.vh.p(), S.vf.p(), S.mh.p(), S.mf.p(), S.c1.p(), S.c2.p(), \
+    S.rho0.p(), S.rr0.p(), S.rf0.p(), S.rrf0.p(), S.rru.p(), S.rrv.p(), S.rrw.p(), S.divx.p(), S.rho.p(), \
+    u3d.p(), v3d.p(), w3d.p()
+    cm1f_advu(nrk, dt, CM1F_ARGS, uf_.data());
+    cm1f_advv(nrk, dt, CM1F_ARGS, vf_.data());
+    cm1f_advw(nrk, dt, S.o.hadvordrv, S.o.vadvordrv, S.o.advwenov, 1, CM1F_ARGS, wf_.data());
+#undef CM1F_ARGS
+    cm1f_advs(nrk, 1, 0, 0, dt, a.weps, a.diffit, a.hadvorder, a.vadvorder,
+              S.uh.p(), S.vh.p(), S.mh.p(), S.c1.p(), S.c2.p(), S.rho0.p(), S.rr0.p(), S.rf0.p(), S.rrf0.p(),
+              S.rru.p(), S.rrv.p(), S.rrw.p(), S.divx.p(), S.rho.p(), S.rr.p(), tha.p(), tha.p(), tf_.data());
+    require_same(uten.h, uf_, "advu");
+    require_same(vten.h, vf_, "advv");
+    require_same(wten.h, wf_, "advw");
+    require_same(thten.h, tf_, "advs(tha)");
+
+    // moisture: pdef at the last RK stage, pdefweno for q /= qv (solve2)
+    for (const auto& name : rd.names()) {
+      if (name.rfind("qa_", 0) != 0) continue;
+      auto q = zeros_like(tha);
+      rd.read_into<3>(name, q.d); q.to_host();
+      auto qten = zeros_like(tha);
+      auto qf = hcopy(qten.h);
+      AdvsArgs aq = a;
+      aq.pdef = (nrk == phys::nrkmax) ? 1 : 0;
+      aq.pdefweno = (name == "qa_qv") ? 0 : 1;
+      aq.weps = 1.0e-3*phys::epsilon;
+      adv.advs(nrk, aq, dt, f, q.d, q.d, qten.d);
+      qten.to_host();
+      cm1f_advs(nrk, 1, aq.pdef, aq.pdefweno, dt, aq.weps, aq.diffit, aq.hadvorder, aq.vadvorder,
+                S.uh.p(), S.vh.p(), S.mh.p(), S.c1.p(), S.c2.p(), S.rho0.p(), S.rr0.p(), S.rf0.p(), S.rrf0.p(),
+                S.rru.p(), S.rrv.p(), S.rrw.p(), S.divx.p(), S.rho.p(), S.rr.p(), q.p(), q.p(), qf.data());
+      require_same(qten.h, qf, "advs(" + name + ")");
+    }
+  }
+}
+
+} // namespace
+
+TEST_CASE("advection on reference-dump fields matches adv.F", "[bridge][adv][refs]") {
+  for (int nstep : {0, 10}) {
+    run_dump_case("dry_shear", nstep);
+    run_dump_case("kessler_bubble", nstep);
+  }
+  // Late enough that cloud and rain water are nonzero (exercises pdef on qc/qr).
+  run_dump_case("kessler_bubble", 150);
 }
