@@ -15,7 +15,7 @@ Interior scalar points are ``a[K, J, I]`` with the slices exported below.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 NGXY = 3
 NGZ = 1
@@ -71,7 +71,11 @@ class Grid:
     # array shapes
     @property
     def s_shape(self):
-        return (self.nk + 2 * self.ngz, self.nj + 2 * self.ngxy, self.ni + 2 * self.ngxy)
+        return (
+            self.nk + 2 * self.ngz,
+            self.nj + 2 * self.ngxy,
+            self.ni + 2 * self.ngxy,
+        )
 
     @property
     def u_shape(self):

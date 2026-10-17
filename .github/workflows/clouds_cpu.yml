@@ -8,6 +8,8 @@ on:
 
 jobs:
   run-matrix:
+    # NCAR self-hosted CIRRUS runners exist only for NCAR/CM1, not this fork
+    if: github.repository == 'NCAR/CM1'
     strategy:
       fail-fast: false
       matrix:

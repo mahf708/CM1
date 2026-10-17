@@ -52,11 +52,21 @@ def build_driver(name: str, prec: str = "r8") -> Path:
     bdir.mkdir(parents=True, exist_ok=True)
     extra = ["-fdefault-real-8", "-fdefault-double-8"] if prec == "r8" else []
     objs = [str(p) for p in sorted(obj.glob("*.o")) if p.name != "cm1.o"]
-    cmd = (
-        ["gfortran", "-O1", "-ffree-line-length-none", "-fallow-argument-mismatch", *extra,
-         f"-I{obj}", f"-J{bdir}", "-cpp", str(HARNESS / "harness_io.F90"), str(drv), *objs,
-         "-o", str(exe)]
-    )
+    cmd = [
+        "gfortran",
+        "-O1",
+        "-ffree-line-length-none",
+        "-fallow-argument-mismatch",
+        *extra,
+        f"-I{obj}",
+        f"-J{bdir}",
+        "-cpp",
+        str(HARNESS / "harness_io.F90"),
+        str(drv),
+        *objs,
+        "-o",
+        str(exe),
+    ]
     nc = subprocess.run(["nf-config", "--flibs"], capture_output=True, text=True)
     if nc.returncode == 0:
         cmd += nc.stdout.split()
@@ -70,7 +80,9 @@ def run_driver(name: str, inputs: dict, outputs: dict, prec: str = "r8") -> dict
     dt = DTYPES[prec]
     with tempfile.TemporaryDirectory() as wd:
         for k, v in inputs.items():
-            np.asarray(v, dtype=dt).T.tofile(os.path.join(wd, k + ".bin"))  # -> Fortran order
+            np.asarray(v, dtype=dt).T.tofile(
+                os.path.join(wd, k + ".bin")
+            )  # -> Fortran order
         subprocess.run([str(exe)], check=True, cwd=wd, capture_output=True)
         res = {}
         for k, shape in outputs.items():
