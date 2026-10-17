@@ -1,27 +1,6 @@
 #include "cm1k_dyncore.hpp"
 
-#if __has_include("dynamics/cm1k_adv.hpp")
 #include "dynamics/cm1k_adv.hpp"
-#else
-// Temporary stand-in until the advection port (cm1k/advection) is merged.
-namespace cm1k {
-struct AdvOptions {
-  static AdvOptions from_namelist(const Namelist&) { return {}; }
-  void check() const {}
-};
-struct AdvFluxes { FArray3 rru, rrv, rrw, divx, rho, rr; };
-struct AdvsArgs { int wflag = 1, pdef = 0, pdefweno = 0; double weps = 0; int diffit = 0, hadvorder = 5, vadvorder = 5; };
-class Advection {
-public:
-  Advection(const Grid&, const BaseState&, const AdvOptions&) {}
-  [[noreturn]] static void none() { throw std::runtime_error("cm1k: advection is not ported yet"); }
-  void advs(int, const AdvsArgs&, Real, const AdvFluxes&, const FArray3&, const FArray3&, const FArray3&) const { none(); }
-  void advu(int, Real, const AdvFluxes&, const FArray3&, const FArray3&) const { none(); }
-  void advv(int, Real, const AdvFluxes&, const FArray3&, const FArray3&) const { none(); }
-  void advw(int, Real, const AdvFluxes&, const FArray3&, const FArray3&) const { none(); }
-};
-} // namespace cm1k
-#endif
 
 #include <algorithm>
 #include <cmath>
@@ -78,6 +57,7 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   c.iprcl = nl.geti("iprcl", 0);
   c.iinit = nl.geti("iinit", 1);
   c.idiss = nl.geti("idiss", 0);
+  c.bbc = nl.geti("bbc", 1);
   c.rterm = nl.geti("rterm", 0);
   c.adapt_dt = nl.geti("adapt_dt", 0);
   c.isfcflx = nl.geti("isfcflx", 0);
@@ -136,7 +116,10 @@ void DynConfig::check() const {
   if (iptra != 0) unsupported("iptra");
   if (iprcl != 0) unsupported("iprcl");
   if (iinit == 10 || iinit == 11 || iinit == 12) unsupported("iinit=" + std::to_string(iinit) + " (forcing in sound/solve1)");
-  if (idiss != 0) unsupported("idiss");
+  // idiss=1 adds epsd/(cp*pi) with epsd from dissten, which only the subgrid
+  // turbulence / PBL schemes set: with sgsmodel=0 and ipbl=0 it is exactly
+  // zero and the term is a no-op (bbc=3 adds a surface term: not ported).
+  if (idiss != 0 && (sgsmodel != 0 || ipbl != 0 || bbc == 3)) unsupported("idiss=1 with dissipation");
   if (rterm != 0) unsupported("rterm");
   if (adapt_dt != 0) unsupported("adapt_dt");
   if (isfcflx != 0 || sfcmodel != 0) unsupported("surface fluxes (isfcflx/sfcmodel)");

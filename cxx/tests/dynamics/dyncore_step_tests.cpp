@@ -7,6 +7,7 @@
 
 #include "cm1k_test_utils.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 
@@ -25,16 +26,19 @@ double run_case(const std::string& case_name, double tol) {
   for (auto& n : m.field_names())
     if (n.rfind("qa_", 0) == 0) fields.push_back(n);
 
-  int nsteps = 0;
-  while (std::filesystem::exists(DumpReader::step_dir(ref, nsteps + 1))) ++nsteps;
-  REQUIRE(nsteps > 0);
+  // dumped steps (every step, or every N steps for some cases)
+  std::vector<int> steps;
+  for (auto& e : std::filesystem::directory_iterator(ref)) {
+    const auto n = e.path().filename().string();
+    if (n.rfind("step_", 0) == 0 && n != "step_000000") steps.push_back(std::stoi(n.substr(5)));
+  }
+  std::sort(steps.begin(), steps.end());
+  REQUIRE(!steps.empty());
+  const int nsteps = int(steps.size());
   double worst = 0;
-  int last = 0;
-  for (int step = 1; step <= nsteps; ++step) {
+  for (int step : steps) {
     const auto dir = DumpReader::step_dir(ref, step);
-    // dumps may be every N steps
     while (m.nstep() < step) m.step();
-    (void)last;
     DumpReader r(dir);
     REQUIRE(r.nstep() == m.nstep());
     REQUIRE(r.mtime() == m.mtime());
@@ -54,7 +58,8 @@ double run_case(const std::string& case_name, double tol) {
     }
     std::printf("%s\n", line.c_str());
   }
-  std::printf("%s: worst relative difference over %d steps: %.3e\n", case_name.c_str(), nsteps, worst);
+  std::printf("%s: worst relative difference over %d dumps (to step %d): %.3e\n", case_name.c_str(), nsteps,
+              steps.back(), worst);
   return worst;
 }
 
@@ -74,6 +79,10 @@ TEST_CASE("dyncore + Kessler: kessler_saturated vs Fortran, every step", "[dyn][
 
 TEST_CASE("dyncore + Kessler: kessler_bubble vs Fortran", "[dyn][step][kessler]") {
   run_case("kessler_bubble", 1e-12);
+}
+
+TEST_CASE("dyncore + Kessler: kessler_periodic vs Fortran", "[dyn][step][kessler]") {
+  run_case("kessler_periodic", 1e-12);
 }
 
 TEST_CASE("dyncore: option checks", "[dyn]") {

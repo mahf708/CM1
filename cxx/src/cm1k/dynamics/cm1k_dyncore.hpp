@@ -20,7 +20,7 @@ struct DynConfig {
   int imoist = 0, ptype = 0, eqtset = 2, psolver = 3, apmasscon = 1;
   int irdamp = 0, hrdamp = 0, icor = 0, lspgrad = 0, testcase = 0;
   int axisymm = 0, cuparam = 0, radopt = 0, iptra = 0, iprcl = 0, iinit = 1;
-  int idiss = 0, rterm = 0, adapt_dt = 0, isfcflx = 0, sfcmodel = 0, irbc = 4;
+  int bbc = 1, idiss = 0, rterm = 0, adapt_dt = 0, isfcflx = 0, sfcmodel = 0, irbc = 4;
   int wbc = 1, ebc = 1, sbc = 1, nbc = 1;
   bool terrain_flag = false, do_ib = false, do_lsnudge = false, do_recycle = false;
   Real dtl = 0, alph = 0.60, kdiv = 0.10, rdalpha = 0, zd = 0, xhd = 0, csound = 300.0;
