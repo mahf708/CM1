@@ -1,18 +1,21 @@
 """Pre-RK tendencies, ported from src/solve1.F.
 
-Only the code path active for the reference case (irdamp=1, hrdamp=0,
-sgsmodel=0, idiff=0, lspgrad=0, testcase=0, no radiation/PBL/cumulus/
-nudging/recycling, psolver=3, eqtset=2, imoist=1, ptype>=1) is ported:
+Only the code paths active for the reference cases (irdamp=0/1, hrdamp=0,
+sgsmodel=0 or 1 (cm1setup=1), idiff=0, lspgrad=0, testcase=0, no
+radiation/PBL/cumulus/nudging/recycling, psolver=3, eqtset=2, imoist=1,
+ptype>=1) are ported, in solve1.F's order:
 
+  * sgsmodel=1: the TKE tendency tketen (shear/buoyancy production -
+    dissipation, cm1x.turb.tke_source) plus its subgrid diffusion (turbt);
   * Rayleigh damping (irdamp=1) into uten1, vten1, wten1, thten1;
   * qten = 0;
+  * sgsmodel=1: dissipative heating (idiss=1, cm1x.turb.dissheat) and the
+    ``doturb`` block (turbu/turbv/turbw/turbs, cm1x.turb.turb_tendencies);
   * the mass-conserving pressure tendency ppten (eqtset=2, moist) plus the
     diabatic tendencies of the previous step (qpten, qtten, qvten, qcten).
 
-Terms that are identically zero for these options are omitted: the subgrid
-turbulence tendencies (cm1setup=1 makes CM1 call turbu/turbv/turbw/turbs, but
-with sgsmodel=0 the eddy viscosities and stresses are zero) and dissipative
-heating (idiss=1, but the dissipation rate is zero without an SGS model).
+With sgsmodel=0 the turbulence terms are identically zero (zero eddy
+viscosities, stresses and dissipation) and are skipped.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ def _check(cfg):
         ("hrdamp", (0,)),
         ("lspgrad", (0,)),
         ("idiff", (0,)),
-        ("sgsmodel", (0,)),
+        ("sgsmodel", (0, 1)),
         ("ipbl", (0,)),
         ("radopt", (0,)),
         ("cuparam", (0,)),
@@ -62,6 +65,8 @@ def _check(cfg):
     ):
         if _opt(cfg, name, False):
             bad.append(f"{name}=T")
+    if int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) != 1:
+        bad.append(f"sgsmodel=1 with cm1setup={_opt(cfg, 'cm1setup', 1)}")
     if bad:
         raise NotImplementedError("solve1: options not ported: " + ", ".join(bad))
 
@@ -96,13 +101,19 @@ def solve1(
     thten1=None,
     ppten=None,
     qten=None,
+    turb=None,
     **unused,
 ):
     """solve1.F ``solve1`` (active path only).
 
     ``qa`` is a sequence of the numq moisture arrays (Fortran qa(:,:,:,n),
     n = nqv, nqc, nqr for Kessler).  Returns uten1, vten1, wten1, thten1,
-    ppten, qten (list of numq arrays).
+    ppten, qten (list of numq arrays) and, with sgsmodel=1, tketen.
+
+    ``turb`` (required for sgsmodel=1) is a dict with the grid metrics uh, uf,
+    vh, vf, mh, mf, the density arrays rr, rf, and the output of the previous
+    cm1x.turb.sfc_and_turb call: tkea, kmh, kmv, khh, khv, nm, defv, defh,
+    dissten, t11, t12, t13, t22, t23, t33.
     """
     _check(cfg)
     xp = bk.xp
@@ -124,6 +135,47 @@ def solve1(
         qten = [bk.zeros(g.s_shape) for _ in range(numq)]
     else:
         qten = [bk.copy(q) for q in qten]
+
+    les = int(_opt(cfg, "sgsmodel", 0)) == 1
+    tketen = None
+    if les:
+        from .turb import dissheat, tke_source, turb_tendencies
+        from .turbtend import turbt
+
+        if turb is None:
+            raise ValueError("solve1: sgsmodel=1 needs the turb dict")
+        T = turb
+        tketen = tke_source(
+            bk,
+            g,
+            cfg,
+            nm=T["nm"],
+            defv=T["defv"],
+            defh=T["defh"],
+            dissten=T["dissten"],
+            kmh=T["kmh"],
+            kmv=T["kmv"],
+            khv=T["khv"],
+        )["tketen"]
+        tketen = turbt(
+            bk,
+            g,
+            cfg,
+            dt=dt,
+            uh=T["uh"],
+            uf=T["uf"],
+            vh=T["vh"],
+            vf=T["vf"],
+            mh=T["mh"],
+            mf=T["mf"],
+            rho=rho,
+            rr=T["rr"],
+            rf=T["rf"],
+            t=T["tkea"],
+            tten=tketen,
+            kmh=T["kmh"],
+            kmv=T["kmv"],
+        )["tten"]
 
     # Fortran k=1..nk, j=1..nj+1, i=1..ni+1
     K = slice(nz, nz + nk)
@@ -155,6 +207,63 @@ def solve1(
     for m in range(numq):
         qten[m] = bk.set(qten[m], S, bk.zeros(qa[m][S].shape))
 
+    # ---- subgrid turbulence (sgsmodel=1) ------------------------------------
+    if les:
+        if int(_opt(cfg, "idiss", 1)) == 1:
+            thten1 = dissheat(
+                bk,
+                g,
+                cfg,
+                pi0=pi0,
+                ppi=ppi,
+                qa=qa,
+                dissten=T["dissten"],
+                thten1=thten1,
+            )["thten1"]
+        tt = turb_tendencies(
+            bk,
+            g,
+            cfg,
+            dt=dt,
+            uh=T["uh"],
+            uf=T["uf"],
+            vh=T["vh"],
+            vf=T["vf"],
+            mh=T["mh"],
+            mf=T["mf"],
+            rho=rho,
+            rr=T["rr"],
+            rf=T["rf"],
+            th0=th0,
+            ua=ua,
+            va=va,
+            wa=wa,
+            tha=tha,
+            qa=qa,
+            uten1=uten1,
+            vten1=vten1,
+            wten1=wten1,
+            thten1=thten1,
+            qten=qten,
+            kmh=T["kmh"],
+            kmv=T["kmv"],
+            khh=T["khh"],
+            khv=T["khv"],
+            t11=T["t11"],
+            t12=T["t12"],
+            t13=T["t13"],
+            t22=T["t22"],
+            t23=T["t23"],
+            t33=T["t33"],
+        )
+        uten1, vten1, wten1, thten1 = (
+            tt["uten1"],
+            tt["vten1"],
+            tt["wten1"],
+            tt["thten1"],
+        )
+        qten = list(tt["qten"])
+
     # ---- pressure tendency for mass conservation (eqtset=2, moist) --------
     rdt = 1.0 / dt
     tem = 0.0001 * TSMALL
@@ -176,7 +285,7 @@ def solve1(
         qten[nqv] = bk.set(qten[nqv], S, qten[nqv][S] + qvten[S])
         qten[nqc] = bk.set(qten[nqc], S, qten[nqc][S] + qcten[S])
 
-    return {
+    out = {
         "uten1": uten1,
         "vten1": vten1,
         "wten1": wten1,
@@ -184,3 +293,6 @@ def solve1(
         "ppten": ppten,
         "qten": qten,
     }
+    if les:
+        out["tketen"] = tketen
+    return out

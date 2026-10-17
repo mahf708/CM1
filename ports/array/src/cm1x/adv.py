@@ -819,7 +819,8 @@ def advw(
     _check_diff(cfg, "advw")
     nrkmax = _opt(cfg, "nrkmax")
     doweno = advweno == 1 or (advweno == 2 and nrk == nrkmax)
-    _check_order("advw", hadvorder, vadvorder, doweno)
+    _check_order("advw", hadvorder, vadvorder, doweno, cfg, weno_ok=True)
+    weps = 100.0 * 1.0e-18  # advw.F: weps = 100.0*epsilon
     if dowbud:
         raise NotImplementedError("advw: budget diagnostics not ported")
     nk = g.nk
@@ -839,7 +840,22 @@ def advw(
         cc1 = 1.0 - cc2
         return cc2 * sub3(rrv, K, Jb, I) + cc1 * sub3(rrv, K, Jb, I, dk=-1)
 
-    fl = hadv_flx5(bk, g, stag=4, c1=c1, c2=c2, rru=rru, rrv=rrv, a=w3d, cfg=cfg)
+    if doweno:
+        fl = hadv_weno5(
+            bk,
+            g,
+            stag=4,
+            c1=c1,
+            c2=c2,
+            rru=rru,
+            rrv=rrv,
+            a=w3d,
+            pdef=0,
+            weps=weps,
+            cfg=cfg,
+        )
+    else:
+        fl = hadv_flx5(bk, g, stag=4, c1=c1, c2=c2, rru=rru, rrv=rrv, a=w3d, cfg=cfg)
     dumx, dumy = fl["dumx"], fl["dumy"]
     if ibw:
         Ib = (1, 1)
@@ -902,7 +918,22 @@ def advw(
     if ibn:
         advy = _cy(advy, nj, nj + 1, False)
 
-    dumz = vadv_flx5(bk, g, stag=4, c1=c1, c2=c2, rrw=rrw, a=w3d, cfg=cfg)["dumz"]
+    if doweno:
+        dumz = vadv_weno5(
+            bk,
+            g,
+            stag=4,
+            c1=c1,
+            c2=c2,
+            rrw=rrw,
+            a=w3d,
+            pdef=0,
+            pdefweno=0,
+            weps=weps,
+            cfg=cfg,
+        )["dumz"]
+    else:
+        dumz = vadv_flx5(bk, g, stag=4, c1=c1, c2=c2, rrw=rrw, a=w3d, cfg=cfg)["dumz"]
     advz = -(sub3(dumz, K, J, I) - sub3(dumz, K, J, I, dk=-1)) * rdz * col(mf, K)
 
     tend = (

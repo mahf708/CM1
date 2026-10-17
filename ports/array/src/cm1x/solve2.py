@@ -1,18 +1,18 @@
 """RK3 loop and acoustic solver call, ported from src/solve2.F.
 
-Active path for the reference case only: psolver=3, imoist=1, eqtset=2,
-ptype>=1 (Kessler: qv, qc, qr), icor=0, no terrain, Cartesian, periodic
-lateral boundaries, apmasscon=1, no TKE/PBL/passive tracers.
-
-Also holds the lateral boundary routines of bc.F needed here (``bcs``,
-``bcp``, ``bcu``, ``bcv``, ``bcw``; periodic branch, non-MPI).
+Active path for the reference cases only: psolver=3, imoist=1, eqtset=2,
+ptype>=1 (Kessler: qv, qc, qr), icor=0, no terrain, Cartesian, apmasscon=1,
+no PBL/passive tracers.  Lateral boundaries: any type of cm1x.bc (periodic,
+open, walls), with the irbc=4 radiative phase speeds (radbcew4/radbcns4
+after each acoustic-step sequence).  Prognostic TKE (sgsmodel=1): advected
+with advw (advwenos) and stepped on each RK stage.
 """
 
 from __future__ import annotations
 
 from . import constants as c
 from .adv import advs, advu, advv, advw, getdivx
-from .bc import periodic_xy
+from . import bc as _bc
 from .misc import NRKMAX, SMEPS, getdiv
 
 
@@ -23,62 +23,6 @@ def _opt(cfg, name, default):
     # rather than Config's zero for unknown names
     get = getattr(cfg, "get", None)
     return get(name, default) if get else getattr(cfg, name, default)
-
-
-# ---------------------------------------------------------------------------
-# bc.F (periodic, non-MPI)
-# ---------------------------------------------------------------------------
-
-
-def _periodic_levels(bk, g, a, ks):
-    return bk.set(a, (ks,), periodic_xy(bk, a[ks], g))
-
-
-def bcs(bk, g, s):
-    """bc.F ``bcs``: all ngxy halo rows/columns, k=1..nk."""
-    return _periodic_levels(bk, g, s, slice(g.ngz, g.ngz + g.nk))
-
-
-def bcu(bk, g, u):
-    """bc.F ``bcu`` (periodic: u(ni+1..) = u(1..)), k=1..nk."""
-    return _periodic_levels(bk, g, u, slice(g.ngz, g.ngz + g.nk))
-
-
-def bcv(bk, g, v):
-    """bc.F ``bcv``, k=1..nk."""
-    return _periodic_levels(bk, g, v, slice(g.ngz, g.ngz + g.nk))
-
-
-def bcw(bk, g, w, flag):
-    """bc.F ``bcw``: halos for k=2..nk; flag=1 also sets w(k=1)=w(nk+1)=0
-    on i,j = 0..ni+1, 0..nj+1."""
-    n, nz = g.ngxy, g.ngz
-    w = _periodic_levels(bk, g, w, slice(nz + 1, nz + g.nk))
-    if flag == 1:
-        Jh = slice(n - 1, n + g.nj + 1)
-        Ih = slice(n - 1, n + g.ni + 1)
-        zero = bk.zeros(w[nz, Jh, Ih].shape)
-        w = bk.set(w, (nz, Jh, Ih), zero)
-        w = bk.set(w, (nz + g.nk, Jh, Ih), zero)
-    return w
-
-
-def bcp(bk, g, p):
-    """bc.F ``bcp``: one halo row/column, k=1..nk; west/east over j=0..nj+1
-    then south/north over i=0..ni+1."""
-    n, nz = g.ngxy, g.ngz
-    ni, nj = g.ni, g.nj
-    K = slice(nz, nz + g.nk)
-    J0 = slice(n - 1, n + nj + 1)
-    I0 = slice(n - 1, n + ni + 1)
-    p = bk.set(p, (K, J0, n - 1), p[K, J0, n + ni - 1])
-    p = bk.set(p, (K, J0, n + ni), p[K, J0, n])
-    p = bk.set(p, (K, n - 1, I0), p[K, n + nj - 1, I0])
-    p = bk.set(p, (K, n + nj, I0), p[K, n, I0])
-    return p
-
-
-# ---------------------------------------------------------------------------
 
 
 def _check(cfg):
@@ -103,9 +47,9 @@ def _check(cfg):
         bad.append("idiff>=1 with difforder=6")
     if _opt(cfg, "terrain_flag", False):
         bad.append("terrain_flag=T")
-    for b in ("wbc", "ebc", "sbc", "nbc"):
-        if _opt(cfg, b, 1) != 1:
-            bad.append(f"{b}={_opt(cfg, b, 1)}")
+    _bc.ib_flags(cfg)  # validates wbc..nbc
+    if int(_opt(cfg, "irbc", 4)) not in (4,) and any(_bc.ib_flags(cfg)):
+        bad.append(f"irbc={_opt(cfg, 'irbc', 4)}")
     if bad:
         raise NotImplementedError("solve2: options not ported: " + ", ".join(bad))
 
@@ -168,6 +112,15 @@ def solve2(
     qa,
     q3d,
     qten,
+    ruf=None,
+    rvf=None,
+    radbcw=None,
+    radbce=None,
+    radbcs=None,
+    radbcn=None,
+    tkea=None,
+    tke3d=None,
+    tketen=None,
     hooks=None,
     **unused,
 ):
@@ -175,7 +128,12 @@ def solve2(
     sequences of numq moisture arrays.  ``mass1`` is the initial dry-air
     mass (init3d.F getset).  Returns the updated prognostic arrays
     (u3d, v3d, w3d, pp3d, th3d, q3d, prs, rho, ppx, divx, rru, rrv, rrw,
-    qpten, qtten, qvten, qcten, thterm, mass2).
+    qpten, qtten, qvten, qcten, thterm, mass2, radbcw, radbce, radbcs,
+    radbcn and, with prognostic TKE, tke3d).
+
+    ``radbc*`` are the persistent open-boundary phase speeds (``[k, j]`` for
+    w/e, ``[k, i]`` for s/n; zeros at t=0), ``ruf``/``rvf`` = 1/uf, 1/vf.
+    ``tkea``, ``tke3d``, ``tketen`` (solve1) are needed for sgsmodel=1.
 
     ``hooks`` (optional callable ``hooks(stage_name, nrk, locals_dict)``)
     lets tests inspect intermediate results.
@@ -202,6 +160,23 @@ def solve2(
     qmag = [1.0e-2] * numq
 
     from .sound import sound  # local import: keeps module import order free
+
+    ibw, ibe, ibs, ibn = _bc.ib_flags(cfg)
+    irbc = int(_opt(cfg, "irbc", 4))
+    S0 = g.s_shape
+    radbcw = bk.zeros((S0[0], S0[1])) if radbcw is None else radbcw
+    radbce = bk.zeros((S0[0], S0[1])) if radbce is None else radbce
+    radbcs = bk.zeros((S0[0], S0[2])) if radbcs is None else radbcs
+    radbcn = bk.zeros((S0[0], S0[2])) if radbcn is None else radbcn
+    les = int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) in (
+        1,
+        4,
+    )
+    if les:
+        if tkea is None or tke3d is None or tketen is None:
+            raise ValueError("solve2: sgsmodel=1 needs tkea, tke3d, tketen")
+        tke3d = bk.copy(tke3d)
+    advwenos = int(_opt(cfg, "advwenos", 0))
 
     u3d, v3d, w3d = bk.copy(u3d), bk.copy(v3d), bk.copy(w3d)
     pp3d, th3d = bk.copy(pp3d), bk.copy(th3d)
@@ -260,7 +235,7 @@ def solve2(
             thterm, SI, (th0[SI] + th3d[SI]) * (c.rd + c.rv * qv - c.rovcp * cpm) * cvm
         )
         t22 = bk.set(t22, SI, (pi0[SI] + pp3d[SI]) * c.rovcp * cpm * cvm)
-        t11 = bcp(bk, g, t11)
+        t11 = _bc.bcp(bk, g, t11, cfg)
 
         # ---- RK tendency arrays --------------------------------------------
         R = (K, Jp, Ip)
@@ -421,6 +396,10 @@ def solve2(
             rru=rru,
             rrv=rrv,
             rrw=rrw,
+            radbcw=radbcw,
+            radbce=radbce,
+            radbcs=radbcs,
+            radbcn=radbcn,
         )
         u3d, v3d, w3d, pp3d, ppx = (
             so["u3d"],
@@ -431,6 +410,35 @@ def solve2(
         )
         rru, rrv, rrw = so["rru"], so["rrv"], so["rrw"]
         sret = so
+
+        # ---- radiative open boundaries: phase speeds for the next stage -------
+        if irbc == 4:
+            if ibw or ibe:
+                rb = _bc.radbcew4(
+                    bk,
+                    g,
+                    cfg,
+                    ruf=ruf,
+                    radbcw=radbcw,
+                    radbce=radbce,
+                    u1=ua,
+                    u2=u3d,
+                    dt=dttmp,
+                )
+                radbcw, radbce = rb["radbcw"], rb["radbce"]
+            if ibs or ibn:
+                rb = _bc.radbcns4(
+                    bk,
+                    g,
+                    cfg,
+                    rvf=rvf,
+                    radbcs=radbcs,
+                    radbcn=radbcn,
+                    v1=va,
+                    v2=v3d,
+                    dt=dttmp,
+                )
+                radbcs, radbcn = rb["radbcs"], rb["radbcn"]
 
         if hooks is not None:
             hooks(
@@ -587,14 +595,47 @@ def solve2(
                 dopf = True
 
         # ---- bcs ------------------------------------------------------------------
-        u3d = bcu(bk, g, u3d)
-        v3d = bcv(bk, g, v3d)
-        w3d = bcw(bk, g, w3d, 1)
+        u3d = _bc.bcu(bk, g, u3d, cfg)
+        v3d = _bc.bcv(bk, g, v3d, cfg)
+        w3d = _bc.bcw(bk, g, w3d, 1, cfg)
         if nrk < NRKMAX:
-            rho = bcp(bk, g, rho)
-            pp3d = bcp(bk, g, pp3d)
-            th3d = bcs(bk, g, th3d)
-            q3d = [bcs(bk, g, q) for q in q3d]
+            rho = _bc.bcp(bk, g, rho, cfg)
+            pp3d = _bc.bcp(bk, g, pp3d, cfg)
+            th3d = _bc.bcs(bk, g, th3d, cfg)
+            q3d = [_bc.bcs(bk, g, q, cfg) for q in q3d]
+
+        # ---- TKE (sgsmodel=1) ------------------------------------------------
+        if les:
+            from .turb import tke_rk_update
+
+            Kt = slice(nz + 1, nz + nk)  # k = 2..nk
+            wten = bk.set(wten, (Kt, Ji, Ii), tketen[Kt, Ji, Ii])
+            wten = advw(
+                bk,
+                g,
+                nrk=nrk,
+                rrf0=rrf0,
+                mf=mf,
+                uh=uh,
+                vh=vh,
+                rru=rru,
+                rrv=rrv,
+                rrw=rrw,
+                w3d=tke3d,
+                wten=wten,
+                divx=divx,
+                c1=c1,
+                c2=c2,
+                hadvorder=hs,
+                vadvorder=vs,
+                advweno=advwenos,
+                dt=dttmp,
+                iamw=False,
+                cfg=cfg,
+            )["wten"]
+            tke3d = tke_rk_update(
+                bk, g, cfg, dttmp=dttmp, tkea=tkea, tten=wten, tke3d=tke3d
+            )["tke3d"]
 
         # ---- finish pressure / density (apmasscon) -----------------------------
         if dopf:
@@ -627,4 +668,9 @@ def solve2(
         "wten": wten,
         "dtu": sret.get("dtu"),
         "dtv": sret.get("dtv"),
+        "radbcw": radbcw,
+        "radbce": radbce,
+        "radbcs": radbcs,
+        "radbcn": radbcn,
+        "tke3d": tke3d,
     }

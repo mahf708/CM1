@@ -465,14 +465,34 @@ def _bmax_ok(xp, s, bmin):
 
 
 def hadv_weno5(bk, g, *, stag, c1, c2, rru, rrv, a, pdef, weps, cfg=None):
-    """Port of ``hadv_weno5`` for scalars (stag=1). With pdef=1 the flux is
-    zero where max|s1..s5| <= weps. Returns {'dumx', 'dumy'}."""
-    if stag != 1:
-        raise NotImplementedError("hadv_weno5: only scalars (stag=1) ported")
+    """Port of ``hadv_weno5`` for scalars (stag=1) and w-staggered fields
+    (stag=4, k=2..nk; CM1 uses it for TKE with advwenos). With pdef=1 the
+    flux is zero where max|s1..s5| <= weps (stag=1 only, as in CM1).
+    Returns {'dumx', 'dumy'}."""
+    if stag not in (1, 4):
+        raise NotImplementedError("hadv_weno5: only stag=1 and stag=4 ported")
     xp = bk.xp
     ni, nj, nk = g.ni, g.nj, g.nk
     dumx = bk.zeros(g.s_shape)
     dumy = bk.zeros(g.s_shape)
+    if stag == 4:
+        K = (2, nk)
+        # x: i=1..ni+1, j=1..nj ; y: i=1..ni, j=1..nj+1 (points advw uses)
+        J, I = (1, nj), (1, ni + 1)
+        cc2 = 0.5 * (sub3(c2, K, J, I, di=-1) + sub3(c2, K, J, I))
+        cc1 = 1.0 - cc2
+        vel = cc2 * sub3(rru, K, J, I) + cc1 * sub3(rru, K, J, I, dk=-1)
+        up = [sub3(a, K, J, I, di=d) for d in (-3, -2, -1, 0, 1)]
+        dn = [sub3(a, K, J, I, di=d) for d in (2, 1, 0, -1, -2)]
+        dumx = put3(bk, dumx, K, J, I, vel * weno5(xp, *_sel5(xp, vel, up, dn), weps))
+        J, I = (1, nj + 1), (1, ni)
+        cc2 = 0.5 * (sub3(c2, K, J, I, dj=-1) + sub3(c2, K, J, I))
+        cc1 = 1.0 - cc2
+        vel = cc2 * sub3(rrv, K, J, I) + cc1 * sub3(rrv, K, J, I, dk=-1)
+        up = [sub3(a, K, J, I, dj=d) for d in (-3, -2, -1, 0, 1)]
+        dn = [sub3(a, K, J, I, dj=d) for d in (2, 1, 0, -1, -2)]
+        dumy = put3(bk, dumy, K, J, I, vel * weno5(xp, *_sel5(xp, vel, up, dn), weps))
+        return {"dumx": dumx, "dumy": dumy}
     K = (1, nk)
     for which in ("x", "y"):
         if which == "x":
@@ -497,15 +517,29 @@ def hadv_weno5(bk, g, *, stag, c1, c2, rru, rrv, a, pdef, weps, cfg=None):
 
 
 def vadv_lwr_weno_23(bk, g, *, stag, c1, c2, rrw, dumz, a, pdef, weps, cfg=None):
-    """Port of ``vadv_lwr_weno_23`` (stag=1). Returns {'dumz'}."""
-    if stag != 1:
-        raise NotImplementedError("vadv_lwr_weno_23: only stag=1 ported")
+    """Port of ``vadv_lwr_weno_23`` (stag=1 and stag=4). Returns {'dumz'}."""
+    if stag not in (1, 4):
+        raise NotImplementedError("vadv_lwr_weno_23: only stag=1, 4 ported")
     xp = bk.xp
     nk = g.nk
     J, I = (1, g.nj), (1, g.ni)
 
     def A(k, dk):
         return sub3(a, (k, k), J, I, dk=dk)
+
+    if stag == 4:
+        for k in (1, nk):
+            K = (k, k)
+            w = 0.5 * (sub3(rrw, K, J, I) + sub3(rrw, K, J, I, dk=1))
+            cen = (w * 0.5) * (A(k, 0) + A(k, 1))
+            if k == 1:
+                up = w * upstrpd(xp, A(k, 2), A(k, 1), A(k, 0), weps)
+                v = xp.where(w >= 0.0, cen, up)
+            else:
+                up = w * upstrpd(xp, A(k, -1), A(k, 0), A(k, 1), weps)
+                v = xp.where(w > 0.0, up, cen)
+            dumz = put3(bk, dumz, K, J, I, v)
+        return {"dumz": dumz}
 
     k = 2
     K = (k, k)
@@ -523,15 +557,36 @@ def vadv_lwr_weno_23(bk, g, *, stag, c1, c2, rrw, dumz, a, pdef, weps, cfg=None)
 
 
 def vadv_lwr_weno_35(bk, g, *, stag, c1, c2, rrw, dumz, a, pdef, weps, cfg=None):
-    """Port of ``vadv_lwr_weno_35`` (stag=1). Returns {'dumz'}."""
-    if stag != 1:
-        raise NotImplementedError("vadv_lwr_weno_35: only stag=1 ported")
+    """Port of ``vadv_lwr_weno_35`` (stag=1 and stag=4). Returns {'dumz'}."""
+    if stag not in (1, 4):
+        raise NotImplementedError("vadv_lwr_weno_35: only stag=1, 4 ported")
     xp = bk.xp
     nk = g.nk
     J, I = (1, g.nj), (1, g.ni)
 
     def A(k, dk):
         return sub3(a, (k, k), J, I, dk=dk)
+
+    if stag == 4:
+        k = 2
+        K = (k, k)
+        w = 0.5 * (sub3(rrw, K, J, I) + sub3(rrw, K, J, I, dk=1))
+        v = xp.where(
+            w >= 0.0,
+            w * upstrpd(xp, A(k, -1), A(k, 0), A(k, 1), weps),
+            w * weno5(xp, A(k, 3), A(k, 2), A(k, 1), A(k, 0), A(k, -1), weps),
+        )
+        dumz = put3(bk, dumz, K, J, I, v)
+        k = nk - 1
+        K = (k, k)
+        w = 0.5 * (sub3(rrw, K, J, I) + sub3(rrw, K, J, I, dk=1))
+        v = xp.where(
+            w > 0.0,
+            w * weno5(xp, A(k, -2), A(k, -1), A(k, 0), A(k, 1), A(k, 2), weps),
+            w * upstrpd(xp, A(k, 2), A(k, 1), A(k, 0), weps),
+        )
+        dumz = put3(bk, dumz, K, J, I, v)
+        return {"dumz": dumz}
 
     k = 3
     K = (k, k)
@@ -585,9 +640,11 @@ def vadv_weno5(bk, g, *, stag, c1, c2, rrw, a, pdef, pdefweno, weps, cfg=None):
     """Port of ``vadv_weno5`` for scalars (stag=1), both the pdefweno=1 branch
     (k=3..nk-1 with max|s|>weps check, then lwr_weno_23 + lwr_weno_35_b) and
     the pdefweno=0 branch (k=4..nk-2, then lwr_weno_23 + lwr_weno_35).
+    For stag=4 (w-staggered, e.g. TKE): k=3..nk-2 with wbar, then the stag=4
+    lwr_weno_23/35 (pdef/pdefweno unused, as in CM1).
     Returns {'dumz'}."""
-    if stag != 1:
-        raise NotImplementedError("vadv_weno5: only scalars (stag=1) ported")
+    if stag not in (1, 4):
+        raise NotImplementedError("vadv_weno5: only stag=1 and stag=4 ported")
     xp = bk.xp
     nk = g.nk
     if nk < 6:
@@ -595,6 +652,15 @@ def vadv_weno5(bk, g, *, stag, c1, c2, rrw, a, pdef, pdefweno, weps, cfg=None):
     dumz = bk.zeros(g.s_shape)
     J, I = (1, g.nj), (1, g.ni)
     kw = dict(stag=stag, c1=c1, c2=c2, rrw=rrw, a=a, pdef=pdef, weps=weps, cfg=cfg)
+    if stag == 4:
+        K = (3, nk - 2)
+        w = 0.5 * (sub3(rrw, K, J, I) + sub3(rrw, K, J, I, dk=1))
+        up = [sub3(a, K, J, I, dk=d) for d in (-2, -1, 0, 1, 2)]
+        dn = [sub3(a, K, J, I, dk=d) for d in (3, 2, 1, 0, -1)]
+        dumz = put3(bk, dumz, K, J, I, w * weno5(xp, *_sel5(xp, w, up, dn), weps))
+        dumz = vadv_lwr_weno_23(bk, g, dumz=dumz, **kw)["dumz"]
+        dumz = vadv_lwr_weno_35(bk, g, dumz=dumz, **kw)["dumz"]
+        return {"dumz": dumz}
     if pdefweno == 1:
         K = (3, nk - 1)
         w = sub3(rrw, K, J, I)

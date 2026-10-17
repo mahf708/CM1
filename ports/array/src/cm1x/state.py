@@ -34,7 +34,8 @@ def initialize(cfg, bk):
       dgs*, dgt*, wbe*, wte*, minx, maxx, miny, maxy, centerx, centery, maxz,
       psurf, tsurf, qsurf, thsurf).
     state keys: ua, u3d, va, v3d, wa, w3d, ppi, pp3d, ppx, tha, th3d, qa, q3d,
-      rho, prs, rr, rf, mass1, and convenience views qv3d/qc3d/qr3d (= q3d[n]).
+      rho, prs, rr, rf, mass1, convenience views qv3d/qc3d/qr3d (= q3d[n]) and,
+      with prognostic TKE (cm1setup=1, sgsmodel=1), tkea and tke3d.
     """
     g = Grid(cfg.ni, cfg.nj, cfg.nk, float(cfg.dx), float(cfg.dy), float(cfg.dz))
     pg = param_grid(cfg, bk, g)
@@ -88,6 +89,7 @@ def initialize(cfg, bk):
         ruh=b["ruh"],
         rvh=b["rvh"],
         cg=pg,
+        g=g,
     )
     b["rth0"] = gs.pop("rth0")
     state = dict(st)

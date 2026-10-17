@@ -1,8 +1,9 @@
 """Initial conditions (port of src/init3d.F: ``init3d`` and ``getset``).
 
 Scope: ``iinit = 0`` (no perturbation) or ``1`` (warm bubble), ``irandp = 0``,
-``ibalance = 0`` or ``1``, ``psolver <= 3``, no terrain, periodic lateral
-boundaries, Kessler moisture (qv, qc, qr) or dry.
+``ibalance = 0`` or ``1``, ``psolver <= 3``, no terrain, any lateral boundary
+type of cm1x.bc (periodic / open / walls), Kessler moisture (qv, qc, qr) or
+dry, and the prognostic TKE of sgsmodel=1 (cm1setup=1; zero initial TKE).
 
 Moisture arrays ``qa``/``q3d`` are 4-D like CM1's ``qa(i,j,k,n)``, stored
 C-ordered as ``qa[n, k, j, i]`` with ``n = nqv-1, nqc-1, ...`` (0-based).
@@ -13,7 +14,8 @@ from __future__ import annotations
 import warnings
 
 from . import constants as C
-from .bc import periodic_xy
+from . import bc as _bc
+from .grid import Grid
 
 __all__ = ["init3d", "getset"]
 
@@ -114,13 +116,6 @@ def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, c
     )
 
 
-class _G:
-    ngxy = 3
-
-    def __init__(self, ni, nj):
-        self.ni, self.nj = ni, nj
-
-
 def getset(
     bk,
     cfg,
@@ -142,12 +137,18 @@ def getset(
     ruh,
     rvh,
     cg: dict,
+    g=None,
 ) -> dict:
     """Port of the non-restart path of ``getset`` (psolver <= 3, no terrain/LES).
 
-    Fills lateral halos (periodic), copies the a-arrays into the 3d-arrays and
-    diagnoses prs, rho, rr, rf, ppx and mass1. Returns ua, va, wa, ppi, tha, qa,
-    u3d, v3d, w3d, pp3d, th3d, q3d, rho, prs, rr, rf, ppx, rth0, mass1.
+    Fills lateral halos (cm1x.bc with ``cfg``'s wbc/ebc/sbc/nbc), copies the
+    a-arrays into the 3d-arrays and diagnoses prs, rho, rr, rf, ppx and mass1.
+    For idoles with prognostic TKE (cm1setup=1, sgsmodel=1) also sets up
+    tkea/tke3d (zero: init3d.F gives TKE an initial value only for testcases
+    3/4/5/9/11) with bcw and tkea(k=1)=tkea(k=2).  Returns ua, va, wa, ppi,
+    tha, qa, u3d, v3d, w3d, pp3d, th3d, q3d, rho, prs, rr, rf, ppx, rth0,
+    mass1 (+ tkea, tke3d when TKE is prognostic).  ``g`` is the cm1x Grid
+    (built from the array shapes when omitted).
     """
     xp = bk.xp
     S = bk.asarray
@@ -156,21 +157,31 @@ def getset(
     ng = 3
     nj, ni = shp_s[1] - 2 * ng, shp_s[2] - 2 * ng
     K, J, I = slice(1, nk + 1), slice(ng, ng + nj), slice(ng, ng + ni)
-    gg = _G(ni, nj)
+    if g is None:
+        g = Grid(ni, nj, nk, float(cfg.dx), float(cfg.dy), float(cfg.dz))
     if cfg.psolver > 3:
         raise NotImplementedError("getset: only psolver <= 3 ported")
-    if not (cfg.wbc == cfg.ebc == cfg.sbc == cfg.nbc == 1):
-        raise NotImplementedError("getset: only periodic lateral boundaries ported")
+    if int(cfg.get("testcase", 0)) in (3, 4, 5, 9, 11):
+        raise NotImplementedError("getset: TKE initial profiles of testcases")
 
     cp, rd, rv, p00 = S(C.cp), S(C.rd), S(C.rv), S(C.p00)
     cpdrd = cp / rd
 
-    # u/v base-state fields are horizontally homogeneous: bcu/bcv leave them unchanged.
-    ppi = periodic_xy(bk, ppi, gg)
-    tha = periodic_xy(bk, tha, gg)
+    ua = _bc.bcu(bk, g, ua, cfg)
+    va = _bc.bcv(bk, g, va, cfg)
+    wa = _bc.bcw(bk, g, wa, 1, cfg)
+    ppi = _bc.bcs(bk, g, ppi, cfg)
+    tha = _bc.bcs(bk, g, tha, cfg)
     if qa.shape[0]:
-        qa = xp.stack([periodic_xy(bk, qa[n], gg) for n in range(qa.shape[0])])
-    # bcw on wa (zeros) is a no-op
+        qa = xp.stack([_bc.bcs(bk, g, qa[n], cfg) for n in range(qa.shape[0])])
+    # bcu(u0)/bcv(v0)/bcs(th0): base-state fields are horizontally homogeneous
+    # and already filled on every halo point, so these leave them unchanged.
+    tke = None
+    if int(cfg.get("cm1setup", 0)) in (1, 4) and int(cfg.get("sgsmodel", 0)) == 1:
+        # tkea = 0 (init3d.F); bcw(tkea,1); tkea(k=1)=tkea(k=2); bc2d(tkea(k=1))
+        tke = _bc.bcw(bk, g, bk.zeros(g.w_shape), 1, cfg)
+        tke = bk.set(tke, (1, J, I), tke[2, J, I])
+        tke = bk.set(tke, (1,), _bc.bc2d(bk, g, tke[1], cfg))
     rth0 = S(1.0) / th0
 
     u3d, v3d, w3d = bk.copy(ua), bk.copy(va), bk.copy(wa)
@@ -188,13 +199,13 @@ def getset(
         rho_i = prs_i / (rd * (th0[K, J, I] + th3d[K, J, I]) * pit)
     prs = bk.set(bk.zeros(shp_s), (K, J, I), prs_i)
     rho = bk.set(bk.zeros(shp_s), (K, J, I), rho_i)
-    rho = periodic_xy(bk, rho, gg)  # bcs: k = 1..nk only (k=0, nk+1 stay 0)
+    rho = _bc.bcs(bk, g, rho, cfg)  # k = 1..nk only (k=0, nk+1 stay 0)
 
     rr = bk.set(bk.zeros(shp_s), (K, J, I), S(1.0) / rho[K, J, I])
-    rr = periodic_xy(bk, rr, gg)
+    rr = _bc.bcs(bk, g, rr, cfg)
     rf_i = c1[K, J, I] * rho[0:nk, J, I] + c2[K, J, I] * rho[K, J, I]
     rf = bk.set(bk.zeros(shp_s), (K, J, I), rf_i)
-    rf = periodic_xy(bk, rf, gg)
+    rf = _bc.bcs(bk, g, rf, cfg)
     # Fortran j,i = 0..nj+1 / 0..ni+1  -> python ng-1 .. ng+n
     J1, I1 = slice(ng - 1, ng + nj + 1), slice(ng - 1, ng + ni + 1)
     cgs1, cgs2, cgs3 = (S(cg[k]) for k in ("cgs1", "cgs2", "cgs3"))
@@ -220,9 +231,9 @@ def getset(
     mass1 = xp.sum(xp.sum(w, axis=(1, 2)))
 
     ppx = bk.set(bk.zeros(shp_s), (K, J, I), ppi[K, J, I])
-    ppx = periodic_xy(bk, ppx, gg)
+    ppx = _bc.bcs(bk, g, ppx, cfg)
 
-    return dict(
+    out = dict(
         ua=ua,
         va=va,
         wa=wa,
@@ -243,3 +254,7 @@ def getset(
         rth0=rth0,
         mass1=mass1,
     )
+    if tke is not None:
+        out["tkea"] = tke
+        out["tke3d"] = bk.copy(tke)
+    return out
