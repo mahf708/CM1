@@ -47,9 +47,11 @@
         call dump3('tha',tha,ib,ie,jb,je,kb,ke)
         call dump3('rho',rho,ib,ie,jb,je,kb,ke)
         call dump3('prs',prs,ib,ie,jb,je,kb,ke)
-        do n=1,numq
-          call dump3('qa_'//trim(qname(n)),qa(ibm,jbm,kbm,n),ibm,iem,jbm,jem,kbm,kem)
-        enddo
+        if( imoist.eq.1 )then
+          do n=1,numq
+            call dump3('qa_'//trim(qname(n)),qa(ibm,jbm,kbm,n),ibm,iem,jbm,jem,kbm,kem)
+          enddo
+        endif
         call dump3('tkea',tkea,ibt,iet,jbt,jet,kbt,ket)
         call dump3('kmh',kmh,ibc,iec,jbc,jec,kbc,kec)
         call dump3('kmv',kmv,ibc,iec,jbc,jec,kbc,kec)
