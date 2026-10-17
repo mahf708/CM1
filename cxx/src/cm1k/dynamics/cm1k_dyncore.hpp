@@ -3,6 +3,7 @@
 
 #include "dynamics/cm1k_bc.hpp"
 #include "dynamics/cm1k_sound.hpp"
+#include "physics/turb/cm1k_turb.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
 #include "share/cm1k_namelist.hpp"
@@ -29,6 +30,9 @@ struct DynConfig {
   // derived (param.F)
   bool idoles = false, dohturb = false, dovturb = false;
   int numq = 0, nqv = 0, nqc = 0, nql1 = -2, nql2 = -2, iice = 0;
+  // subgrid turbulence (sgsmodel=1 with cm1setup=1): physics/turb options
+  bool turb = false;
+  turb::Options turb_opt;
 
   static DynConfig from_namelist(const Namelist& nl);
   void check() const;
@@ -67,6 +71,18 @@ public:
   // Called between solve2 and solve3 for imoist=1 (see Model::step).
   void solve3();
 
+  // Subgrid turbulence (sgsmodel=1), cm1.F:3748 sfc_and_turb: eddy
+  // viscosities, deformation, N^2, dissipation and stresses from the
+  // current "a" state, at model time rtime. CM1 calls it at the end of
+  // every pass of the time loop (and in the startup pass, dosolve=.false.);
+  // Model::step calls it at the start of each step, which is the same point
+  // in the sequence (between mtime=mtime+dt and the next solve1).
+  bool turb_enabled() const { return m_cfg.turb; }
+  void sfc_and_turb(double rtime);
+  // solve3.F/init3d.F: rf from rho on 0..ni+1, 0..nj+1 (public: it launches
+  // device lambdas, which nvcc does not allow in private member functions)
+  void compute_rf();
+
   const DynConfig& config() const { return m_cfg; }
   int nsound() const { return m_nsound; }
   double mass1() const { return m_mass1; }
@@ -77,9 +93,17 @@ public:
   FArray3 rr, rf, divx;
   FArray3 qpten, qtten, qvten, qcten;   // ibm:iem,...
   FArray3 tauh, taus, tauf;
+  // subgrid turbulence: tke3d (RK-stage TKE), tketen (TKE tendency of
+  // solve1, reused in every RK stage), the arrays sfc_and_turb hands to
+  // solve1 (TurbState), and scratch
+  FArray3 tke3d, tketen, cvm;
+  turb::TurbState ts;
 
 private:
   void bc_scalars_after_init();
+
+  turb::Work m_tw;
+  Real m_cgs1 = 0, m_cgs2 = 0, m_cgs3 = 0, m_cgt1 = 0, m_cgt2 = 0, m_cgt3 = 0;
 
   DynConfig m_cfg;
   Constants m_c{};

@@ -137,12 +137,24 @@ Dyncore& Model::dyncore() {
 
 // One time step: the body of cm1.F's time loop (solve1, solve2, microphysics,
 // solve3; then mtime = mtime + dt).
+//
+// Subgrid turbulence (sgsmodel=1): CM1 calls sfc_and_turb at the end of each
+// pass of the time loop (cm1.F:3748), after mtime = mtime + dt and after the
+// reference dump; the very first pass (dosolve=.false.) only does that on
+// the initial state. Here the call is made at the start of every step, on
+// the current state at the current mtime: the same sequence (nothing happens
+// between the end of one pass and the next solve1), and the model state
+// between steps then matches the dumps exactly (dump N holds the eddy
+// viscosities computed from state N-1). It also makes a restart from any
+// dump (init_from_dump) reproduce the Fortran's next step, and covers the
+// startup pass after init() or init_from_dump(step_000000).
 void Model::step() {
   auto& dyn = dyncore();
   if (!m_dyn_started) {
     dyn.start_from_state();
     m_dyn_started = true;
   }
+  dyn.sfc_and_turb(m_mtime);                     // no-op unless sgsmodel=1
   m_nstep = m_nstep + 1;
   dyn.solve1();                                  // pre-RK tendencies
   dyn.solve2();                                  // RK3 loop, acoustic steps
