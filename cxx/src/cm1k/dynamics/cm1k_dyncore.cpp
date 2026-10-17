@@ -67,6 +67,7 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   c.irbc = nl.geti("irbc", 4);
   c.wbc = nl.geti("wbc", 1); c.ebc = nl.geti("ebc", 1);
   c.sbc = nl.geti("sbc", 1); c.nbc = nl.geti("nbc", 1);
+  c.roflux = nl.geti("roflux", 0); c.nudgeobc = nl.geti("nudgeobc", 0);
   c.terrain_flag = nl.getb("terrain_flag", false);
   c.do_ib = nl.getb("do_ib", false);
   c.do_lsnudge = nl.getb("do_lsnudge", false);
@@ -157,7 +158,14 @@ void DynConfig::check() const {
   if (do_ib) unsupported("do_ib");
   if (do_lsnudge) unsupported("do_lsnudge");
   if (do_recycle) unsupported("eddy recycling");
-  if (wbc != 1 || ebc != 1 || sbc != 1 || nbc != 1) unsupported("non-periodic lateral boundaries");
+  // lateral boundaries 1 (periodic), 2 (open-radiative, see cm1k_openbc),
+  // 3, 4 (rigid walls), with the irbc/roflux/nudgeobc options of cm1k_openbc
+  for (int v : {wbc, ebc, sbc, nbc})
+    if (v < 1 || v > 4) unsupported("lateral boundary condition " + std::to_string(v) + " (only 1..4)");
+  if ((wbc == 2 || ebc == 2 || sbc == 2 || nbc == 2) && irbc != 1 && irbc != 2 && irbc != 4)
+    unsupported("irbc=" + std::to_string(irbc) + " with open boundaries (only 1, 2, 4)");
+  if (roflux != 0 && roflux != 1) unsupported("roflux=" + std::to_string(roflux));
+  if (nudgeobc != 0 && nudgeobc != 1) unsupported("nudgeobc=" + std::to_string(nudgeobc));
   if (dtl <= 0) throw std::runtime_error("cm1k dyncore: dtl must be > 0");
 }
 
@@ -170,6 +178,8 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
   m_cfg.check();
   m_c = c;
   m_bc = BcParams::make(grid.b, nl);
+  m_obc = OpenBcParams::make(grid, nl);
+  m_obc.check();
   const auto& B = grid.b;
   if (B.nk < 3) throw std::runtime_error("cm1k dyncore: nz must be >= 3");
 
@@ -204,13 +214,28 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
 
   const int ni = B.ni, nj = B.nj, nk = B.nk;
 
-  // param.F: dtu0/dtv0 (ibw..ibn = 0 for periodic boundaries)
+  // param.F: dtu0/dtv0 (zero on non-periodic boundaries: ibw..ibn = 1)
   {
     auto hu = dtu0.to_host(), hv = dtv0.to_host();
     for (int j = B.jb; j <= B.je; ++j) for (int i = B.ib; i <= B.ie; ++i) { hu(i, j) = 0.0; hv(i, j) = 0.0; }
     for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni + 1; ++i) hu(i, j) = 1.0;
+    if (m_obc.ibw == 1) for (int j = 1; j <= nj; ++j) hu(1, j) = 0.0;
+    if (m_obc.ibe == 1) for (int j = 1; j <= nj; ++j) hu(ni + 1, j) = 0.0;
     for (int j = 1; j <= nj + 1; ++j) for (int i = 1; i <= ni; ++i) hv(i, j) = 1.0;
+    if (m_obc.ibs == 1) for (int i = 1; i <= ni; ++i) hv(i, 1) = 0.0;
+    if (m_obc.ibn == 1) for (int i = 1; i <= ni; ++i) hv(i, nj + 1) = 0.0;
     dtu0.deep_copy_from(hu); dtv0.deep_copy_from(hv);
+  }
+
+  // open boundaries: radiative phase speeds (cm1.F: radbcw = 0.0, ...)
+  m_rad.allocate(B);
+  if (m_obc.any_open() || m_obc.roflux == 1) {
+    m_sobc.p = m_obc;
+    m_sobc.rad = m_rad;
+    m_sobc.uh = grid.uh; m_sobc.vh = grid.vh; m_sobc.ruh = grid.ruh; m_sobc.rvh = grid.rvh;
+    m_sobc.rmh = grid.rmh; m_sobc.rho0 = base.rho0;
+    m_sobc.work = FArray1("obc_temout", {1}, {B.nk});
+    m_sobc.work2 = FArray1("obc_temin", {1}, {B.nk});
   }
 
   // param.F: min_dx, min_dy, min_dz, Rayleigh damping coefficients
@@ -374,6 +399,8 @@ void Dyncore::diff2_stress() {
 
 //===========================================================================
 void Dyncore::solve1() {
+  openbc_solve1();   // radbc (irbc=1)
+
   const auto& B = m_g.b;
   const int ni = B.ni, nj = B.nj, nk = B.nk;
   const auto& cfg = m_cfg;
@@ -586,6 +613,9 @@ void Dyncore::solve2() {
     //  Coriolis terms (f plane)
     if (cfg.icor == 1) coriolis(ni, nj, nk, cfg.fcor, cfg.umove, cfg.vmove, u3d, v3d, uten, vten);
 
+    //  open boundaries: nudge inflow u/v (solve2.F: after Coriolis, before advection)
+    openbc_nudge();
+
     //  advection of u, v, w
     m_adv->advu(nrk, dttmp, fl, u3d, uten);
     m_adv->advv(nrk, dttmp, fl, v3d, vten);
@@ -617,8 +647,12 @@ void Dyncore::solve2() {
       a.rrw = rrw; a.wa = wa; a.w3d = w3d; a.wten = wten;
       a.ppi = ppi; a.pp3d = pp3d; a.piadv = sadv; a.ppten = ppten; a.ppx = ppx;
       a.thv = t11; a.ppterm = t22;
+      if (m_sobc.rad.radbcw.is_allocated()) a.obc = &m_sobc;
       sound(m_bc, a);
     }
+
+    //  radbc (irbc=4)
+    openbc_radbc4(dttmp);
 
     //  For Bryan-Fritsch equation set, compute 3d divergence (into t11),
     //  from the small-step-averaged velocities
@@ -800,6 +834,28 @@ void Dyncore::solve2() {
       });
     }
   } // rk loop
+}
+
+//===========================================================================
+// Open-radiative lateral boundaries (cm1k_openbc)
+
+// solve1.F: radbc (irbc=1), from the "a" velocities
+void Dyncore::openbc_solve1() {
+  if (m_obc.irbc != 1) return;
+  if (m_obc.ibw == 1 || m_obc.ibe == 1) radbcew(m_obc, m_rad, m_s.ua);
+  if (m_obc.ibs == 1 || m_obc.ibn == 1) radbcns(m_obc, m_rad, m_s.va);
+}
+
+// solve2.F (nudgeobc=1): nudge inflow u/v at open boundaries to u0/v0
+void Dyncore::openbc_nudge() {
+  nudgeobc_uv(m_obc, m_b.u0, m_b.v0, u3d, v3d, uten, vten);
+}
+
+// solve2.F: radbc (irbc=4), after the acoustic steps of each RK stage
+void Dyncore::openbc_radbc4(Real dttmp) {
+  if (m_obc.irbc != 4) return;
+  if (m_obc.ibw == 1 || m_obc.ibe == 1) radbcew4(m_obc, m_g.ruf, m_rad, m_s.ua, u3d, dttmp);
+  if (m_obc.ibs == 1 || m_obc.ibn == 1) radbcns4(m_obc, m_g.rvf, m_rad, m_s.va, v3d, dttmp);
 }
 
 //===========================================================================

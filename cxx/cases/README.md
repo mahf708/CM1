@@ -8,7 +8,8 @@ namelist when the case runs).
 
 All cases are serial, double precision (`gfortran -fdefault-real-8
 -ffp-contract=off`), 3D, no radiation, no surface fluxes, no explicit
-diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`),
+diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
+except the `*_openbc*` cases),
 free-slip top and bottom, a warm bubble (`iinit = 1`) with no random
 perturbations (`irandp = 0`), and the time-split compressible solver
 (`psolver = 3`), `dtl = 6 s`.
@@ -22,9 +23,8 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `kessler_saturated` | 32×32×20, 2 km, 500 m | 30 steps (180 s) | every step | Kessler with a saturated, neutrally stable sounding (`isnd = 4`, Bryan-Fritsch 2002), zero winds: cloud water and saturation adjustment active from t = 0 |
 | `kessler_periodic` | 40×40×40, 1 km, 500 m | 10 steps (60 s) | every step | Kessler, Weisman-Klemp sounding and winds, finer grid; shared with the array-backend port (writes netCDF output, so netCDF-Fortran is required) |
 | `kessler_periodic_long` | 40×40×40, 1 km, 500 m | 300 steps (1800 s) | every 50 steps | `kessler_periodic` run for 30 min: a deep convective cloud with rain, for long-run drift checks |
-| `kessler_cor_diff6` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | as `kessler_tke` plus Coriolis (`icor = 1`, `fcor = 1e-4`), upper Rayleigh damping inside the domain (`irdamp = 1`, `zd = 6 km`, top at 10 km), lateral damping of w (`hrdamp = 1`, `xhd = 10 km`) and 6th-order diffusion (`idiff = 1`, `difforder = 6`) |
-| `dry_cor_damp` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | dry (`imoist = 0`), stable Weisman-Klemp theta profile and winds, moving domain (`imove = 1`: `umove`/`vmove` enter the Coriolis terms), `icor = 1`, strong damping (`zd = 5 km`, `rdalpha = 1/60`, `hrdamp = 1`, `xhd = 12 km`), 6th-order diffusion with `mdiff = 1` |
-| `dry_diff2` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | dry, `cm1setup = 0` (no subgrid model), 2nd-order constant-viscosity diffusion (`idiff = 1`, `difforder = 2`, `kdiff2 = 75`), `icor = 1`, `irdamp = 1` with `zd = 6 km` |
+diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
+except the `*_openbc*` cases),
 
 The table is descriptive; the namelists are authoritative.
 

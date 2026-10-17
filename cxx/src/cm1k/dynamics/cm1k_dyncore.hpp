@@ -3,6 +3,7 @@
 
 #include "dynamics/cm1k_bc.hpp"
 #include "dynamics/cm1k_diff2.hpp"
+#include "dynamics/cm1k_openbc.hpp"
 #include "dynamics/cm1k_sound.hpp"
 #include "physics/turb/cm1k_turb.hpp"
 #include "share/cm1k_constants.hpp"
@@ -23,7 +24,7 @@ struct DynConfig {
   int irdamp = 0, hrdamp = 0, icor = 0, lspgrad = 0, testcase = 0;
   int axisymm = 0, cuparam = 0, radopt = 0, iptra = 0, iprcl = 0, iinit = 1;
   int bbc = 1, idiss = 0, rterm = 0, adapt_dt = 0, isfcflx = 0, sfcmodel = 0, irbc = 4;
-  int wbc = 1, ebc = 1, sbc = 1, nbc = 1;
+  int wbc = 1, ebc = 1, sbc = 1, nbc = 1, roflux = 0, nudgeobc = 0;
   bool terrain_flag = false, do_ib = false, do_lsnudge = false, do_recycle = false, do_adapt_move = false;
   Real dtl = 0, alph = 0.60, kdiv = 0.10, rdalpha = 0, zd = 0, xhd = 0, csound = 300.0;
   Real smeps = 1.0e-60, tsmall = 0.000000000001, qsmall = 1.0e-24;   // cm1.F, DP build
@@ -71,12 +72,19 @@ public:
 
   // Initialize the carried arrays from the "a" arrays, as at the start of a
   // run (init3d.F: u3d=ua..., ppx=ppi, rr/rf from rho, mass1 from rho).
-  // For a dump from a later step ppx and qpten/... are not recoverable;
-  // they are then approximated by the step-0 rules.
+  // For a dump from a later step ppx, qpten/... and the open-boundary phase
+  // speeds (radbcw/...) are not recoverable; they are then approximated by
+  // the step-0 rules (radbc* = 0).
   void start_from_state();
 
   void solve1();
   void solve2();
+  // Open-radiative boundaries (wbc..nbc = 2): solve1.F's irbc=1 phase
+  // speeds, solve2.F's nudgeobc and irbc=4 phase speeds (public: they launch
+  // device lambdas, see compute_rf).
+  void openbc_solve1();
+  void openbc_nudge();
+  void openbc_radbc4(Real dttmp);
   // Called between solve2 and solve3 for imoist=1 (see Model::step).
   void solve3();
 
@@ -96,6 +104,9 @@ public:
   void diff2_stress();
 
   const DynConfig& config() const { return m_cfg; }
+  const OpenBcParams& openbc() const { return m_obc; }
+  // radiative phase speeds carried between steps (zero at start, as in cm1.F)
+  const RadBc& radbc() const { return m_rad; }
   int nsound() const { return m_nsound; }
   double mass1() const { return m_mass1; }
 
@@ -121,6 +132,9 @@ private:
   DynConfig m_cfg;
   Constants m_c{};
   BcParams m_bc;
+  OpenBcParams m_obc;
+  RadBc m_rad;
+  SoundOpenBc m_sobc;
   Grid m_g;
   BaseState m_b;
   State m_s;
