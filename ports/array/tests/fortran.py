@@ -80,12 +80,11 @@ def run_driver(name: str, inputs: dict, outputs: dict, prec: str = "r8") -> dict
     dt = DTYPES[prec]
     with tempfile.TemporaryDirectory() as wd:
         for k, v in inputs.items():
-            np.asarray(v, dtype=dt).T.tofile(
-                os.path.join(wd, k + ".bin")
-            )  # -> Fortran order
+            # C order of a [k, j, i] array == Fortran order of a(i, j, k)
+            np.ascontiguousarray(v, dtype=dt).tofile(os.path.join(wd, k + ".bin"))
         subprocess.run([str(exe)], check=True, cwd=wd, capture_output=True)
         res = {}
         for k, shape in outputs.items():
             a = np.fromfile(os.path.join(wd, k + ".bin"), dtype=dt)
-            res[k] = a.reshape(tuple(reversed(shape))).T
+            res[k] = a.reshape(tuple(shape))
         return res
