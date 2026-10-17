@@ -50,6 +50,7 @@ jobs:
         backend: [numpy, jax, torch]
     env:
       CM1X_BACKENDS: ${{ matrix.backend }}
+      CM1X_TEST_ALL_BACKENDS: "1"
       CM1X_FORTRAN_CACHE: ${{ github.workspace }}/.fortran_cache
     steps:
       - uses: actions/checkout@v4
