@@ -52,6 +52,7 @@ Bounds Bounds::from_namelist(const Namelist& nl) {
   b.numq = 1;
   if (imoist == 1 && ptype == 1) b.numq = 3;   // Kessler: qv, qc, qr
   b.nrain = 1;
+  if (nl.geti("imove", 0) == 1) b.nrain = 2;   // param.F: ground- and domain-relative swaths
   return b;
 }
 

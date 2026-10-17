@@ -16,11 +16,12 @@ using namespace cm1k;
 namespace {
 
 // Largest relative difference (|a-b| / max|ref|) over all compared fields.
-double run_case(const std::string& case_name, double tol) {
+double run_case(const std::string& case_name, double tol, bool native_init = false) {
   const auto ref = cm1k::testing::case_ref(case_name);
   if (ref.empty()) return 0;
   Model m(Namelist::from_file(cm1k::testing::case_namelist(case_name)));
-  m.init_from_dump(DumpReader::step_dir(ref, 0));
+  if (native_init) m.init();   // init/ port: param.F, base.F, init3d.F
+  else             m.init_from_dump(DumpReader::step_dir(ref, 0));
 
   std::vector<std::string> fields = {"ua", "va", "wa", "ppi", "tha", "rho", "prs"};
   for (auto& n : m.field_names())
@@ -83,6 +84,14 @@ TEST_CASE("dyncore + Kessler: kessler_bubble vs Fortran", "[dyn][step][kessler]"
 
 TEST_CASE("dyncore + Kessler: kessler_periodic vs Fortran", "[dyn][step][kessler]") {
   run_case("kessler_periodic", 1e-12);
+}
+
+TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
+  run_case("dry_bubble", 1e-12, true);
+}
+
+TEST_CASE("dyncore + Kessler: kessler_saturated from Model::init (no dump)", "[dyn][step][init][kessler]") {
+  run_case("kessler_saturated", 1e-12, true);
 }
 
 TEST_CASE("dyncore: option checks", "[dyn]") {

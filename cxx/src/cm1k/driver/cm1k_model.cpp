@@ -1,6 +1,7 @@
 #include "cm1k_model.hpp"
 
 #include "dynamics/cm1k_dyncore.hpp"
+#include "init/cm1k_init.hpp"
 #include "share/cm1k_dump_io.hpp"
 
 #include "physics/kessler/cm1k_kessler.hpp"
@@ -102,7 +103,8 @@ void Model::init_from_dump(const std::string& step_dir) {
   }
   m_nstep = r.nstep();
   m_mtime = r.mtime();
-  m_dyn_started = false;   // the dynamical core restarts from these arrays
+  m_dyn.reset();           // the dynamical core is set up again from these arrays
+  m_dyn_started = false;
 }
 
 void Model::write_dump(const std::string& root) const {
@@ -114,7 +116,15 @@ void Model::write_dump(const std::string& root) const {
 }
 
 void Model::init() {
-  throw std::runtime_error("cm1k: native initialization is not implemented yet; use init_from_dump");
+  // param.F (grid), base.F (base state), init3d.F + getset (initial state);
+  // see init/cm1k_init.hpp for the supported options.
+  auto info = init::init_grid(m_nl, m_grid);
+  init::init_base(m_nl, m_c, m_grid, info, m_base);
+  init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
+  m_nstep = 0;
+  m_mtime = 0;
+  m_dyn.reset();            // the dynamical core is set up again from the new grid
+  m_dyn_started = false;
 }
 
 Dyncore& Model::dyncore() {
