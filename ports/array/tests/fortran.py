@@ -67,9 +67,10 @@ def build_driver(name: str, prec: str = "r8") -> Path:
         "-o",
         str(exe),
     ]
-    nc = subprocess.run(["nf-config", "--flibs"], capture_output=True, text=True)
-    if nc.returncode == 0:
-        cmd += nc.stdout.split()
+    if shutil.which("nf-config"):
+        nc = subprocess.run(["nf-config", "--flibs"], capture_output=True, text=True)
+        if nc.returncode == 0:
+            cmd += nc.stdout.split()
     subprocess.run(cmd, check=True, cwd=bdir)
     return exe
 

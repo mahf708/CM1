@@ -3,7 +3,7 @@ name: cm1x array-backend port
 on:
   pull_request:
   push:
-    branches: [main, "claude/**"]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
