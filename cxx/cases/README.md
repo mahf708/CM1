@@ -110,3 +110,10 @@ Fortran twice (serial build), and with OpenMP at 1 and 2 threads, and
 compares the dumps with `cxx/scripts/compare_dumps.py` (bitwise by default;
 `--rtol/--atol` for tolerances). See the script header for which
 comparisons are required to be bitwise.
+
+Result (gfortran 13.3, x86_64, all seven cases, 2026-10): every comparison is
+**bitwise identical**: run to run, serial build vs OpenMP build at 1 thread,
+and OpenMP 1 vs 2 threads. The Fortran reference is deterministic and
+thread-count independent for these configurations, so bitwise parity with
+the Fortran is a realistic target for ports that keep its operation order
+(reductions over the domain, if any are added later, would be the exception).
