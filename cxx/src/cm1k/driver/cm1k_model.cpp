@@ -3,10 +3,7 @@
 #include "dynamics/cm1k_dyncore.hpp"
 #include "share/cm1k_dump_io.hpp"
 
-#if __has_include("physics/kessler/cm1k_kessler.hpp")
 #include "physics/kessler/cm1k_kessler.hpp"
-#define CM1K_HAVE_KESSLER 1
-#endif
 
 #include <stdexcept>
 
@@ -151,8 +148,10 @@ void Model::step() {
 void Model::microphysics() {
   auto& dyn = *m_dyn;
   const int ptype = dyn.config().ptype;
-  if (ptype == 1) {
-#ifdef CM1K_HAVE_KESSLER
+  if (ptype == 0) {
+    // cm1r20.3: qv only -> pdefq(0.0, ..., rho, q3d(:,:,:,1))
+    kessler::pdefq(m_grid.b, 0.0, m_state.rho, dyn.q3d, 1);
+  } else if (ptype == 1) {
     if (!m_mp) {
       auto w = std::make_shared<kessler::Work>();
       w->allocate(m_grid.b);
@@ -162,9 +161,6 @@ void Model::microphysics() {
     const auto opt = kessler::Options::from_namelist(m_nl);
     kessler::mp_driver(opt, m_c, m_grid, m_base, m_dt, m_state.rho, m_state.prs, dyn.pp3d, dyn.th3d,
                        dyn.q3d, m_state.rain, *std::static_pointer_cast<kessler::Work>(m_mp));
-#else
-    throw std::runtime_error("cm1k: ptype=1 needs the Kessler scheme (physics/kessler), not built");
-#endif
   } else {
     throw std::runtime_error("cm1k: microphysics ptype=" + std::to_string(ptype) + " is not ported");
   }

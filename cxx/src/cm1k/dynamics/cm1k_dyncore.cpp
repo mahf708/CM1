@@ -111,6 +111,7 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   // moisture indices (param.F)
   c.numq = 0;
   if (c.imoist == 1) {
+    if (c.ptype == 0) { c.numq = 1; c.nqv = 1; }   // water vapor only
     if (c.ptype == 1) { c.numq = 3; c.nqv = 1; c.nqc = 2; c.nql1 = 2; c.nql2 = 3; c.iice = 0; }
   }
   return c;
@@ -122,7 +123,8 @@ void DynConfig::check() const {
   if (sgsmodel != 0) unsupported("sgsmodel=" + std::to_string(sgsmodel) + " (only 0)");
   if (ipbl != 0) unsupported("ipbl");
   if (idiff != 0) unsupported("idiff");
-  if (imoist == 1 && ptype != 1) unsupported("ptype=" + std::to_string(ptype) + " with imoist=1 (only 1, Kessler)");
+  if (imoist == 1 && ptype != 0 && ptype != 1)
+    unsupported("ptype=" + std::to_string(ptype) + " with imoist=1 (only 0 = qv only, 1 = Kessler)");
   if (irdamp != 0 && irdamp != 1) unsupported("irdamp=" + std::to_string(irdamp));
   if (hrdamp != 0) unsupported("hrdamp");
   if (icor != 0) unsupported("icor");
@@ -158,9 +160,9 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
   const auto& B = grid.b;
   if (B.nk < 3) throw std::runtime_error("cm1k dyncore: nz must be >= 3");
 
-  // param.F: dx/dy/dz, rdx/rdy/rdz
-  grid.dx = nl.getr("dx", 2000.0); grid.dy = nl.getr("dy", 2000.0); grid.dz = nl.getr("dz", 500.0);
-  grid.rdx = 1.0 / grid.dx; grid.rdy = 1.0 / grid.dy; grid.rdz = 1.0 / grid.dz;
+  // rdx/rdy/rdz are set by the Model constructor (param.F: rdx=1.0/dx)
+  if (!(grid.rdx > 0 && grid.rdy > 0 && grid.rdz > 0))
+    throw std::runtime_error("cm1k dyncore: grid spacings (rdx, rdy, rdz) are not set");
   m_g = grid; m_b = base; m_s = state;
   m_dt = m_cfg.dtl;
 

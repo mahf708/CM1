@@ -68,6 +68,14 @@ TEST_CASE("dyncore: dry_shear vs Fortran, every step", "[dyn][step]") {
   run_case("dry_shear", 1e-12);
 }
 
+TEST_CASE("dyncore + Kessler: kessler_saturated vs Fortran, every step", "[dyn][step][kessler]") {
+  run_case("kessler_saturated", 1e-12);
+}
+
+TEST_CASE("dyncore + Kessler: kessler_bubble vs Fortran", "[dyn][step][kessler]") {
+  run_case("kessler_bubble", 1e-12);
+}
+
 TEST_CASE("dyncore: option checks", "[dyn]") {
   auto nl = Namelist::from_file(cm1k::testing::case_namelist("dry_bubble"));
   nl.set("psolver", "2");
