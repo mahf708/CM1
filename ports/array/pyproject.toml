@@ -23,3 +23,7 @@ markers = [
   "fortran: needs gfortran to build a per-routine Fortran harness",
   "reference: needs CM1 Fortran reference output (CM1X_REF_DIR)",
 ]
+
+[tool.ruff.lint]
+# I, J, K are the grid's interior index slices, mirroring CM1's i/j/k loops
+ignore = ["E741"]
