@@ -67,6 +67,21 @@ void cm1f_turb_vimpl(const double* khv, const double* mf, const double* rf, cons
 void cm1f_turb_ramp(double rtime, double ramp_time, const double* cm0, double* cme, double* csm,
                     double* ce1, double* ce2);
 void cm1f_turb_tke_update(double dttmp, const double* tkea, const double* tten, double* tke3d);
+// bbc=3 / surface fluxes (cm1f_bridge_sfc.F90, cm1f_bridge_turbpriv.F90)
+void cm1f_sfc_options(const int* iopt, const double* ropt);
+void cm1f_sfc_tkebc(double* tkea, double* kmh, double* kmv, double* khh, double* khv, const double* zntmp,
+                    const double* ust);
+void cm1f_sfc_gettau(const double* rf, const double* mf, const double* kmh, const double* kmv, const double* ua,
+                     const double* va, const double* wa, const double* ust, const double* u1, const double* v1,
+                     const double* s1, double* t11, double* t12, double* t13, double* t22, double* t23,
+                     double* t33);
+void cm1f_sfc_turbs(int iflux, double dt, const double* uh, const double* uf, const double* vh,
+                    const double* vf, const double* mh, const double* mf, const double* rho,
+                    const double* rr, const double* rf, const double* s, double* sten,
+                    const double* khh, const double* khv, const double* dum7, const double* dum8,
+                    const double* sflux);
+void cm1f_sfc_dissheat(const double* pi0, const double* ppi, const double* qa, const double* dissten,
+                       const double* zf, const double* ust, const double* zntmp, double* thten1);
 }
 
 using namespace cm1k;
@@ -111,14 +126,19 @@ FArray<R, HostSpace> hcopy(const FArray<R, HostSpace>& h) {
 template <int R>
 double require_same(const FArray<R, HostSpace>& a, const FArray<R, HostSpace>& ref, const std::string& what) {
   REQUIRE(a.size() == ref.size());
-  size_t nbad = 0;
+  size_t nbad = 0, first = 0;
   double maxd = 0, maxref = 0;
   for (size_t n = 0; n < a.size(); ++n) {
     const double x = a.data()[n], y = ref.data()[n];
     if (std::isfinite(y)) maxref = std::max(maxref, std::fabs(y));
-    if (!(x == y) && !(std::isnan(x) && std::isnan(y))) { ++nbad; maxd = std::max(maxd, std::fabs(x - y)); }
+    if (!(x == y) && !(std::isnan(x) && std::isnan(y))) {
+      if (nbad == 0) first = n;
+      ++nbad;
+      maxd = std::max(maxd, std::fabs(x - y));
+    }
   }
-  INFO(what << ": " << nbad << " differing points, max |diff| = " << maxd << " (max |ref| = " << maxref << ")");
+  INFO(what << ": " << nbad << " differing points (first at flat index " << first << "), max |diff| = " << maxd
+            << " (max |ref| = " << maxref << ")");
   REQUIRE(nbad == 0);
   return maxref;
 }
@@ -640,14 +660,21 @@ TEST_CASE("turb options: unsupported values throw", "[turb]") {
   bad([](T::Options& x) { x.tconfig = 3; });
   bad([](T::Options& x) { x.bcturbs = 3; });
   bad([](T::Options& x) { x.doimpl = 2; });
-  bad([](T::Options& x) { x.bbc = 3; });
+  bad([](T::Options& x) { x.bbc = 3; });                   // without sfcmodel=1
+  bad([](T::Options& x) { x.bbc = 2; });
+  bad([](T::Options& x) { x.sfcmodel = 1; });              // without bbc=3
+  bad([](T::Options& x) { x.sfcmodel = 2; x.bbc = 3; });
   bad([](T::Options& x) { x.tbc = 2; });
-  bad([](T::Options& x) { x.dosfcflx = true; });
+  bad([](T::Options& x) { x.dosfcflx = true; });           // without sfcmodel=1
   bad([](T::Options& x) { x.terrain_flag = true; });
   bad([](T::Options& x) { x.axisymm = 1; });
   bad([](T::Options& x) { x.wbc = 5; });
   REQUIRE_THROWS(T::Options::from_namelist(Namelist::from_string("&param2\n sgsmodel = 2 /\n")).check());
-  REQUIRE_THROWS(T::Options::from_namelist(Namelist::from_string("&param2\n isfcflx = 1, sfcmodel = 1 /\n")).check());
+  // the surface layer (physics/sfc): sfcmodel=1 sets bbc=3; isfcflx=1 needs it
+  REQUIRE_NOTHROW(T::Options::from_namelist(Namelist::from_string("&param2\n isfcflx = 1, sfcmodel = 1 /\n")).check());
+  REQUIRE(T::Options::from_namelist(Namelist::from_string("&param2\n isfcflx = 1, sfcmodel = 1 /\n")).dosfcflx);
+  REQUIRE_THROWS(T::Options::from_namelist(Namelist::from_string("&param2\n isfcflx = 1 /\n")).check());
+  REQUIRE_THROWS(T::Options::from_namelist(Namelist::from_string("&param2\n sfcmodel = 5 /\n")).check());
   REQUIRE_THROWS(T::Options::from_namelist(Namelist::from_string("&param2\n imoist = 1, ptype = 2 /\n")));
 }
 
@@ -843,3 +870,137 @@ TEST_CASE("turb sfc_and_turb reproduces the model's K in the next dump", "[turb]
 }
 
 } // namespace
+
+//------------------------------------------------------------------------------
+// bbc=3 (semi-slip lower boundary, sfcmodel=1) and surface fluxes: the
+// pieces of the turbulence that read the surface layer (physics/sfc)
+
+namespace {
+
+// Fortran side: cm1f_turb_setup, then bbc=3/sfcmodel=1 (defaults otherwise).
+void fortran_setup_sfc(const Setup& S) {
+  S.fortran_setup();
+  const int so[8] = {1, 3, 0, 0, 0, 0, 16, 1};
+  const double sr[8] = {0.0011, 0.0011, 0.16, 0.25, 0.24, 5.2e-5, 299.28, 2.0};
+  cm1f_sfc_options(so, sr);
+}
+
+T::Options options_sfc(const Case& cs) {
+  auto o = options_for(cs);
+  o.bbc = 3; o.sfcmodel = 1; o.isfcflx = 1; o.dosfcflx = true;
+  o.check();
+  return o;
+}
+
+// The surface arrays the turbulence reads, random (halos included).
+struct SfcArrays {
+  sfc::SfcState s;
+  FArray<3, HostSpace> ust, u1, v1, s1, zntmp, thflux, qvflux;
+  SfcArrays(const Bounds& b, std::mt19937_64& gen) {
+    s.allocate(b);
+    std::uniform_int_distribution<int> I(0, 9);
+    ust = s.ust.to_host(); u1 = s.u1.to_host(); v1 = s.v1.to_host(); s1 = s.s1.to_host();
+    zntmp = s.zntmp.to_host(); thflux = s.thflux.to_host(); qvflux = s.qvflux.to_host();
+    fill(ust, gen, 0.3, 0.29);
+    fill(u1, gen, 2.0, 8.0);
+    fill(v1, gen, -1.0, 8.0);
+    for (size_t n = 0; n < s1.size(); ++n) {
+      s1.data()[n] = std::sqrt(u1.data()[n] * u1.data()[n] + v1.data()[n] * v1.data()[n]);
+      if (I(gen) == 0) s1.data()[n] = 0.004;   // below the 0.01 floor of sfcstress
+    }
+    for (size_t n = 0; n < zntmp.size(); ++n) zntmp.data()[n] = std::pow(10.0, -4.0 + 3.0 * (0.5 + 0.5 * U(gen)));
+    fill(thflux, gen, 0.05, 0.1);
+    fill(qvflux, gen, 2.0e-5, 3.0e-5);
+    s.ust.deep_copy_from(ust); s.u1.deep_copy_from(u1); s.v1.deep_copy_from(v1); s.s1.deep_copy_from(s1);
+    s.zntmp.deep_copy_from(zntmp); s.thflux.deep_copy_from(thflux); s.qvflux.deep_copy_from(qvflux);
+  }
+};
+
+void check_sfc_tkebc_gettau(const Case& cs, unsigned seed) {
+  INFO(cs.str());
+  std::mt19937_64 gen(seed);
+  Setup S(box(10, 9, 12, 3, 1), options_sfc(cs));
+  S.randomize(gen);
+  fortran_setup_sfc(S);
+  SfcArrays sf(S.b, gen);
+  // tkebc: kmh(k=1) = karman*zntmp*ust
+  std::vector<FArray<3, HostSpace>> f;
+  for (auto* p : {&S.kmh, &S.kmv, &S.khh, &S.khv, &S.tkea}) f.push_back(hcopy(p->h));
+  T::tkebc(S.o, S.b, S.tkea.d, S.kmh.d, S.kmv.d, S.khh.d, S.khv.d, &sf.s);
+  for (auto* p : {&S.kmh, &S.kmv, &S.khh, &S.khv, &S.tkea}) p->to_host();
+  cm1f_sfc_tkebc(f[4].data(), f[0].data(), f[1].data(), f[2].data(), f[3].data(), sf.zntmp.data(), sf.ust.data());
+  const char* kn[] = {"kmh", "kmv", "khh", "khv", "tkea"};
+  int n = 0;
+  for (auto* p : {&S.kmh, &S.kmv, &S.khh, &S.khv, &S.tkea}) {
+    require_same(p->h, f[n], std::string("tkebc bbc=3 ") + kn[n]);
+    ++n;
+  }
+  // gettau + sfcstress
+  std::vector<FArray<3, HostSpace>> t;
+  for (auto* p : {&S.t11, &S.t12, &S.t13, &S.t22, &S.t23, &S.t33}) t.push_back(hcopy(p->h));
+  T::gettau(S.o, S.b, S.kmh.d, S.kmv.d, S.ts.t11, S.ts.t12, S.ts.t13, S.ts.t22, S.ts.t23, S.ts.t33, S.rf.d, &sf.s);
+  S.sync_to_host();
+  cm1f_sfc_gettau(S.rf.p(), S.mf.p(), S.kmh.p(), S.kmv.p(), S.ua.p(), S.va.p(), S.wa.p(), sf.ust.data(),
+                  sf.u1.data(), sf.v1.data(), sf.s1.data(), t[0].data(), t[1].data(), t[2].data(), t[3].data(),
+                  t[4].data(), t[5].data());
+  const char* tn[] = {"t11", "t12", "t13", "t22", "t23", "t33"};
+  n = 0;
+  for (auto* p : {&S.t11, &S.t12, &S.t13, &S.t22, &S.t23, &S.t33}) {
+    require_same(p->h, t[n], std::string("gettau bbc=3 ") + tn[n]);
+    ++n;
+  }
+}
+
+void check_sfc_turbs_dissheat(const Case& cs, unsigned seed) {
+  INFO(cs.str());
+  std::mt19937_64 gen(seed);
+  const auto o = options_sfc(cs);
+  Setup S(box(10, 9, 12, 3, o.numq), o);
+  S.randomize(gen);
+  fortran_setup_sfc(S);
+  SfcArrays sf(S.b, gen);
+  const double dt = 2.0;
+  // dissipative heating with the surface term
+  auto thten = random_like(S.tha, gen, 0.0, 1.0e-3);
+  auto thf = hcopy(thten.h);
+  T::dissheat(S.o, S.c, S.b, S.base.pi0, S.ppi.d, S.qa.d, S.ts.dissten, thten.d, S.w.d9, S.g.zf, &sf.s);
+  thten.to_host();
+  cm1f_sfc_dissheat(S.pi0.p(), S.ppi.p(), S.qa.p(), S.dissten.p(), S.zf.p(), sf.ust.data(), sf.zntmp.data(),
+                    thf.data());
+  require_same(thten.h, thf, "dissheat bbc=3");
+  // turbs with the surface flux (theta: iflux=1; other scalars: iflux=0)
+  auto d7 = zeros_like(S.tha), d8 = zeros_like(S.tha);
+  T::vimpl_coefs(S.b, S.khv.d, S.g.mf, S.rf.d, S.g.mh, S.rr.d, d7.d, d8.d);
+  d7.to_host(); d8.to_host();
+  for (int iflux : {1, 0}) {
+    auto sten = random_like(S.tha, gen, 0.0, 1.0e-3);
+    auto stf = hcopy(sten.h);
+    T::turbs(S.o, S.g, iflux, dt, S.rho.d, S.rr.d, S.rf.d, S.tha.d, sten.d, S.khh.d, S.khv.d, d7.d, d8.d, S.w,
+             sf.s.thflux);
+    sten.to_host();
+    cm1f_sfc_turbs(iflux, dt, S.uh.p(), S.uf.p(), S.vh.p(), S.vf.p(), S.mh.p(), S.mf.p(), S.rho.p(), S.rr.p(),
+                   S.rf.p(), S.tha.p(), stf.data(), S.khh.p(), S.khv.p(), d7.h.data(), d8.h.data(),
+                   sf.thflux.data());
+    require_same(sten.h, stf, "turbs dosfcflx iflux=" + std::to_string(iflux));
+  }
+}
+
+} // namespace
+
+TEST_CASE("turb bbc=3: tkebc and gettau/sfcstress match turb.F", "[bridge][turb][sfc]") {
+  unsigned seed = 901;
+  for (const auto& bc : kLateral) check_sfc_tkebc_gettau(lateral_case(bc), seed++);
+}
+
+TEST_CASE("turb bbc=3: dissheat and turbs with surface fluxes match solve1.F/turbtend.F", "[bridge][turb][sfc]") {
+  unsigned seed = 951;
+  for (int doimpl : {0, 1})
+    for (int bcturbs : {1, 2}) {
+      Case c; c.doimpl = doimpl; c.bcturbs = bcturbs;
+      check_sfc_turbs_dissheat(c, seed++);
+    }
+  Case dry; dry.moist = Moist::dry; check_sfc_turbs_dissheat(dry, seed++);
+  Case e1; e1.eqtset = 1; check_sfc_turbs_dissheat(e1, seed++);
+  Case nod; nod.idiss = 0; check_sfc_turbs_dissheat(nod, seed++);
+  Case opn = lateral_case({2, 3, 4, 2}); check_sfc_turbs_dissheat(opn, seed++);
+}

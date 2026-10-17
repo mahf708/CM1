@@ -32,6 +32,8 @@ double run_case(const std::string& case_name, double tol, bool native_init = fal
 
   std::vector<std::string> fields = {"ua", "va", "wa", "ppi", "tha", "rho", "prs"};
   if (turb) for (const char* n : {"tkea", "kmh", "kmv", "khh", "khv"}) fields.push_back(n);
+  if (m.has_surface())   // sfcmodel=1: every dumped surface array (tsk, znt, ust, thflux, ...)
+    for (auto& [n, a] : m.surface().dumped()) fields.push_back(n);
   for (auto& n : m.field_names())
     if (n.rfind("qa_", 0) == 0) fields.push_back(n);
 
@@ -142,6 +144,30 @@ TEST_CASE("dyncore + LES TKE + Kessler: kessler_tke restarted from a mid-run dum
   std::printf("kessler_tke: restart K checked from %d dumps\n", nchecked);
 }
 
+TEST_CASE("dyncore + LES TKE + surface layer: cbl_sfc vs Fortran", "[dyn][step][turb][sfc]") {
+  // sfcmodel=1, bbc=3 (semi-slip), isfcflx=1 with set_flx=1 (constant
+  // heat flux), set_znt=1, pertflx=1, idiss=1, dry; also compares every
+  // dumped surface array (dump N holds the surface layer of state N-1)
+  run_case("cbl_sfc", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + LES TKE + surface layer: cbl_sfc from Model::init (no dump)", "[dyn][step][init][turb][sfc]") {
+  // init_surface (LANDUSE.TBL) and irandp=1 (gfortran random_number)
+  run_case("cbl_sfc", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + LES TKE + surface layer + Kessler: cbl_sfc_moist vs Fortran",
+          "[dyn][step][turb][sfc][kessler]") {
+  // water surface (lu0=16): bulk fluxes of theta and qv from Ch, Cq (cecd=2,
+  // z0 iterated from the 10-m wind), eqtset=2 dissipative heating
+  run_case("cbl_sfc_moist", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + LES TKE + surface layer + Kessler: cbl_sfc_moist from Model::init (no dump)",
+          "[dyn][step][init][turb][sfc][kessler]") {
+  run_case("cbl_sfc_moist", 0.0, true, true);
+}
+
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
   run_case("dry_bubble", 1e-12, true);
 }
@@ -174,4 +200,31 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
     INFO(k << " = " << v);
     REQUIRE_THROWS(DynConfig::from_namelist(x).check());
   }
+
+  // surface layer: sfcmodel=1 (bbc=3) is ported, other options throw
+  auto sf = Namelist::from_file(cm1k::testing::case_namelist("cbl_sfc"));
+  REQUIRE_NOTHROW(DynConfig::from_namelist(sf).check());
+  REQUIRE(DynConfig::from_namelist(sf).bbc == 3);
+  REQUIRE(DynConfig::from_namelist(sf).turb_opt.dosfcflx);
+  for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+         {"sfcmodel", "2"}, {"sfcmodel", "5"}, {"oceanmodel", "2"}, {"cecd", "4"}, {"initsfc", "2"},
+         {"tbc", "3"}, {"imove", "1"}, {"ipbl", "2"}, {"sgsmodel", "0"}, {"sgsmodel", "2"},
+         {"set_flx", "2"}, {"season", "3"}, {"lu0", "34"}}) {
+    auto x = sf;
+    x.set(k, v);
+    INFO(k << " = " << v);
+    REQUIRE_THROWS(DynConfig::from_namelist(x).check());
+  }
+  for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+         {"isfcflx", "0"}, {"cecd", "1"}, {"cecd", "2"}, {"set_znt", "0"}, {"set_ust", "1"},
+         {"pertflx", "0"}, {"idiss", "0"}, {"doimpl", "0"}}) {
+    auto x = sf;
+    x.set(k, v);
+    INFO(k << " = " << v);
+    REQUIRE_NOTHROW(DynConfig::from_namelist(x).check());
+  }
+  // bbc=3 needs a surface model; isfcflx=1 needs sfcmodel=1..7
+  auto x = sf;
+  x.set("sfcmodel", "0");
+  REQUIRE_THROWS(DynConfig::from_namelist(x).check());
 }

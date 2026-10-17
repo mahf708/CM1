@@ -11,7 +11,7 @@ All cases are serial, double precision (`gfortran -fdefault-real-8
 diffusion (`idiff = 0`), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`),
 free-slip top and bottom, a warm bubble (`iinit = 1`) with no random
 perturbations (`irandp = 0`), and the time-split compressible solver
-(`psolver = 3`), `dtl = 6 s`.
+(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*` cases (see the table).
 
 | Case | Grid (nx×ny×nz, dx, dz) | Length | Dumps | What it exercises |
 |---|---|---|---|---|
@@ -21,6 +21,8 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `kessler_tke` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | as `kessler_bubble` with TKE subgrid turbulence (`sgsmodel = 1`): `tkea`, `kmh/kmv/khh/khv` are live |
 | `kessler_saturated` | 32×32×20, 2 km, 500 m | 30 steps (180 s) | every step | Kessler with a saturated, neutrally stable sounding (`isnd = 4`, Bryan-Fritsch 2002), zero winds: cloud water and saturation adjustment active from t = 0 |
 | `kessler_periodic` | 40×40×40, 1 km, 500 m | 10 steps (60 s) | every step | Kessler, Weisman-Klemp sounding and winds, finer grid; shared with the array-backend port (writes netCDF output, so netCDF-Fortran is required) |
+| `cbl_sfc` | 32×32×40, 100 m, 50 m | 150 steps (300 s, `dtl = 2 s`) | every 10 steps | dry convective boundary layer: surface layer (`sfcmodel = 1`, semi-slip `bbc = 3`, `isfcflx = 1`) with a constant heat flux (`set_flx = 1`) and roughness (`set_znt = 1`), `cecd = 3`, `pertflx = 1`; TKE turbulence (`sgsmodel = 1`, `idiss = 1`, implicit vertical diffusion); random θ perturbations (`irandp = 1`); also dumps the surface arrays (`tsk`, `znt`, `ust`, `thflux`, ...) |
+| `cbl_sfc_moist` | 32×32×40, 100 m, 50 m | 150 steps (300 s, `dtl = 2 s`) | every 10 steps | as `cbl_sfc` with Kessler microphysics over water (`lu0 = 16`, `tsk0 = 305 K`): bulk heat and moisture fluxes (`cecd = 2`, z0 from the 10-m wind), Weisman-Klemp sounding and winds |
 | `kessler_periodic_long` | 40×40×40, 1 km, 500 m | 300 steps (1800 s) | every 50 steps | `kessler_periodic` run for 30 min: a deep convective cloud with rain, for long-run drift checks |
 
 The table is descriptive; the namelists are authoritative.

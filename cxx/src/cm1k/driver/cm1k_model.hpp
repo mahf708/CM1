@@ -1,6 +1,7 @@
 #ifndef CM1K_MODEL_HPP
 #define CM1K_MODEL_HPP
 
+#include "physics/sfc/cm1k_sfc.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
 #include "share/cm1k_namelist.hpp"
@@ -57,6 +58,10 @@ public:
   Grid& grid() { return m_grid; }
   BaseState& base() { return m_base; }
   State& state() { return m_state; }
+  // Surface layer (allocated only for sfcmodel=1; its dumped arrays are
+  // registered fields then).
+  bool has_surface() const { return m_sfc_opt.active(); }
+  sfc::SfcState& surface() { return m_sfc; }
   // The dynamical core (set up on the first step()).
   Dyncore& dyncore();
 
@@ -73,6 +78,8 @@ private:
   Grid m_grid;
   BaseState m_base;
   State m_state;
+  sfc::Options m_sfc_opt;
+  sfc::SfcState m_sfc;
   FieldRegistry m_reg;
 
   int m_nstep = 0;

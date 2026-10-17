@@ -5,7 +5,8 @@
 // (prognostic-TKE Deardorff scheme):
 //
 //   src/turb.F      sfc_and_turb (the LES/sgsmodel=1 path), calcnm, calcdef,
-//                   tkekm, tkebc, gettau, sfcstress (bbc=1)
+//                   tkekm, tkebc, gettau, sfcstress (bbc=1; bbc=3 is
+//                   sfc::sfcstress)
 //   src/turbtend.F  turbs/turbsz, turbt, turbu/turbuz, turbv/turbvz, turbw
 //   src/solve1.F    the TKE source terms (shear/buoyancy production,
 //                   dissipation), the vimpl coefficient arrays for turbs,
@@ -18,8 +19,11 @@
 // Supported (Options::check throws for anything else):
 //   * cm1setup=1, sgsmodel=1, ipbl=0, horizturb=0, cuparam=0
 //   * tconfig=1,2; bcturbs=1,2; doimpl=0,1; idiss=0,1; ramp_sgs=0,1
-//   * no surface fluxes (isfcflx=0, sfcmodel=0 -> dosfcflx=.false.)
-//   * bbc=1, tbc=1 (free-slip lower/upper boundaries)
+//   * sfcmodel=0: bbc=1 (free-slip lower boundary), no surface fluxes
+//   * sfcmodel=1 (physics/sfc): bbc=3 (semi-slip: kmh(k=1) = karman*z0*u*,
+//     surface stress, surface dissipative heating), isfcflx=0/1 (surface
+//     fluxes of theta and qv into turbs: dosfcflx)
+//   * tbc=1 (free-slip upper boundary)
 //   * lateral boundaries wbc..nbc = 1 (periodic), 2 (open), 3, 4 (walls)
 //   * no terrain, axisymm=0, do_ib=.false.
 //   * imoist=0, or imoist=1 with the moisture layout in Options (ptype=1
@@ -29,6 +33,11 @@
 // Not ported (diagnostics only; never feed back into the state): budgets
 // (tdiag/udiag/.../kdiag, dotbud), stau and psfc, iamsat/cloud/rh of calcnm,
 // out3d, the timers, and the nstep=0 print in tkekm.
+//
+// With the surface layer (sfcmodel=1) the caller passes the sfc::SfcState:
+// Dyncore::sfc_and_turb runs sfc::sfc_layer (the surface block of CM1's
+// sfc_and_turb) first, then sfc_and_turb below, which does the "bc/comms"
+// block of the surface arrays and hands them to tkebc and gettau.
 //
 //------------------------------------------------------------------------------
 // Where the time step calls each piece (cm1.F / solve1.F order, kessler_tke).
@@ -79,6 +88,7 @@
 //     (k=1..nk, i,j=0..n+1).
 //------------------------------------------------------------------------------
 
+#include "physics/sfc/cm1k_sfc.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
 #include "share/cm1k_namelist.hpp"
@@ -93,6 +103,7 @@ struct Options {
   int ramp_sgs = 0;
   Real ramp_time = 0.0;
   bool dosfcflx = false;
+  int sfcmodel = 0, isfcflx = 0;   // param.F: sfcmodel>=1 sets bbc=3
   int bbc = 1, tbc = 1;
   int wbc = 1, ebc = 1, sbc = 1, nbc = 1;
   int ibw = 0, ibe = 0, ibs = 0, ibn = 0;   // serial: 1 iff the boundary is not periodic
@@ -136,6 +147,8 @@ struct Work {
 //   ua,va,wa,ppi,tha,qa,prs,rho,rf : cm1.F u3d,v3d,w3d,pp3d,th3d,q3d,prs,rho,rf
 //   tkea (inout: k=1 set to 0, halos), tke3d (out: k=1 and nk+1 copied)
 //   kmh,kmv,khh,khv (out, incl. halos)
+//   sfc: surface layer (sfcmodel=1, bbc=3), after sfc::sfc_layer on the same
+//        state; its halos (ust, u1, v1, s1, znt, wspd) and zntmp are set here
 //------------------------------------------------------------------------------
 void sfc_and_turb(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
                   Real rtime, const FArray3& ua, const FArray3& va, const FArray3& wa,
@@ -143,7 +156,11 @@ void sfc_and_turb(const Options& o, const Constants& c, const Grid& g, const Bas
                   const FArray3& prs, const FArray3& rho, const FArray3& rf,
                   const FArray3& tkea, const FArray3& tke3d,
                   const FArray3& kmh, const FArray3& kmv, const FArray3& khh, const FArray3& khv,
-                  const TurbState& ts, const Work& w);
+                  const TurbState& ts, const Work& w, const sfc::SfcState* sfc = nullptr);
+
+// turb.F sfc_and_turb "bc/comms" block for bbc=3: bc2d of ust, u1, v1, s1,
+// znt, wspd, then zntmp = znt on 0..ni+1 x 0..nj+1.
+void sfc_bcs(const Options& o, const Bounds& b, const sfc::SfcState& s);
 
 // sfc_and_turb: ramp of the turbulence "constants" (ramp_sgs>=1).
 void update_constants(const Options& o, const Bounds& b, Real rtime, const TurbState& ts);
@@ -172,14 +189,18 @@ void tkekm(const Options& o, const Grid& g, const FArray3& nm,
            const FArray3& cme, const FArray3& ce1, const FArray3& ce2,
            const FArray3& tkea, const FArray3& lenscl, const FArray3& dissten);
 
-// turb.F tkebc (bbc=1, tbc=1): tkea, K at the lower boundary.
+// turb.F tkebc (bbc=1 or 3, tbc=1): tkea, K at the lower boundary
+// (bbc=3: kmh(k=1) = karman*zntmp*ust, from sfc).
 void tkebc(const Options& o, const Bounds& b, const FArray3& tkea,
-           const FArray3& kmh, const FArray3& kmv, const FArray3& khh, const FArray3& khv);
+           const FArray3& kmh, const FArray3& kmv, const FArray3& khh, const FArray3& khv,
+           const sfc::SfcState* sfc = nullptr);
 
-// turb.F gettau (+ sfcstress for bbc=1): t_ij = 2 K s_ij, boundary values.
+// turb.F gettau (+ sfcstress: bbc=1 free slip, or bbc=3 sfc::sfcstress
+// with rf and sfc): t_ij = 2 K s_ij, boundary values.
 void gettau(const Options& o, const Bounds& b, const FArray3& kmh, const FArray3& kmv,
             const FArray3& t11, const FArray3& t12, const FArray3& t13,
-            const FArray3& t22, const FArray3& t23, const FArray3& t33);
+            const FArray3& t22, const FArray3& t23, const FArray3& t33,
+            const FArray3& rf = FArray3(), const sfc::SfcState* sfc = nullptr);
 
 //------------------------------------------------------------------------------
 // (B) solve1
@@ -197,10 +218,13 @@ void turbt(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
            const Work& w);
 
 // solve1.F (idiss=1): thten1(1:ni,1:nj,1:nk) += dissipative heating, with
-// cvm from qa (eqtset=2, imoist=1) or cv/cp.
+// cvm from qa (eqtset=2, imoist=1) or cv/cp. bbc=3: k=2..nk from dissten,
+// k=1 from the surface layer, epsd = u*^3 ln((dz1+z0)/z0)/(karman dz1)
+// (needs zf and sfc).
 void dissheat(const Options& o, const Constants& c, const Bounds& b, const FArray3& pi0,
               const FArray3& ppi, const FArray4& qa, const FArray3& dissten,
-              const FArray3& thten1, const FArray3& cvm);
+              const FArray3& thten1, const FArray3& cvm,
+              const FArray3& zf = FArray3(), const sfc::SfcState* sfc = nullptr);
 
 // turbtend.F turbu/turbv/turbw (+ turbuz/turbvz).
 void turbu(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
@@ -221,16 +245,17 @@ void vimpl_coefs(const Bounds& b, const FArray3& khv, const FArray3& mf, const F
                  const FArray3& mh, const FArray3& rr, const FArray3& dum7, const FArray3& dum8);
 
 // turbtend.F turbs: sten(1:ni,1:nj,1:nk) += subgrid diffusion of s.
-//   dum7/dum8 from vimpl_coefs (doimpl=1). iflux only matters with surface
-//   fluxes (not ported).
+//   dum7/dum8 from vimpl_coefs (doimpl=1). With iflux=1 and dosfcflx the
+//   flux at the surface is sflux*rf(k=1) (sflux: sfc thflux or qvflux).
 void turbs(const Options& o, const Grid& g, int iflux, Real dt, const FArray3& rho,
            const FArray3& rr, const FArray3& rf, const FArray3& s, const FArray3& sten,
            const FArray3& khh, const FArray3& khv, const FArray3& dum7, const FArray3& dum8,
-           const Work& wk);
+           const Work& wk, const FArray3& sflux = FArray3());
 
 // solve1.F doturb block: turbu/turbv/turbw into uten1/vten1/wten1, vimpl
 // arrays, turbs on theta (tha + th0(1,1,k) - th0r) into thten1 and on each
-// moisture species qa(:,:,:,n) into qten(:,:,:,n).
+// moisture species qa(:,:,:,n) into qten(:,:,:,n). sfc (dosfcflx): surface
+// fluxes thflux (theta) and qvflux (qv).
 void turb_tendencies(const Options& o, const Grid& g, const BaseState& base, Real dt,
                      const FArray3& rho, const FArray3& rr, const FArray3& rf,
                      const FArray3& ua, const FArray3& va, const FArray3& wa,
@@ -238,7 +263,7 @@ void turb_tendencies(const Options& o, const Grid& g, const BaseState& base, Rea
                      const FArray3& uten1, const FArray3& vten1, const FArray3& wten1,
                      const FArray3& thten1, const FArray4& qten,
                      const FArray3& kmh, const FArray3& kmv, const FArray3& khh, const FArray3& khv,
-                     const TurbState& ts, const Work& wk);
+                     const TurbState& ts, const Work& wk, const sfc::SfcState* sfc = nullptr);
 
 //------------------------------------------------------------------------------
 // (C)/(D) solve2/solve3 helpers

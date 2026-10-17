@@ -63,6 +63,8 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   c.adapt_dt = nl.geti("adapt_dt", 0);
   c.isfcflx = nl.geti("isfcflx", 0);
   c.sfcmodel = nl.geti("sfcmodel", 0);
+  c.sfc_opt = sfc::Options::from_namelist(nl);
+  c.bbc = c.sfc_opt.bbc;   // param.F: sfcmodel>=1 sets bbc=3
   c.irbc = nl.geti("irbc", 4);
   c.wbc = nl.geti("wbc", 1); c.ebc = nl.geti("ebc", 1);
   c.sbc = nl.geti("sbc", 1); c.nbc = nl.geti("nbc", 1);
@@ -124,11 +126,15 @@ void DynConfig::check() const {
   // idiss=1 adds epsd/(cp*pi) with epsd from dissten, which only the subgrid
   // turbulence / PBL schemes set: with sgsmodel=0 and ipbl=0 it is exactly
   // zero and the term is a no-op; with sgsmodel=1 it is turb::dissheat
-  // (bbc=3 adds a surface term: not ported).
-  if (idiss != 0 && (ipbl != 0 || bbc == 3)) unsupported("idiss=1 with PBL or bbc=3 dissipation");
+  // (bbc=3 adds the surface-layer term, from physics/sfc).
+  if (idiss != 0 && ipbl != 0) unsupported("idiss=1 with PBL dissipation");
   if (rterm != 0) unsupported("rterm");
   if (adapt_dt != 0) unsupported("adapt_dt");
-  if (isfcflx != 0 || sfcmodel != 0) unsupported("surface fluxes (isfcflx/sfcmodel)");
+  // surface layer: sfcmodel=0, or sfcmodel=1 (bbc=3, isfcflx=0/1) with the
+  // LES TKE scheme; sfc_opt.check throws for every option not ported
+  sfc_opt.check();
+  if (sfc_opt.active() && !(turb && sgsmodel == 1))
+    unsupported("the surface layer (sfcmodel=1) without the LES TKE scheme (sgsmodel=1)");
   if (terrain_flag) unsupported("terrain_flag");
   if (do_ib) unsupported("do_ib");
   if (do_lsnudge) unsupported("do_lsnudge");
@@ -335,8 +341,21 @@ void Dyncore::compute_rf() {
 void Dyncore::sfc_and_turb(double rtime) {
   if (!m_cfg.turb) return;
   auto& s = m_s;
+  const sfc::SfcState* sp = nullptr;
+  if (m_cfg.sfc_opt.active()) {
+    // surface block of sfc_and_turb (bbc=3): psfc, u1/v1/s1, getcecd,
+    // sfcflux, sfcdiags
+    if (!m_has_sfc) throw std::runtime_error("cm1k dyncore: sfcmodel=1 needs set_surface()");
+    sfc::sfc_layer(m_cfg.sfc_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc);
+    sp = &m_sfc;
+  }
   turb::sfc_and_turb(m_cfg.turb_opt, m_c, m_g, m_b, Real(rtime), u3d, v3d, w3d, pp3d, th3d, q3d, s.prs,
-                     s.rho, rf, s.tkea, tke3d, s.kmh, s.kmv, s.khh, s.khv, ts, m_tw);
+                     s.rho, rf, s.tkea, tke3d, s.kmh, s.kmv, s.khh, s.khv, ts, m_tw, sp);
+}
+
+void Dyncore::set_surface(const sfc::SfcState& s) {
+  m_sfc = s;   // shallow: the views are shared with the caller
+  m_has_sfc = true;
 }
 
 //===========================================================================
@@ -379,10 +398,11 @@ void Dyncore::solve1() {
     turb::tke_source(to, B, ts.nm, ts.defv, ts.defh, ts.dissten, m_s.kmh, m_s.kmv, m_s.khv, tketen);
     turb::turbt(to, m_g, m_dt, rho, rf, m_s.tkea, tketen, m_s.kmh, m_s.kmv, m_tw);
     // dissipative heating (~919), before the turbulent fluxes of theta
-    turb::dissheat(to, c, B, pi0, ppi, qa, ts.dissten, thten1, cvm);
+    const sfc::SfcState* sp = m_has_sfc ? &m_sfc : nullptr;
+    turb::dissheat(to, c, B, pi0, ppi, qa, ts.dissten, thten1, cvm, m_g.zf, sp);
     // doturb block (~1119)
     turb::turb_tendencies(to, m_g, m_b, m_dt, rho, rr, rf, ua, va, wa, tha, qa, uten1, vten1, wten1, thten1,
-                          qten, m_s.kmh, m_s.kmv, m_s.khh, m_s.khv, ts, m_tw);
+                          qten, m_s.kmh, m_s.kmv, m_s.khh, m_s.khv, ts, m_tw, sp);
   }
 
   //  contribution to pressure tendency from potential temperature

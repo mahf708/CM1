@@ -57,12 +57,15 @@ Options Options::from_namelist(const Namelist& nl) {
   o.terrain_flag = nl.getb("terrain_flag", false);
   o.axisymm = nl.geti("axisymm", 0);
   o.do_ib = nl.getb("do_ib", false);
+  o.sfcmodel = nl.geti("sfcmodel", 0);
+  o.isfcflx = nl.geti("isfcflx", 0);
   // param.F overrides
+  if (o.sfcmodel >= 1 || nl.geti("oceanmodel", 1) == 2 || o.ipbl >= 1) o.bbc = 3;
   if ((o.ipbl == 3 || o.ipbl == 4 || o.ipbl == 5) && o.idiss >= 1 && o.cm1setup != 4) o.idiss = 0;
   if ((o.sgsmodel == 5 || o.sgsmodel == 6) && o.doimpl >= 1) o.doimpl = 0;
   if (o.do_ib && o.doimpl == 1) o.doimpl = 0;
   // init_surface.F: dosfcflx
-  const int isfcflx = nl.geti("isfcflx", 0), sfcmodel = nl.geti("sfcmodel", 0);
+  const int isfcflx = o.isfcflx, sfcmodel = o.sfcmodel;
   o.dosfcflx = false;
   if (o.cm1setup >= 1 || o.ipbl == 2) {
     if (isfcflx == 1) o.dosfcflx = true;
@@ -111,8 +114,10 @@ void Options::check() const {
   if (doimpl != 0 && doimpl != 1) fail("doimpl must be 0 or 1");
   if (idiss != 0 && idiss != 1) fail("idiss must be 0 or 1");
   if (ramp_sgs < 0) fail("ramp_sgs must be >= 0");
-  if (dosfcflx) fail("surface fluxes (isfcflx=1 or sfcmodel=2..7) are not ported");
-  if (bbc != 1) fail("bbc=" + std::to_string(bbc) + " is not ported (only free slip, bbc=1)");
+  if (sfcmodel != 0 && sfcmodel != 1) fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0 and 1)");
+  if (dosfcflx && sfcmodel != 1) fail("surface fluxes need the surface layer (sfcmodel=1)");
+  if (bbc != 1 && bbc != 3) fail("bbc=" + std::to_string(bbc) + " is not ported (only 1 free slip, 3 semi-slip)");
+  if ((bbc == 3) != (sfcmodel == 1)) fail("bbc=3 goes with sfcmodel=1 (and bbc=1 with sfcmodel=0)");
   if (tbc != 1) fail("tbc=" + std::to_string(tbc) + " is not ported (only free slip, tbc=1)");
   for (int v : {wbc, ebc, sbc, nbc})
     if (v < 1 || v > 4) fail("lateral boundary condition " + std::to_string(v) + " is not ported");
@@ -555,13 +560,25 @@ void tkekm(const Options& o, const Grid& g, const FArray3& nm,
 }
 
 void tkebc(const Options& o, const Bounds& b, const FArray3& tkea,
-           const FArray3& kmh, const FArray3& kmv, const FArray3& khh, const FArray3& khv) {
-  if (o.bbc != 1 || o.tbc != 1) throw std::runtime_error("cm1k turb::tkebc: only bbc=1, tbc=1 are ported");
-  // free slip
-  Kokkos::parallel_for("tkebc_sfc", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
-    tkea(i, j, 1) = 0.0;
-    kmh(i, j, 1) = 0.0;
-  });
+           const FArray3& kmh, const FArray3& kmv, const FArray3& khh, const FArray3& khv,
+           const sfc::SfcState* sfc) {
+  if ((o.bbc != 1 && o.bbc != 3) || o.tbc != 1)
+    throw std::runtime_error("cm1k turb::tkebc: only bbc=1,3 and tbc=1 are ported");
+  if (o.bbc == 3) {
+    // semi-slip
+    if (!sfc) throw std::runtime_error("cm1k turb::tkebc: bbc=3 needs the surface layer state");
+    const auto zntmp = sfc->zntmp, ust = sfc->ust;
+    Kokkos::parallel_for("tkebc_sfc3", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+      tkea(i, j, 1) = 0.0;
+      kmh(i, j, 1) = phys::karman * zntmp(i, j, 1) * ust(i, j, 1);
+    });
+  } else {
+    // free slip
+    Kokkos::parallel_for("tkebc_sfc", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+      tkea(i, j, 1) = 0.0;
+      kmh(i, j, 1) = 0.0;
+    });
+  }
   bc2d_level(o, b, tkea, 1);
   bc2d_level(o, b, kmh, 1);
   Kokkos::parallel_for("tkebc_k1", box2(0, b.ni + 1, 0, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
@@ -573,8 +590,12 @@ void tkebc(const Options& o, const Bounds& b, const FArray3& tkea,
 
 void gettau(const Options& o, const Bounds& b, const FArray3& kmh, const FArray3& kmv,
             const FArray3& t11, const FArray3& t12, const FArray3& t13,
-            const FArray3& t22, const FArray3& t23, const FArray3& t33) {
-  if (o.bbc != 1 || o.tbc != 1) throw std::runtime_error("cm1k turb::gettau: only bbc=1, tbc=1 are ported");
+            const FArray3& t22, const FArray3& t23, const FArray3& t33,
+            const FArray3& rf, const sfc::SfcState* sfc) {
+  if ((o.bbc != 1 && o.bbc != 3) || o.tbc != 1)
+    throw std::runtime_error("cm1k turb::gettau: only bbc=1,3 and tbc=1 are ported");
+  if (o.bbc == 3 && (!sfc || !rf.is_allocated()))
+    throw std::runtime_error("cm1k turb::gettau: bbc=3 needs rf and the surface layer state");
   const int ni = b.ni, nj = b.nj, nk = b.nk;
   Kokkos::parallel_for("gettau_h", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     const Real tem = (kmh(i, j, k) + kmh(i, j, k + 1));
@@ -631,11 +652,15 @@ void gettau(const Options& o, const Bounds& b, const FArray3& kmh, const FArray3
       });
   }
 
-  // lower boundary (sfcstress, bbc=1: free slip), then upper (tbc=1: free slip)
-  Kokkos::parallel_for("gettau_sfc", box2(1, ni + 1, 1, nj + 1), KOKKOS_LAMBDA(int i, int j) {
-    t13(i, j, 1) = t13(i, j, 2);
-    t23(i, j, 1) = t23(i, j, 2);
-  });
+  // lower boundary (sfcstress: bbc=1 free slip, bbc=3 semi slip), then
+  // upper (tbc=1: free slip)
+  if (o.bbc == 3)
+    sfc::sfcstress(b, rf, *sfc, t13, t23);
+  else
+    Kokkos::parallel_for("gettau_sfc", box2(1, ni + 1, 1, nj + 1), KOKKOS_LAMBDA(int i, int j) {
+      t13(i, j, 1) = t13(i, j, 2);
+      t23(i, j, 1) = t23(i, j, 2);
+    });
   Kokkos::parallel_for("gettau_top", box2(1, ni + 1, 1, nj + 1), KOKKOS_LAMBDA(int i, int j) {
     t13(i, j, nk + 1) = t13(i, j, nk);
     t23(i, j, nk + 1) = t23(i, j, nk);
@@ -648,9 +673,14 @@ void sfc_and_turb(const Options& o, const Constants& c, const Grid& g, const Bas
                   const FArray3& prs, const FArray3& rho, const FArray3& rf,
                   const FArray3& tkea, const FArray3& tke3d,
                   const FArray3& kmh, const FArray3& kmv, const FArray3& khh, const FArray3& khv,
-                  const TurbState& ts, const Work& w) {
+                  const TurbState& ts, const Work& w, const sfc::SfcState* sfc) {
   o.check();
   const auto& b = g.b;
+  if (o.bbc == 3) {
+    // surface layer (sfc::sfc_layer, called before) -> bc/comms block
+    if (!sfc) throw std::runtime_error("cm1k turb::sfc_and_turb: bbc=3 needs the surface layer state");
+    sfc_bcs(o, b, *sfc);
+  }
   // facheck: ramp of the turbulence constants
   update_constants(o, b, rtime, ts);
   // dissten = 0 on w levels
@@ -663,13 +693,21 @@ void sfc_and_turb(const Options& o, const Constants& c, const Grid& g, const Bas
   calcdef(o, g, rho, rf, ua, va, wa, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, ts.defv, ts.defh);
   tkekm(o, g, ts.nm, w.d1, w.d3, w.d4, w.d5, kmh, kmv, khh, khv, ts.cme, ts.ce1, ts.ce2,
         tkea, ts.lenscl, ts.dissten);
-  tkebc(o, b, tkea, kmh, kmv, khh, khv);
+  tkebc(o, b, tkea, kmh, kmv, khh, khv, sfc);
   const int nk = b.nk;
   Kokkos::parallel_for("turb_tke3d_tb", box2(0, b.ni + 1, 0, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
     tke3d(i, j, 1) = tkea(i, j, 1);
     tke3d(i, j, nk + 1) = tkea(i, j, nk + 1);
   });
-  gettau(o, b, kmh, kmv, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33);
+  gettau(o, b, kmh, kmv, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, rf, sfc);
+}
+
+void sfc_bcs(const Options& o, const Bounds& b, const sfc::SfcState& s) {
+  for (const FArray3* a : {&s.ust, &s.u1, &s.v1, &s.s1, &s.znt, &s.wspd}) bc2d_level(o, b, *a, 1);
+  const auto zntmp = s.zntmp, znt = s.znt;
+  Kokkos::parallel_for("sfc_zntmp", box2(0, b.ni + 1, 0, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
+    zntmp(i, j, 1) = znt(i, j, 1);
+  });
 }
 
 //------------------------------------------------------------------------------
@@ -792,7 +830,8 @@ void turbt(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
 
 void dissheat(const Options& o, const Constants& c, const Bounds& b, const FArray3& pi0,
               const FArray3& ppi, const FArray4& qa, const FArray3& dissten,
-              const FArray3& thten1, const FArray3& cvm) {
+              const FArray3& thten1, const FArray3& cvm, const FArray3& zf,
+              const sfc::SfcState* sfc) {
   // cvm (solve1: dum1): needed for eqtset=2, imoist=1
   const bool moist2 = (o.eqtset == 2 && o.imoist == 1 && o.idiss == 1);
   {
@@ -810,15 +849,33 @@ void dissheat(const Options& o, const Constants& c, const Bounds& b, const FArra
     });
   }
   if (o.idiss != 1) return;
-  if (o.bbc == 3) throw std::runtime_error("cm1k turb::dissheat: bbc=3 not ported");
+  if (o.bbc == 3 && (!sfc || !zf.is_allocated()))
+    throw std::runtime_error("cm1k turb::dissheat: bbc=3 needs zf and the surface layer state");
   const Real cpdcv = c.cpdcv, cp = c.cp;
-  Kokkos::parallel_for("turb_dissheat", box3(1, b.ni, 1, b.nj, 1, b.nk), KOKKOS_LAMBDA(int i, int j, int k) {
+  // note: dissten stores epsilon (dissipation rate) at w points
+  const int k1 = (o.bbc == 3) ? 2 : 1;
+  Kokkos::parallel_for("turb_dissheat", box3(1, b.ni, 1, b.nj, k1, b.nk), KOKKOS_LAMBDA(int i, int j, int k) {
     const Real epsd = 0.5 * (dissten(i, j, k) + dissten(i, j, k + 1));
     Real dheat;
     if (moist2) dheat = epsd / (cpdcv * cvm(i, j, k) * (pi0(i, j, k) + ppi(i, j, k)));
     else        dheat = epsd / (cp * (pi0(i, j, k) + ppi(i, j, k)));
     thten1(i, j, k) = thten1(i, j, k) + dheat;
   });
+  if (o.bbc == 3) {
+    // surface layer: epsilon from u* and z0 at k=1
+    const auto ust = sfc->ust, zntmp = sfc->zntmp;
+    Kokkos::parallel_for("turb_dissheat_sfc", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+      constexpr Real karman = phys::karman;
+      const int k = 1;
+      const Real dz1 = zf(i, j, 2) - zf(i, j, 1);
+      const Real epsd = (ust(i, j, 1) * ust(i, j, 1) * ust(i, j, 1))
+                        * Kokkos::log((dz1 + zntmp(i, j, 1)) / zntmp(i, j, 1)) / (karman * dz1);
+      Real dheat;
+      if (moist2) dheat = epsd / (cpdcv * cvm(i, j, k) * (pi0(i, j, k) + ppi(i, j, k)));
+      else        dheat = epsd / (cp * (pi0(i, j, k) + ppi(i, j, k)));
+      thten1(i, j, k) = thten1(i, j, k) + dheat;
+    });
+  }
 }
 
 void turbu(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
@@ -1114,9 +1171,11 @@ void vimpl_coefs(const Bounds& b, const FArray3& khv, const FArray3& mf, const F
 void turbs(const Options& o, const Grid& g, int iflux, Real dt, const FArray3& rho,
            const FArray3& rr, const FArray3& rf, const FArray3& s, const FArray3& sten,
            const FArray3& khh, const FArray3& khv, const FArray3& dum7, const FArray3& dum8,
-           const Work& wk) {
-  (void)iflux;   // only used with surface fluxes (dosfcflx), which are not ported
-  if (o.dosfcflx) throw std::runtime_error("cm1k turb::turbs: surface fluxes are not ported");
+           const Work& wk, const FArray3& sflux) {
+  // surface flux of s (turbsz: iflux=1 .and. dosfcflx)
+  const bool use_sflux = (iflux == 1 && o.dosfcflx);
+  if (use_sflux && !sflux.is_allocated())
+    throw std::runtime_error("cm1k turb::turbs: dosfcflx with iflux=1 needs the surface flux");
   const auto& b = g.b;
   const int ni = b.ni, nj = b.nj, nk = b.nk;
   if (nk < 2) throw std::runtime_error("cm1k turb::turbs: nk >= 2 required");
@@ -1166,6 +1225,7 @@ void turbs(const Options& o, const Grid& g, int iflux, Real dt, const FArray3& r
         dumz(i, j, 1) = dumz(i, j, 2);
         dumz(i, j, nk + 1) = dumz(i, j, nk);
       }
+      if (use_sflux) dumz(i, j, 1) = sflux(i, j, 1) * rf(i, j, 1);
       for (int k = 1; k <= nk; ++k)
         turbz(i, j, k) = -(dumz(i, j, k + 1) - dumz(i, j, k)) * rdz * mh(i, j, k);
     });
@@ -1183,6 +1243,7 @@ void turbs(const Options& o, const Grid& g, int iflux, Real dt, const FArray3& r
         dumz(i, j, 1) = -khv(i, j, 2) * (s(i, j, 2) - s(i, j, 1)) * rdz * mf(i, j, 2) * rf(i, j, 2);
         dumz(i, j, nk + 1) = -khv(i, j, nk) * (s(i, j, nk) - s(i, j, nk - 1)) * rdz * mf(i, j, nk) * rf(i, j, nk);
       }
+      if (use_sflux) dumz(i, j, 1) = sflux(i, j, 1) * rf(i, j, 1);   // surface heat/moisture flux
       {
         const int k = 1;
         const Real r2 = dum8(i, j, k);
@@ -1235,9 +1296,12 @@ void turb_tendencies(const Options& o, const Grid& g, const BaseState& base, Rea
                      const FArray3& uten1, const FArray3& vten1, const FArray3& wten1,
                      const FArray3& thten1, const FArray4& qten,
                      const FArray3& kmh, const FArray3& kmv, const FArray3& khh, const FArray3& khv,
-                     const TurbState& ts, const Work& wk) {
+                     const TurbState& ts, const Work& wk, const sfc::SfcState* sfc) {
   o.check();
+  if (o.dosfcflx && !sfc)
+    throw std::runtime_error("cm1k turb::turb_tendencies: dosfcflx needs the surface layer state");
   const auto& b = g.b;
+  const FArray3 thflux = sfc ? sfc->thflux : FArray3(), qvflux = sfc ? sfc->qvflux : FArray3();
   turbu(o, g, dt, rho, rf, ua, uten1, wa, ts.t11, ts.t12, ts.t13, kmv, wk);
   turbv(o, g, dt, rho, rf, va, vten1, wa, ts.t12, ts.t22, ts.t23, kmv, wk);
   turbw(o, g, dt, rho, rf, wa, wten1, ts.t13, ts.t23, ts.t33, kmh, wk);
@@ -1248,10 +1312,11 @@ void turb_tendencies(const Options& o, const Grid& g, const BaseState& base, Rea
     const Real tem = th0(1, 1, k) - th0r;
     sadv(i, j, k) = tem + tha(i, j, k);
   });
-  turbs(o, g, 1, dt, rho, rr, rf, sadv, thten1, khh, khv, wk.d7, wk.d8, wk);
+  turbs(o, g, 1, dt, rho, rr, rf, sadv, thten1, khh, khv, wk.d7, wk.d8, wk, thflux);
   if (o.imoist == 1)
     for (int n = 1; n <= o.numq; ++n)
-      turbs(o, g, (n == o.nqv) ? 1 : 0, dt, rho, rr, rf, slice(qa, n), slice(qten, n), khh, khv, wk.d7, wk.d8, wk);
+      turbs(o, g, (n == o.nqv) ? 1 : 0, dt, rho, rr, rf, slice(qa, n), slice(qten, n), khh, khv, wk.d7, wk.d8, wk,
+            qvflux);
 }
 
 //------------------------------------------------------------------------------
