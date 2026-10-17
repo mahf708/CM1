@@ -51,4 +51,3 @@ subroutine cm1f_turb_gettau(rf, mf, kmh, kmv, ua, va, wa, t11, t12, t13, t22, t2
               rf, mf, s1, s2, s3, s4, s5, s6, kmh, kmv, t11, t12, t13, t22, t23, t33, &
               ua, ua, va, va, wa, avg, avg, avg, avg, avg, bndy, kbdy)
 end subroutine cm1f_turb_gettau
-
