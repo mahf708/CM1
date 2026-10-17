@@ -17,9 +17,10 @@ _DEFAULTS = dict(ptype=1, efall=0, axisymm=0, qsmall=1.0e-14)
 def _opt(cfg, name):
     if cfg is None:
         return _DEFAULTS[name]
-    if isinstance(cfg, dict):
-        return cfg.get(name, _DEFAULTS[name])
-    return getattr(cfg, name, _DEFAULTS[name])
+    # dict.get / Config.get: an unset option falls back to this module's
+    # default rather than Config's zero for unknown names
+    get = getattr(cfg, "get", None)
+    return get(name, _DEFAULTS[name]) if get else getattr(cfg, name, _DEFAULTS[name])
 
 
 def mp_driver(

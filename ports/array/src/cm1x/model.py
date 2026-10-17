@@ -50,8 +50,10 @@ class Model:
     arrays keyed by Fortran name), ``nstep``, ``mtime`` (s), ``dt``.
     """
 
-    def __init__(self, namelist_path, backend="numpy", dtype="float64"):
-        self.cfg = cfg = read_namelist(namelist_path)
+    def __init__(
+        self, namelist_path, backend="numpy", dtype="float64", fortran_dp=False
+    ):
+        self.cfg = cfg = read_namelist(namelist_path, dp=fortran_dp)
         self.bk = bk = get_backend(backend, dtype)
         self.grid, self.base, st = initialize(cfg, bk)
         g = self.grid

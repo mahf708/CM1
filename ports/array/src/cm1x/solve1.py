@@ -24,9 +24,10 @@ from .misc import QSMALL, TSMALL
 def _opt(cfg, name, default):
     if cfg is None:
         return default
-    if isinstance(cfg, dict):
-        return cfg.get(name, default)
-    return getattr(cfg, name, default)
+    # dict.get / Config.get: an unset option falls back to ``default``
+    # rather than Config's zero for unknown names
+    get = getattr(cfg, "get", None)
+    return get(name, default) if get else getattr(cfg, name, default)
 
 
 def _check(cfg):
