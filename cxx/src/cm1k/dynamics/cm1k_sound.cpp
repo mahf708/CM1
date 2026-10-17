@@ -126,6 +126,9 @@ void sound(const BcParams& bc, const SoundArgs& a) {
   const Real temy = dts * 0.5 * rdy;
 
   for (int n = 1; n <= nloop; ++n) {
+    //  open boundary conditions (radbc for irbc=2, ssopenbc*, roflux)
+    if (a.obc) sound_openbc(*a.obc, u3d, uten, v3d, vten, dts);
+
     //  integrate u,v forward in time (Cartesian grid without terrain)
     Kokkos::parallel_for("sound_uv", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       u3d(i, j, k) = u3d(i, j, k) + dtu(i, j) * (uten(i, j, k)

@@ -142,6 +142,30 @@ TEST_CASE("dyncore + LES TKE + Kessler: kessler_tke restarted from a mid-run dum
   std::printf("kessler_tke: restart K checked from %d dumps\n", nchecked);
 }
 
+TEST_CASE("dyncore + Kessler: kessler_openbc (open-radiative bc, irbc=4) vs Fortran", "[dyn][step][kessler][openbc]") {
+  // wbc=ebc=sbc=nbc=2: radbcew4/radbcns4 phase speeds carried between RK
+  // stages and steps, ssopenbc* in the acoustic steps, inflow-zeroed fluxes
+  // in advection and pdef
+  run_case("kessler_openbc", 0.0);
+}
+
+TEST_CASE("dyncore: dry_openbc (open bc, irbc=2, roflux=1, nudgeobc=1) vs Fortran", "[dyn][step][openbc]") {
+  run_case("dry_openbc", 0.0);
+}
+
+TEST_CASE("dyncore: dry_openbc_walls (open E/W, walls S/N, irbc=1) vs Fortran", "[dyn][step][openbc]") {
+  run_case("dry_openbc_walls", 0.0);
+}
+
+TEST_CASE("dyncore + LES TKE + Kessler: kessler_tke_openbc (open E/W, walls S/N) vs Fortran",
+          "[dyn][step][kessler][turb][openbc]") {
+  run_case("kessler_tke_openbc", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + Kessler: kessler_openbc from Model::init (no dump)", "[dyn][step][init][kessler][openbc]") {
+  run_case("kessler_openbc", 0.0, true);
+}
+
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
   run_case("dry_bubble", 1e-12, true);
 }
@@ -159,8 +183,19 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   nl.set("terrain_flag", ".true.");
   REQUIRE_THROWS(DynConfig::from_namelist(nl).check());
   nl.set("terrain_flag", ".false.");
-  nl.set("wbc", "2");
-  REQUIRE_THROWS(DynConfig::from_namelist(nl).check());
+  // lateral boundaries: 1..4 are ported (2 with irbc = 1, 2, 4)
+  nl.set("wbc", "2"); nl.set("ebc", "2");
+  REQUIRE_NOTHROW(DynConfig::from_namelist(nl).check());
+  for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+         {"irbc", "3"}, {"irbc", "0"}, {"roflux", "2"}, {"nudgeobc", "2"}, {"wbc", "5"}}) {
+    auto x = nl;
+    x.set(k, v);
+    INFO(k << " = " << v);
+    REQUIRE_THROWS(DynConfig::from_namelist(x).check());
+  }
+  nl.set("wbc", "1"); nl.set("ebc", "1");
+  nl.set("irbc", "3");   // irbc only matters for open boundaries
+  REQUIRE_NOTHROW(DynConfig::from_namelist(nl).check());
 
   // subgrid turbulence: sgsmodel=1 (LES TKE) is ported, other options throw
   auto tk = Namelist::from_file(cm1k::testing::case_namelist("kessler_tke"));

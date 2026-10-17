@@ -8,7 +8,8 @@ namelist when the case runs).
 
 All cases are serial, double precision (`gfortran -fdefault-real-8
 -ffp-contract=off`), 3D, no radiation, no surface fluxes, no explicit
-diffusion (`idiff = 0`), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`),
+diffusion (`idiff = 0`), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
+except the `*_openbc*` cases),
 free-slip top and bottom, a warm bubble (`iinit = 1`) with no random
 perturbations (`irandp = 0`), and the time-split compressible solver
 (`psolver = 3`), `dtl = 6 s`.
@@ -22,6 +23,10 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `kessler_saturated` | 32×32×20, 2 km, 500 m | 30 steps (180 s) | every step | Kessler with a saturated, neutrally stable sounding (`isnd = 4`, Bryan-Fritsch 2002), zero winds: cloud water and saturation adjustment active from t = 0 |
 | `kessler_periodic` | 40×40×40, 1 km, 500 m | 10 steps (60 s) | every step | Kessler, Weisman-Klemp sounding and winds, finer grid; shared with the array-backend port (writes netCDF output, so netCDF-Fortran is required) |
 | `kessler_periodic_long` | 40×40×40, 1 km, 500 m | 300 steps (1800 s) | every 50 steps | `kessler_periodic` run for 30 min: a deep convective cloud with rain, for long-run drift checks |
+| `kessler_openbc` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | as `kessler_bubble` with open-radiative lateral boundaries on all sides (`wbc = ebc = sbc = nbc = 2`, `irbc = 4`: Durran-Klemp phase speeds) |
+| `dry_openbc` | 32×32×20, 2 km, 500 m | 60 steps (360 s) | every 5 steps | as `dry_shear` with open boundaries on all sides, `irbc = 2` (Klemp-Wilhelmson on small steps), `roflux = 1` (restricted outward mass flux), `nudgeobc = 1`, `alphobc = 40` |
+| `dry_openbc_walls` | 32×32×20, 2 km, 500 m | 60 steps (360 s) | every 5 steps | as `dry_shear` with open west/east boundaries (`irbc = 1`, Klemp-Wilhelmson on large steps, `cstar = 25`), a free-slip wall south (`sbc = 3`) and a no-slip wall north (`nbc = 4`) |
+| `kessler_tke_openbc` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | as `kessler_tke` with open west/east boundaries (`irbc = 4`), a free-slip wall south (`sbc = 3`) and a no-slip wall north (`nbc = 4`): the subgrid turbulence's lateral boundary code |
 
 The table is descriptive; the namelists are authoritative.
 
