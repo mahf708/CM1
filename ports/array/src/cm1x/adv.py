@@ -7,11 +7,15 @@ Also contains, because they are only used by these routines:
   * ``getdivx`` from src/misclibs.F (rescales the small-step-averaged
     velocities to mass fluxes and recomputes divx).
 
-Supported configuration (the reference case kessler_periodic): flux-form
-advection of order 5 in both directions, no WENO, no terrain, Cartesian grid,
-periodic lateral boundaries, no immersed boundaries, no large-scale subsidence,
-no 6th-order artificial diffusion, no budgets. Any other option raises
-NotImplementedError.
+Supported configuration (reference cases kessler_periodic and
+supercell_kessler): flux-form advection of order 5; WENO5 (weno_order=5,
+siform=2) for scalars when advwenos=1, or advwenos=2 on the last RK stage
+(advwenov must be 0); periodic (bc=1) or open (bc=2, single process:
+ibw=ibe=ibs=ibn=1) lateral boundaries, including the stat_qsrc boundary-flux
+statistic ``bsq``; no terrain, Cartesian grid, no immersed boundaries, no
+large-scale subsidence, no 6th-order artificial diffusion, no budgets. Any
+other option raises NotImplementedError. (imove/umove/vmove do not enter
+these routines: CM1 only uses them in movesfc, for sfcmodel=2..4.)
 
 Options come from ``cfg`` (a namelist-like object or dict; missing entries fall
 back to ``DEFAULTS``, which mirror ports/reference/kessler_periodic).
@@ -25,8 +29,19 @@ their ``(1,1,k)`` column is used here (no terrain).
 
 from __future__ import annotations
 
-from .adv_routines import col, hadv_flx5, put3, sub3, vadv_flx5, xrow, yrow
-from .bc import periodic_xy
+from .adv_routines import (
+    col,
+    hadv_flx5,
+    hadv_weno5,
+    ibflags,
+    put3,
+    sub3,
+    vadv_flx5,
+    vadv_weno5,
+    xrow,
+    yrow,
+)
+from .grid import fi, fk
 
 DEFAULTS = dict(
     hadvordrs=5,
@@ -47,6 +62,7 @@ DEFAULTS = dict(
     do_ib=False,
     dolsw=False,
     pdscheme=1,
+    stat_qsrc=0,
     smeps=1.0e-30,
     nrkmax=3,
 )
@@ -66,10 +82,12 @@ def _check_common(cfg, who):
         raise NotImplementedError(f"{who}: terrain_flag=.true. not ported")
     if _opt(cfg, "axisymm") != 0:
         raise NotImplementedError(f"{who}: axisymm=1 not ported")
-    for b in ("wbc", "ebc", "sbc", "nbc"):
-        if _opt(cfg, b) != 1:
+    for a, b in (("wbc", "ebc"), ("sbc", "nbc")):
+        va, vb = _opt(cfg, a), _opt(cfg, b)
+        if va not in (1, 2) or vb not in (1, 2) or ((va == 1) != (vb == 1)):
             raise NotImplementedError(
-                f"{who}: only periodic lateral BCs (={b}=1) are ported"
+                f"{who}: only periodic (1) or open (2) lateral BCs are ported "
+                f"({a}={va}, {b}={vb})"
             )
     if _opt(cfg, "do_ib"):
         raise NotImplementedError(f"{who}: immersed boundaries not ported")
@@ -77,9 +95,13 @@ def _check_common(cfg, who):
         raise NotImplementedError(f"{who}: large-scale subsidence (dolsw) not ported")
 
 
-def _check_order(who, hadvorder, vadvorder, doweno):
+def _check_order(who, hadvorder, vadvorder, doweno, cfg=None, weno_ok=False):
     if doweno:
-        raise NotImplementedError(f"{who}: WENO advection not ported")
+        if not weno_ok:
+            raise NotImplementedError(f"{who}: WENO advection not ported")
+        if _opt(cfg, "weno_order") != 5:
+            raise NotImplementedError(f"{who}: only weno_order=5 ported")
+        return
     if hadvorder != 5 or vadvorder != 5:
         raise NotImplementedError(
             f"{who}: only 5th-order advection ported (got {hadvorder},{vadvorder})"
@@ -106,6 +128,53 @@ def _vflux_to_tend(bk, g, dumz, K, J, I, mh):
     last = (dn[-1:]) * rdz * col(mh, (nk, nk))
     mid = -(up[1:-1] - dn[1:-1]) * rdz * col(mh, (2, nk - 1))
     return xp.concat([first, mid, last], axis=0)
+
+
+def _setwhere(bk, a, K, J, I, cond, new):
+    """Return ``a`` with region (K, J, I) set to ``new`` where ``cond``."""
+    return put3(bk, a, K, J, I, bk.xp.where(cond, new, sub3(a, K, J, I)))
+
+
+def _bcs(bk, g, s, cfg=None):
+    """bc.F ``bcs`` for k=1..nk: periodic (bc=1) or open/zero-gradient
+    (bc=2) halos; west, east, then south, north (as in CM1)."""
+    xp = bk.xp
+    n, ni, nj = g.ngxy, g.ni, g.nj
+    K = slice(fk(1), fk(g.nk) + 1)
+    ibw, ibe, ibs, ibn = ibflags(cfg)
+    if ibw:
+        J0 = slice(fi(0), fi(nj + 1) + 1)
+        edge = s[K, J0, fi(1) : fi(1) + 1]
+        s = bk.set(s, (K, J0, slice(0, fi(1))), xp.concat([edge] * n, axis=-1))
+    else:
+        s = bk.set(s, (K, slice(None), slice(0, n)), s[K, :, ni : ni + n])
+    if ibe:
+        J0 = slice(fi(0), fi(nj + 1) + 1)
+        edge = s[K, J0, fi(ni) : fi(ni) + 1]
+        s = bk.set(
+            s,
+            (K, J0, slice(fi(ni + 1), fi(ni + n) + 1)),
+            xp.concat([edge] * n, axis=-1),
+        )
+    else:
+        s = bk.set(s, (K, slice(None), slice(n + ni, 2 * n + ni)), s[K, :, n : 2 * n])
+    if ibs:
+        I0 = slice(fi(0), fi(ni + 1) + 1)
+        edge = s[K, fi(1) : fi(1) + 1, I0]
+        s = bk.set(s, (K, slice(0, fi(1)), I0), xp.concat([edge] * n, axis=-2))
+    else:
+        s = bk.set(s, (K, slice(0, n), slice(None)), s[K, nj : nj + n, :])
+    if ibn:
+        I0 = slice(fi(0), fi(ni + 1) + 1)
+        edge = s[K, fi(nj) : fi(nj) + 1, I0]
+        s = bk.set(
+            s,
+            (K, slice(fi(nj + 1), fi(nj + n) + 1), I0),
+            xp.concat([edge] * n, axis=-2),
+        )
+    else:
+        s = bk.set(s, (K, slice(n + nj, 2 * n + nj), slice(None)), s[K, n : 2 * n, :])
+    return s
 
 
 # ===========================================================================
@@ -169,8 +238,8 @@ def _pd_mass_flag(bk, d, axis, smeps):
 
 
 def pdefx1(bk, g, *, uh, rho0, rru, advx, s0, s, dt, cfg=None):
-    """Port of ``pdefx1`` (no terrain, Cartesian, periodic). Returns {'dum'}
-    with the periodic halo filled (``call bcs(dum)``)."""
+    """Port of ``pdefx1`` (no terrain, Cartesian; periodic or open). Returns
+    {'dum'} with the halo filled (``call bcs(dum)``)."""
     K, J, I = (1, g.nk), (1, g.nj), (1, g.ni)
     rdx = g.rdx
     a = sub3(advx, K, J, I)
@@ -182,7 +251,30 @@ def pdefx1(bk, g, *, uh, rho0, rru, advx, s0, s, dt, cfg=None):
         * xrow(uh, I)
     )
     dum = put3(bk, bk.zeros(g.s_shape), K, J, I, v)
-    return {"dum": periodic_xy(bk, dum, g)}
+    ibw, ibe, _, _ = ibflags(cfg)
+    if ibw:
+        Ib = (1, 1)
+        dum = _setwhere(
+            bk,
+            dum,
+            K,
+            J,
+            Ib,
+            sub3(rru, K, J, Ib) >= 0.0,
+            sub3(rho0, K, J, Ib) * sub3(s0, K, J, Ib),
+        )
+    if ibe:
+        Ib = (g.ni, g.ni)
+        dum = _setwhere(
+            bk,
+            dum,
+            K,
+            J,
+            Ib,
+            sub3(rru, K, J, Ib, di=1) <= 0.0,
+            sub3(rho0, K, J, Ib) * sub3(s0, K, J, Ib),
+        )
+    return {"dum": _bcs(bk, g, dum, cfg)}
 
 
 def pdefx2(bk, g, *, uh, rho0, rru, advx, dum, s0, s, dt, cfg=None):
@@ -203,7 +295,8 @@ def pdefx2(bk, g, *, uh, rho0, rru, advx, dum, s0, s, dt, cfg=None):
 
 
 def pdefy1(bk, g, *, vh, rho0, rrv, advy, s0, s, dt, cfg=None):
-    """Port of ``pdefy1`` (no terrain, periodic). Returns {'dum'} (halo filled)."""
+    """Port of ``pdefy1`` (no terrain; periodic or open). Returns {'dum'}
+    (halo filled)."""
     K, J, I = (1, g.nk), (1, g.nj), (1, g.ni)
     rdy = g.rdy
     v = col(rho0, K) * sub3(s0, K, J, I) + dt * (
@@ -214,7 +307,30 @@ def pdefy1(bk, g, *, vh, rho0, rrv, advy, s0, s, dt, cfg=None):
         * yrow(vh, J)
     )
     dum = put3(bk, bk.zeros(g.s_shape), K, J, I, v)
-    return {"dum": periodic_xy(bk, dum, g)}
+    _, _, ibs, ibn = ibflags(cfg)
+    if ibs:
+        Jb = (1, 1)
+        dum = _setwhere(
+            bk,
+            dum,
+            K,
+            Jb,
+            I,
+            sub3(rrv, K, Jb, I) >= 0.0,
+            sub3(rho0, K, Jb, I) * sub3(s0, K, Jb, I),
+        )
+    if ibn:
+        Jb = (g.nj, g.nj)
+        dum = _setwhere(
+            bk,
+            dum,
+            K,
+            Jb,
+            I,
+            sub3(rrv, K, Jb, I, dj=1) <= 0.0,
+            sub3(rho0, K, Jb, I) * sub3(s0, K, Jb, I),
+        )
+    return {"dum": _bcs(bk, g, dum, cfg)}
 
 
 def pdefy2(bk, g, *, vh, rho0, rrv, advy, dum, s0, s, dt, cfg=None):
@@ -294,31 +410,143 @@ def advs(
     bflag=0,
     weps=None,
     pdefweno=0,
+    bsq=0.0,
+    ruh=None,
+    rvh=None,
+    rmh=None,
     cfg=None,
 ):
     """Port of ``advs``: adds the advective tendency of scalar ``s`` to ``sten``.
 
     ``s0`` is the scalar at the start of the RK step (used by the pdef
-    correction, active when ``pdef=1``). Returns {'sten'}.
+    correction, active when ``pdef=1``). WENO (weno_order=5) is used when
+    ``wflag=1`` and advwenos=1, or advwenos=2 on the last RK stage; ``weps``
+    is then required. Open lateral boundaries (wbc/ebc/sbc/nbc=2) follow
+    CM1's inflow treatment.
+
+    Returns {'sten'}; with ``bflag=1``, stat_qsrc=1 and an open boundary it
+    also returns 'bsq' (``bsq`` plus the lateral boundary flux of this
+    stage; needs ``ruh``, ``rvh``, ``rmh``).
     """
     _check_common(cfg, "advs")
     nrkmax = _opt(cfg, "nrkmax")
     advwenos = _opt(cfg, "advwenos")
     doweno = wflag == 1 and (advwenos == 1 or (advwenos == 2 and nrk == nrkmax))
-    _check_order("advs", hadvorder, vadvorder, doweno)
+    _check_order("advs", hadvorder, vadvorder, doweno, cfg, weno_ok=True)
+    if doweno and weps is None:
+        raise ValueError("advs: weps is required when WENO is active")
     if diffit == 1:
         raise NotImplementedError("advs: diffit=1 (6th-order diffusion) not ported")
     if dobud:
         raise NotImplementedError("advs: budget diagnostics not ported")
-    K, J, I = (1, g.nk), (1, g.nj), (1, g.ni)
+    ni, nj = g.ni, g.nj
+    K, J, I = (1, g.nk), (1, nj), (1, ni)
     rdx, rdy = g.rdx, g.rdy
+    ibw, ibe, ibs, ibn = ibflags(cfg)
 
-    fl = hadv_flx5(bk, g, stag=1, c1=c1, c2=c2, rru=rru, rrv=rrv, a=s)
+    if doweno:
+        fl = hadv_weno5(
+            bk,
+            g,
+            stag=1,
+            c1=c1,
+            c2=c2,
+            rru=rru,
+            rrv=rrv,
+            a=s,
+            pdef=pdef,
+            weps=weps,
+            cfg=cfg,
+        )
+    else:
+        fl = hadv_flx5(bk, g, stag=1, c1=c1, c2=c2, rru=rru, rrv=rrv, a=s, cfg=cfg)
     dumx, dumy = fl["dumx"], fl["dumy"]
+
+    # open bc: set hadv to zero at inflow
+    if ibw:
+        Ib = (1, 1)
+        dumx = _setwhere(
+            bk, dumx, K, J, Ib, sub3(rru, K, J, Ib) >= 0.0, sub3(dumx, K, J, Ib, di=1)
+        )
+    if ibe:
+        Ib = (ni + 1, ni + 1)
+        dumx = _setwhere(
+            bk, dumx, K, J, Ib, sub3(rru, K, J, Ib) <= 0.0, sub3(dumx, K, J, Ib, di=-1)
+        )
+    if ibs:
+        Jb = (1, 1)
+        dumy = _setwhere(
+            bk, dumy, K, Jb, I, sub3(rrv, K, Jb, I) >= 0.0, sub3(dumy, K, Jb, I, dj=1)
+        )
+    if ibn:
+        Jb = (nj + 1, nj + 1)
+        dumy = _setwhere(
+            bk, dumy, K, Jb, I, sub3(rrv, K, Jb, I) <= 0.0, sub3(dumy, K, Jb, I, dj=-1)
+        )
+
+    # boundary-flux statistics (stat_qsrc): dumk1 (x), dumk2 (y)
+    dobsq = bflag == 1 and _opt(cfg, "stat_qsrc") == 1
+    out_bsq = None
+    if dobsq and (ibw or ibe or ibs or ibn):
+        xp = bk.xp
+        out_bsq = bsq
+        if ibw or ibe:
+            dk1 = 0.0
+            if ibw:
+                Ib = (1, 1)
+                dk1 = dk1 + xp.sum(
+                    sub3(dumx, K, J, Ib) * yrow(rvh, J) * sub3(rmh, K, J, Ib),
+                    axis=(1, 2),
+                )
+            if ibe:
+                Ib = (ni + 1, ni + 1)
+                dk1 = dk1 - xp.sum(
+                    sub3(dumx, K, J, Ib) * yrow(rvh, J) * sub3(rmh, K, J, Ib),
+                    axis=(1, 2),
+                )
+            out_bsq = out_bsq + xp.sum(dk1 * (dt * g.dy * g.dz))
+        if ibs or ibn:
+            dk2 = 0.0
+            if ibs:
+                Jb = (1, 1)
+                dk2 = dk2 + xp.sum(
+                    sub3(dumy, K, Jb, I) * xrow(ruh, I) * sub3(rmh, K, Jb, I),
+                    axis=(1, 2),
+                )
+            if ibn:
+                Jb = (nj + 1, nj + 1)
+                dk2 = dk2 - xp.sum(
+                    sub3(dumy, K, Jb, I) * xrow(ruh, I) * sub3(rmh, K, Jb, I),
+                    axis=(1, 2),
+                )
+            out_bsq = out_bsq + xp.sum(dk2 * (dt * g.dx * g.dz))
+
     advx = -(sub3(dumx, K, J, I, di=1) - sub3(dumx, K, J, I)) * rdx * xrow(uh, I)
     advy = -(sub3(dumy, K, J, I, dj=1) - sub3(dumy, K, J, I)) * rdy * yrow(vh, J)
     advx = put3(bk, bk.zeros(g.s_shape), K, J, I, advx)
     advy = put3(bk, bk.zeros(g.s_shape), K, J, I, advy)
+
+    # open bc: subtract-off the divx piece at inflow points
+    def _cx(advx, Ib, cond):
+        new = sub3(advx, K, J, Ib) - sub3(s, K, J, Ib) * (
+            sub3(rru, K, J, Ib, di=1) - sub3(rru, K, J, Ib)
+        ) * rdx * xrow(uh, Ib)
+        return _setwhere(bk, advx, K, J, Ib, cond, new)
+
+    def _cy(advy, Jb, cond):
+        new = sub3(advy, K, Jb, I) - sub3(s, K, Jb, I) * (
+            sub3(rrv, K, Jb, I, dj=1) - sub3(rrv, K, Jb, I)
+        ) * rdy * yrow(vh, Jb)
+        return _setwhere(bk, advy, K, Jb, I, cond, new)
+
+    if ibw:
+        advx = _cx(advx, (1, 1), sub3(rru, K, J, (1, 1)) >= 0.0)
+    if ibe:
+        advx = _cx(advx, (ni, ni), sub3(rru, K, J, (ni + 1, ni + 1)) <= 0.0)
+    if ibs:
+        advy = _cy(advy, (1, 1), sub3(rrv, K, (1, 1), I) >= 0.0)
+    if ibn:
+        advy = _cy(advy, (nj, nj), sub3(rrv, K, (nj + 1, nj + 1), I) <= 0.0)
 
     dopd = _opt(cfg, "pdscheme") == 1 and pdef == 1
     if dopd:
@@ -329,7 +557,22 @@ def advs(
             bk, g, vh=vh, rho0=rho0, rrv=rrv, advy=advy, s0=s0, s=s, dt=dt, cfg=cfg
         )["dum"]
 
-    dumz = vadv_flx5(bk, g, stag=1, c1=c1, c2=c2, rrw=rrw, a=s)["dumz"]
+    if doweno:
+        dumz = vadv_weno5(
+            bk,
+            g,
+            stag=1,
+            c1=c1,
+            c2=c2,
+            rrw=rrw,
+            a=s,
+            pdef=pdef,
+            pdefweno=pdefweno,
+            weps=weps,
+            cfg=cfg,
+        )["dumz"]
+    else:
+        dumz = vadv_flx5(bk, g, stag=1, c1=c1, c2=c2, rrw=rrw, a=s, cfg=cfg)["dumz"]
     advz = put3(
         bk, bk.zeros(g.s_shape), K, J, I, _vflux_to_tend(bk, g, dumz, K, J, I, mh)
     )
@@ -371,6 +614,8 @@ def advs(
         + sub3(s, K, J, I) * sub3(divx, K, J, I)
     ) * col(rr0, K)
     sten = put3(bk, bk.copy(sten), K, J, I, sub3(sten, K, J, I) + tend)
+    if out_bsq is not None:
+        return {"sten": sten, "bsq": out_bsq}
     return {"sten": sten}
 
 
@@ -408,16 +653,47 @@ def advu(
     _check_order("advu", _opt(cfg, "hadvordrv"), _opt(cfg, "vadvordrv"), doweno)
     if doubud:
         raise NotImplementedError("advu: budget diagnostics not ported")
-    K, J = (1, g.nk), (1, g.nj)
-    I = (1, g.ni + 1)  # periodic: i1=1, i2=ni+1
+    nj = g.nj
+    _, _, ibs, ibn = ibflags(cfg)
+    ibw, ibe = ibflags(cfg)[:2]
+    K, J = (1, g.nk), (1, nj)
+    I = (2 if ibw else 1, g.ni if ibe else g.ni + 1)  # i1..i2
     rdx, rdy = g.rdx, g.rdy
 
-    fl = hadv_flx5(bk, g, stag=2, c1=c1, c2=c2, rru=rru, rrv=rrv, a=u3d)
+    fl = hadv_flx5(bk, g, stag=2, c1=c1, c2=c2, rru=rru, rrv=rrv, a=u3d, cfg=cfg)
     dumx, dumy = fl["dumx"], fl["dumy"]
+    if ibs:
+        Jb = (1, 1)
+        cond = (sub3(rrv, K, Jb, I) + sub3(rrv, K, Jb, I, di=-1)) >= 0.0
+        dumy = _setwhere(bk, dumy, K, Jb, I, cond, sub3(dumy, K, Jb, I, dj=1))
+    if ibn:
+        Jb = (nj + 1, nj + 1)
+        cond = (sub3(rrv, K, Jb, I) + sub3(rrv, K, Jb, I, di=-1)) <= 0.0
+        dumy = _setwhere(bk, dumy, K, Jb, I, cond, sub3(dumy, K, Jb, I, dj=-1))
     advx = -(sub3(dumx, K, J, I) - sub3(dumx, K, J, I, di=-1)) * rdx * xrow(uf, I)
     advy = -(sub3(dumy, K, J, I, dj=1) - sub3(dumy, K, J, I)) * rdy * yrow(vh, J)
 
-    dumz = vadv_flx5(bk, g, stag=2, c1=c1, c2=c2, rrw=rrw, a=u3d)["dumz"]
+    def _cy(advy, j, jc, ge):
+        # advy(:,j) -= u*0.5*((rrv(i-1,j+1)-rrv(i-1,j))+(rrv(i,j+1)-rrv(i,j)))*rdy*vh(j)
+        Jb = (j, j)
+        v = sub3(rrv, K, (jc, jc), I) + sub3(rrv, K, (jc, jc), I, di=-1)
+        cond = v >= 0.0 if ge else v <= 0.0
+        old = advy[:, j - 1 : j, :]
+        new = old - sub3(u3d, K, Jb, I) * 0.5 * (
+            (sub3(rrv, K, Jb, I, dj=1, di=-1) - sub3(rrv, K, Jb, I, di=-1))
+            + (sub3(rrv, K, Jb, I, dj=1) - sub3(rrv, K, Jb, I))
+        ) * rdy * yrow(vh, Jb)
+        xp = bk.xp
+        return xp.concat(
+            [advy[:, : j - 1, :], xp.where(cond, new, old), advy[:, j:, :]], axis=1
+        )
+
+    if ibs:
+        advy = _cy(advy, 1, 1, True)
+    if ibn:
+        advy = _cy(advy, nj, nj + 1, False)
+
+    dumz = vadv_flx5(bk, g, stag=2, c1=c1, c2=c2, rrw=rrw, a=u3d, cfg=cfg)["dumz"]
     advz = _vflux_to_tend(bk, g, dumz, K, J, I, mh)
 
     tend = (
@@ -460,16 +736,46 @@ def advv(
     _check_order("advv", _opt(cfg, "hadvordrv"), _opt(cfg, "vadvordrv"), doweno)
     if dovbud:
         raise NotImplementedError("advv: budget diagnostics not ported")
-    K, I = (1, g.nk), (1, g.ni)
-    J = (1, g.nj + 1)  # periodic: j1=1, j2=nj+1
+    ni = g.ni
+    ibw, ibe, ibs, ibn = ibflags(cfg)
+    K, I = (1, g.nk), (1, ni)
+    J = (2 if ibs else 1, g.nj if ibn else g.nj + 1)  # j1..j2
     rdx, rdy = g.rdx, g.rdy
 
-    fl = hadv_flx5(bk, g, stag=3, c1=c1, c2=c2, rru=rru, rrv=rrv, a=v3d)
+    fl = hadv_flx5(bk, g, stag=3, c1=c1, c2=c2, rru=rru, rrv=rrv, a=v3d, cfg=cfg)
     dumx, dumy = fl["dumx"], fl["dumy"]
+    if ibw:
+        Ib = (1, 1)
+        cond = (sub3(rru, K, J, Ib) + sub3(rru, K, J, Ib, dj=-1)) >= 0.0
+        dumx = _setwhere(bk, dumx, K, J, Ib, cond, sub3(dumx, K, J, Ib, di=1))
+    if ibe:
+        Ib = (ni + 1, ni + 1)
+        cond = (sub3(rru, K, J, Ib) + sub3(rru, K, J, Ib, dj=-1)) <= 0.0
+        dumx = _setwhere(bk, dumx, K, J, Ib, cond, sub3(dumx, K, J, Ib, di=-1))
     advx = -(sub3(dumx, K, J, I, di=1) - sub3(dumx, K, J, I)) * rdx * xrow(uh, I)
     advy = -(sub3(dumy, K, J, I) - sub3(dumy, K, J, I, dj=-1)) * rdy * yrow(vf, J)
 
-    dumz = vadv_flx5(bk, g, stag=3, c1=c1, c2=c2, rrw=rrw, a=v3d)["dumz"]
+    def _cx(advx, i, ic, ge):
+        # advx(i,:) -= v*0.5*((rru(i+1,j-1)-rru(i,j-1))+(rru(i+1,j)-rru(i,j)))*rdx*uh(i)
+        Ib = (i, i)
+        u = sub3(rru, K, J, (ic, ic)) + sub3(rru, K, J, (ic, ic), dj=-1)
+        cond = u >= 0.0 if ge else u <= 0.0
+        old = advx[:, :, i - 1 : i]
+        new = old - sub3(v3d, K, J, Ib) * 0.5 * (
+            (sub3(rru, K, J, Ib, di=1, dj=-1) - sub3(rru, K, J, Ib, dj=-1))
+            + (sub3(rru, K, J, Ib, di=1) - sub3(rru, K, J, Ib))
+        ) * rdx * xrow(uh, Ib)
+        xp = bk.xp
+        return xp.concat(
+            [advx[:, :, : i - 1], xp.where(cond, new, old), advx[:, :, i:]], axis=2
+        )
+
+    if ibw:
+        advx = _cx(advx, 1, 1, True)
+    if ibe:
+        advx = _cx(advx, ni, ni + 1, False)
+
+    dumz = vadv_flx5(bk, g, stag=3, c1=c1, c2=c2, rrw=rrw, a=v3d, cfg=cfg)["dumz"]
     advz = _vflux_to_tend(bk, g, dumz, K, J, I, mh)
 
     tend = (
@@ -520,12 +826,83 @@ def advw(
     K, J, I = (2, nk), (1, g.nj), (1, g.ni)
     rdx, rdy, rdz = g.rdx, g.rdy, g.rdz
 
-    fl = hadv_flx5(bk, g, stag=4, c1=c1, c2=c2, rru=rru, rrv=rrv, a=w3d)
+    ni, nj = g.ni, g.nj
+    ibw, ibe, ibs, ibn = ibflags(cfg)
+
+    def ubar(Ib):
+        cc2 = 0.5 * (sub3(c2, K, J, Ib, di=-1) + sub3(c2, K, J, Ib))
+        cc1 = 1.0 - cc2
+        return cc2 * sub3(rru, K, J, Ib) + cc1 * sub3(rru, K, J, Ib, dk=-1)
+
+    def vbar(Jb):
+        cc2 = 0.5 * (sub3(c2, K, Jb, I, dj=-1) + sub3(c2, K, Jb, I))
+        cc1 = 1.0 - cc2
+        return cc2 * sub3(rrv, K, Jb, I) + cc1 * sub3(rrv, K, Jb, I, dk=-1)
+
+    fl = hadv_flx5(bk, g, stag=4, c1=c1, c2=c2, rru=rru, rrv=rrv, a=w3d, cfg=cfg)
     dumx, dumy = fl["dumx"], fl["dumy"]
+    if ibw:
+        Ib = (1, 1)
+        dumx = _setwhere(
+            bk, dumx, K, J, Ib, ubar(Ib) >= 0.0, sub3(dumx, K, J, Ib, di=1)
+        )
+    if ibe:
+        Ib = (ni + 1, ni + 1)
+        dumx = _setwhere(
+            bk, dumx, K, J, Ib, ubar(Ib) <= 0.0, sub3(dumx, K, J, Ib, di=-1)
+        )
+    if ibs:
+        Jb = (1, 1)
+        dumy = _setwhere(
+            bk, dumy, K, Jb, I, vbar(Jb) >= 0.0, sub3(dumy, K, Jb, I, dj=1)
+        )
+    if ibn:
+        Jb = (nj + 1, nj + 1)
+        dumy = _setwhere(
+            bk, dumy, K, Jb, I, vbar(Jb) <= 0.0, sub3(dumy, K, Jb, I, dj=-1)
+        )
     advx = -(sub3(dumx, K, J, I, di=1) - sub3(dumx, K, J, I)) * rdx * xrow(uh, I)
     advy = -(sub3(dumy, K, J, I, dj=1) - sub3(dumy, K, J, I)) * rdy * yrow(vh, J)
+    xp = bk.xp
 
-    dumz = vadv_flx5(bk, g, stag=4, c1=c1, c2=c2, rrw=rrw, a=w3d)["dumz"]
+    def _cx(advx, i, ic, ge):
+        Ib = (i, i)
+        ub = ubar((ic, ic))
+        cond = ub >= 0.0 if ge else ub <= 0.0
+        old = advx[:, :, i - 1 : i]
+        new = old - sub3(w3d, K, J, Ib) * (
+            sub3(c1, K, J, Ib)
+            * (sub3(rru, K, J, Ib, di=1, dk=-1) - sub3(rru, K, J, Ib, dk=-1))
+            + sub3(c2, K, J, Ib) * (sub3(rru, K, J, Ib, di=1) - sub3(rru, K, J, Ib))
+        ) * rdx * xrow(uh, Ib)
+        return xp.concat(
+            [advx[:, :, : i - 1], xp.where(cond, new, old), advx[:, :, i:]], axis=2
+        )
+
+    def _cy(advy, j, jc, ge):
+        Jb = (j, j)
+        vb = vbar((jc, jc))
+        cond = vb >= 0.0 if ge else vb <= 0.0
+        old = advy[:, j - 1 : j, :]
+        new = old - sub3(w3d, K, Jb, I) * (
+            sub3(c1, K, Jb, I)
+            * (sub3(rrv, K, Jb, I, dj=1, dk=-1) - sub3(rrv, K, Jb, I, dk=-1))
+            + sub3(c2, K, Jb, I) * (sub3(rrv, K, Jb, I, dj=1) - sub3(rrv, K, Jb, I))
+        ) * rdy * yrow(vh, Jb)
+        return xp.concat(
+            [advy[:, : j - 1, :], xp.where(cond, new, old), advy[:, j:, :]], axis=1
+        )
+
+    if ibw:
+        advx = _cx(advx, 1, 1, True)
+    if ibe:
+        advx = _cx(advx, ni, ni + 1, False)
+    if ibs:
+        advy = _cy(advy, 1, 1, True)
+    if ibn:
+        advy = _cy(advy, nj, nj + 1, False)
+
+    dumz = vadv_flx5(bk, g, stag=4, c1=c1, c2=c2, rrw=rrw, a=w3d, cfg=cfg)["dumz"]
     advz = -(sub3(dumz, K, J, I) - sub3(dumz, K, J, I, dk=-1)) * rdz * col(mf, K)
 
     tend = (

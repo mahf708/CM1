@@ -68,13 +68,23 @@ def make_inputs(seed=0):
 
     # moisture-like scalar with zeros so that the pdef correction is exercised
     s = np.maximum(0.0, 1e-3 * rng.standard_normal(ks))
+    # a block of tiny (< weps) values exercises the WENO max|s|<=weps checks
+    tiny = np.random.default_rng(seed + 1000).uniform(0.0, 3e-21, ks)
+    s[:, :, fi(2) : fi(5) + 1] = tiny[:, :, fi(2) : fi(5) + 1]
     s = _per(s)
     s0 = _per(np.maximum(0.0, s + 2e-4 * rng.standard_normal(ks)))
     sten = 1e-6 * rng.standard_normal(ks)
     uten = rng.standard_normal(ku)
     vten = rng.standard_normal(kv)
     wten = rng.standard_normal(kw)
+    r2 = np.random.default_rng(seed + 2000)
+    ruh = 1.0 + 0.02 * r2.standard_normal(ks[2])
+    rvh = 1.0 + 0.02 * r2.standard_normal(ks[1])
+    rmh = 1.0 + 0.05 * r2.standard_normal(ks)
     return dict(
+        ruh=ruh,
+        rvh=rvh,
+        rmh=rmh,
         uh=uh,
         uf=uf,
         vh=vh,
@@ -103,10 +113,36 @@ def make_inputs(seed=0):
     )
 
 
-def fortran(inp, nrk, pdef, wflag=1):
+def _cfg(obc, advwenos, stat_qsrc=0):
+    return dict(
+        wbc=obc, ebc=obc, sbc=obc, nbc=obc, advwenos=advwenos, stat_qsrc=stat_qsrc
+    )
+
+
+def fortran(
+    inp, nrk, pdef, wflag=1, obc=1, advwenos=0, pdefweno=0, wepsf=0.01, bflag=0
+):
     g = G
     p = np.array(
-        [g.ni, g.nj, g.nk, nrk, pdef, wflag, DT, g.dx, g.dy, g.dz, 0, 0], float
+        [
+            g.ni,
+            g.nj,
+            g.nk,
+            nrk,
+            pdef,
+            wflag,
+            DT,
+            g.dx,
+            g.dy,
+            g.dz,
+            obc,
+            advwenos,
+            pdefweno,
+            wepsf,
+            bflag,
+            bflag,
+        ],
+        float,
     )
     outs = dict(
         sten=g.s_shape,
@@ -117,14 +153,20 @@ def fortran(inp, nrk, pdef, wflag=1):
         rrv2=g.v_shape,
         rrw2=g.w_shape,
         divx2=g.s_shape,
+        bsq=(1,),
     )
     return run_driver("adv", {"params": p, **inp}, outs)
 
 
-def python(bk, inp, nrk, pdef, wflag=1):
+def python(
+    bk, inp, nrk, pdef, wflag=1, obc=1, advwenos=0, pdefweno=0, wepsf=0.01, bflag=0
+):
+    from cm1x import constants as c
+
+    cfg = _cfg(obc, advwenos, stat_qsrc=bflag)
     a = {k: bk.asarray(v) for k, v in inp.items()}
     out = {}
-    out["sten"] = adv.advs(
+    rs = adv.advs(
         bk,
         G,
         nrk=nrk,
@@ -147,7 +189,17 @@ def python(bk, inp, nrk, pdef, wflag=1):
         c2=a["c2"],
         hadvorder=5,
         vadvorder=5,
-    )["sten"]
+        weps=wepsf * c.epsilon,
+        pdefweno=pdefweno,
+        bflag=bflag,
+        bsq=0.25,
+        ruh=a["ruh"],
+        rvh=a["rvh"],
+        rmh=a["rmh"],
+        cfg=cfg,
+    )
+    out["sten"] = rs["sten"]
+    out["bsq"] = bk.xp.reshape(rs["bsq"], (1,)) if "bsq" in rs else bk.asarray([0.25])
     out["uten"] = adv.advu(
         bk,
         G,
@@ -164,6 +216,7 @@ def python(bk, inp, nrk, pdef, wflag=1):
         divx=a["divx"],
         c1=a["c1"],
         c2=a["c2"],
+        cfg=cfg,
     )["uten"]
     out["vten"] = adv.advv(
         bk,
@@ -181,6 +234,7 @@ def python(bk, inp, nrk, pdef, wflag=1):
         divx=a["divx"],
         c1=a["c1"],
         c2=a["c2"],
+        cfg=cfg,
     )["vten"]
     out["wten"] = adv.advw(
         bk,
@@ -201,6 +255,7 @@ def python(bk, inp, nrk, pdef, wflag=1):
         hadvorder=5,
         vadvorder=5,
         advweno=0,
+        cfg=cfg,
     )["wten"]
     gd = adv.getdivx(
         bk,
@@ -214,6 +269,7 @@ def python(bk, inp, nrk, pdef, wflag=1):
         rrv=bk.copy(a["v3d"]),
         rrw=bk.copy(a["w3d"]),
         divx=bk.copy(a["divx"]),
+        cfg=cfg,
     )
     out.update(rru2=gd["rru"], rrv2=gd["rrv"], rrw2=gd["rrw"], divx2=gd["divx"])
     return {k: bk.to_numpy(v) for k, v in out.items()}
@@ -249,11 +305,24 @@ def _regions():
 
 
 @requires_gfortran
-@pytest.mark.parametrize("nrk,pdef", [(1, 0), (3, 1)])
-def test_adv_vs_fortran(bk, nrk, pdef):
-    inp = make_inputs(seed=nrk)
-    ref = fortran(inp, nrk, pdef)
-    got = python(bk, inp, nrk, pdef)
+@pytest.mark.parametrize(
+    "nrk,pdef,obc,advwenos,pdefweno,wepsf",
+    [
+        (1, 0, 1, 0, 0, 0.01),  # kessler_periodic, early RK stage
+        (3, 1, 1, 0, 0, 0.01),  # kessler_periodic, last stage (pdef)
+        (3, 1, 2, 0, 0, 0.01),  # open lateral BCs, flux advection + pdef
+        (1, 0, 2, 2, 0, 10.0),  # supercell: advwenos=2 -> no WENO at nrk=1
+        (3, 0, 2, 2, 0, 10.0),  # supercell theta: WENO, pdef=0, pdefweno=0
+        (3, 1, 2, 2, 0, 1.0),  # supercell qv: WENO + pdef, pdefweno=0
+        (3, 1, 2, 2, 1, 0.01),  # supercell qc/qr: WENO + pdef, pdefweno=1
+        (3, 1, 1, 2, 1, 0.01),  # WENO with periodic BCs
+    ],
+)
+def test_adv_vs_fortran(bk, nrk, pdef, obc, advwenos, pdefweno, wepsf):
+    inp = make_inputs(seed=nrk + 10 * obc + 100 * pdefweno)
+    kw = dict(obc=obc, advwenos=advwenos, pdefweno=pdefweno, wepsf=wepsf)
+    ref = fortran(inp, nrk, pdef, **kw)
+    got = python(bk, inp, nrk, pdef, **kw)
     base = dict(
         sten=inp["sten"],
         uten=inp["uten"],
@@ -266,6 +335,13 @@ def test_adv_vs_fortran(bk, nrk, pdef):
     )
     for name, reg in _regions().items():
         _cmp(name, got[name], ref[name], base[name], reg)
+    # lateral boundary flux statistics (stat_qsrc, bflag=1 on the last stage)
+    if obc == 2 and pdef == 1:
+        kw["bflag"] = 1
+        rb = fortran(inp, nrk, pdef, **kw)["bsq"]
+        gb = python(bk, inp, nrk, pdef, **kw)["bsq"]
+        assert abs(rb[0] - 0.25) > 0.0
+        assert abs(gb[0] - rb[0]) <= 1e-12 * abs(rb[0] - 0.25)
 
 
 @requires_gfortran
@@ -280,7 +356,8 @@ def test_pdef_is_active():
     assert np.max(np.abs(a - b)) > 0.0
 
 
-def test_jit():
+@pytest.mark.parametrize("obc,advwenos", [(1, 0), (2, 2)])
+def test_jit(obc, advwenos):
     jax = pytest.importorskip("jax")
     from cm1x import get_backend
 
@@ -312,6 +389,9 @@ def test_jit():
             c2=a["c2"],
             hadvorder=5,
             vadvorder=5,
+            weps=1e-20,
+            pdefweno=1,
+            cfg=_cfg(obc, advwenos),
         )["sten"]
         r2 = adv.advu(
             bk,
@@ -329,6 +409,7 @@ def test_jit():
             divx=a["divx"],
             c1=a["c1"],
             c2=a["c2"],
+            cfg=_cfg(obc, advwenos),
         )["uten"]
         return r1, r2
 

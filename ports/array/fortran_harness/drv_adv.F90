@@ -10,7 +10,9 @@ program drv_adv
   use misclibs, only : getdivx
   implicit none
 
-  real :: p(12)
+  real :: p(16)
+  integer :: obc, pdefweno, bflag
+  real :: bsqo(1)
   integer :: nrk, pdef, wflag
   real :: dt
   double precision :: bsq, weps
@@ -31,6 +33,7 @@ program drv_adv
   ni = nint(p(1)); nj = nint(p(2)); nk = nint(p(3))
   nrk = nint(p(4)); pdef = nint(p(5)); wflag = nint(p(6))
   dt = p(7); dx = p(8); dy = p(9); dz = p(10)
+  obc = nint(p(11)); advwenos = nint(p(12)); pdefweno = nint(p(13)); bflag = nint(p(15))
 
   ngxy = 3; ngz = 1
   ib = 1-ngxy; ie = ni+ngxy; jb = 1-ngxy; je = nj+ngxy; kb = 1-ngz; ke = nk+ngz
@@ -41,11 +44,15 @@ program drv_adv
   ibdv = 1; iedv = 1; jbdv = 1; jedv = 1; kbdv = 1; kedv = 1; nudiag = 1; nvdiag = 1; nwdiag = 1
 
   terrain_flag = .false.; axisymm = 0
-  wbc = 1; ebc = 1; sbc = 1; nbc = 1; ibw = 0; ibe = 0; ibs = 0; ibn = 0
-  advwenos = 0; advwenov = 0; weno_order = 5
+  wbc = obc; ebc = obc; sbc = obc; nbc = obc
+  ibw = 0; ibe = 0; ibs = 0; ibn = 0
+  if (obc == 2) then
+    ibw = 1; ibe = 1; ibs = 1; ibn = 1
+  endif
+  advwenov = 0; weno_order = 5
   hadvordrs = 5; vadvordrs = 5; hadvordrv = 5; vadvordrv = 5
   idiff = 0; difforder = 6; mdiff = 0
-  do_ib = .false.; dolsw = .false.; stat_qsrc = 0; pdscheme = 1; timestats = 0
+  do_ib = .false.; dolsw = .false.; stat_qsrc = nint(p(16)); pdscheme = 1; timestats = 0
   rdx = 1.0/dx; rdy = 1.0/dy; rdz = 1.0/dz
   smeps = 1.0e-30
 
@@ -81,6 +88,7 @@ program drv_adv
   bndy=.false.; kbdy=1; hflxw=0; hflxe=0; hflxs=0; hflxn=0
   diag=0; out3d=0; udiag=0; vdiag=0; wdiag=0
 
+  call rd('ruh', ruh, size(ruh)); call rd('rvh', rvh, size(rvh)); call rd('rmh', rmh, size(rmh))
   call rd('uh', uh, size(uh));   call rd('uf', uf, size(uf))
   call rd('vh', vh, size(vh));   call rd('vf', vf, size(vf))
   call rd('mh', mh, size(mh));   call rd('mf', mf, size(mf))
@@ -94,16 +102,18 @@ program drv_adv
   call rd('v3d', v3d, size(v3d)); call rd('vten', vten, size(vten))
   call rd('w3d', w3d, size(w3d)); call rd('wten', wten, size(wten))
 
-  bsq = 0.0d0
-  weps = 0.01d0*epsilon
+  bsq = 0.25d0
+  weps = dble(p(14))*epsilon
 
-  call advs(nrk,wflag,0,bsq,xh,rxh,arh1,arh2,uh,ruh,xf,vh,rvh,gz,rgz,mh,rmh,            &
+  call advs(nrk,wflag,bflag,bsq,xh,rxh,arh1,arh2,uh,ruh,xf,vh,rvh,gz,rgz,mh,rmh,            &
             rho0,rr0,rf0,rrf0,advx,advy,advz,dumx,dumy,dumz,mass,subs,divx,              &
-            rru,rrv,rrw,s0,s,sten,pdef,0,dt,weps,                                        &
+            rru,rrv,rrw,s0,s,sten,pdef,pdefweno,dt,weps,                                        &
             flag,sw31,sw32,se31,se32,ss31,ss32,sn31,sn32,rdsf,c1,c2,rho,ri,0,            &
             .false.,1,1,1,1,1,1,1,diag,1,1,1,                                            &
             1,1,1,wprof,dumk1,dumk2,hadvordrs,vadvordrs,kbdy,bndy,hflxw,hflxe,hflxs,hflxn,out3d)
   call wr('sten', sten, size(sten))
+  bsqo(1) = bsq
+  call wr('bsq', bsqo, 1)
 
   call advu(nrk,arh1,arh2,uh,xf,rxf,arf1,arf2,uf,vh,gz,rgz,gzu,mh,rho0,rr0,rf0,rrf0,     &
             dumx,dumy,dumz,advx,advy,advz,subs,divx,                                     &
