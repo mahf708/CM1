@@ -34,6 +34,16 @@ jobs:
         run: |
           CM1_BUILD_DIR=$HOME/cm1build/r8 ports/reference/run_reference.sh \
             ports/reference/kessler_periodic ref/kessler_periodic_long_r8 r8 timax=1800.0 tapfrq=300.0
+      - name: Float64 state dumps (cm1dump, from the C++/Kokkos branch)
+        env:
+          # pinned commit of claude/project-thread-uq9w9c with src/cm1dump.F
+          # and cxx/scripts/make_refs.sh (-DDP gfortran build)
+          KOKKOS_REF_SHA: 6e13594cdc9223d7cd945b4c9e847703c4ecc816
+        run: |
+          git fetch --no-tags --depth=1 origin "$KOKKOS_REF_SHA"
+          git worktree add ../kokkos-ref FETCH_HEAD
+          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic
+          rm -f ref/dumps/kessler_periodic/cm1out*.nc
       - uses: actions/upload-artifact@v4
         with:
           name: cm1-ref-kessler-periodic
@@ -82,4 +92,5 @@ jobs:
           CM1X_REF_DIR: ${{ github.workspace }}/ref/kessler_periodic_r8
           CM1X_REF_DIR_R4: ${{ github.workspace }}/ref/kessler_periodic_r4
           CM1X_REF_DIR_LONG: ${{ github.workspace }}/ref/kessler_periodic_long_r8
+          CM1X_DUMP_DIR: ${{ github.workspace }}/ref/dumps/kessler_periodic
         run: python -m pytest ports/array -v -rs --durations=15
