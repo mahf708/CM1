@@ -22,12 +22,26 @@ inline std::string ref_dir() {
 #endif
 }
 
+// True when CM1K_REQUIRE_REFS is set (CI): missing references fail instead of skipping.
+inline bool refs_required() {
+  const char* e = std::getenv("CM1K_REQUIRE_REFS");
+  return e && *e && std::string(e) != "0";
+}
+
 // <ref>/<case>, or "" (and a Catch2 WARN) if references are not available.
 inline std::string case_ref(const std::string& case_name) {
   const auto r = ref_dir();
-  if (r.empty()) { WARN("CM1K_REF_DIR not set; skipping reference comparison"); return ""; }
+  if (r.empty()) {
+    if (refs_required()) FAIL("CM1K_REQUIRE_REFS is set but CM1K_REF_DIR is not");
+    WARN("CM1K_REF_DIR not set; skipping reference comparison");
+    return "";
+  }
   const auto p = std::filesystem::path(r) / case_name;
-  if (!std::filesystem::exists(p)) { WARN("no reference dumps for case " << case_name << " in " << r); return ""; }
+  if (!std::filesystem::exists(p)) {
+    if (refs_required()) FAIL("no reference dumps for case " << case_name << " in " << r);
+    WARN("no reference dumps for case " << case_name << " in " << r);
+    return "";
+  }
   return p.string();
 }
 

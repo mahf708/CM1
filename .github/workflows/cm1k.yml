@@ -112,6 +112,7 @@ jobs:
       CCACHE_MAXSIZE: 500M
       CCACHE_COMPRESS: "true"
       OMP_NUM_THREADS: 2
+      CM1K_REQUIRE_REFS: 1
       OMP_PROC_BIND: "false"
     steps:
       - uses: actions/checkout@v4
