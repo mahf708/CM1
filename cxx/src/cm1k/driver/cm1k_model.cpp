@@ -1,6 +1,12 @@
 #include "cm1k_model.hpp"
 
+#include "dynamics/cm1k_dyncore.hpp"
 #include "share/cm1k_dump_io.hpp"
+
+#if __has_include("physics/kessler/cm1k_kessler.hpp")
+#include "physics/kessler/cm1k_kessler.hpp"
+#define CM1K_HAVE_KESSLER 1
+#endif
 
 #include <stdexcept>
 
@@ -22,6 +28,10 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   m_dt = nl.getr("dtl", 0.0);
   build_registry();
 }
+
+Model::~Model() = default;
+Model::Model(Model&&) noexcept = default;
+Model& Model::operator=(Model&&) noexcept = default;
 
 void Model::build_registry() {
   auto& g = m_grid;
@@ -88,6 +98,7 @@ void Model::init_from_dump(const std::string& step_dir) {
   }
   m_nstep = r.nstep();
   m_mtime = r.mtime();
+  m_dyn_started = false;   // the dynamical core restarts from these arrays
 }
 
 void Model::write_dump(const std::string& root) const {
@@ -102,8 +113,54 @@ void Model::init() {
   throw std::runtime_error("cm1k: native initialization is not implemented yet; use init_from_dump");
 }
 
+Dyncore& Model::dyncore() {
+  if (!m_dyn) {
+    m_dyn = std::make_unique<Dyncore>();
+    m_dyn->setup(m_nl, m_c, m_grid, m_base, m_state);
+  }
+  return *m_dyn;
+}
+
+// One time step: the body of cm1.F's time loop (solve1, solve2, microphysics,
+// solve3; then mtime = mtime + dt).
 void Model::step() {
-  throw std::runtime_error("cm1k: Model::step is not implemented yet");
+  auto& dyn = dyncore();
+  if (!m_dyn_started) {
+    dyn.start_from_state();
+    m_dyn_started = true;
+  }
+  m_nstep = m_nstep + 1;
+  dyn.solve1();                                  // pre-RK tendencies
+  dyn.solve2();                                  // RK3 loop, acoustic steps
+  if (dyn.config().imoist == 1) microphysics();  // mp_driver
+  dyn.solve3();                                  // finish: bcs, update "a" arrays
+  m_mtime = m_mtime + double(m_dt);
+  Kokkos::fence();
+}
+
+// cm1.F: `IF(imoist.eq.1) ... call mp_driver(...)` between solve2 and solve3.
+// Microphysics acts on the new-time-level arrays (th3d, pp3d, q3d) and on
+// rho/prs; th3d/pp3d/q3d live in the dynamical core.
+void Model::microphysics() {
+  auto& dyn = *m_dyn;
+  const int ptype = dyn.config().ptype;
+  if (ptype == 1) {
+#ifdef CM1K_HAVE_KESSLER
+    if (!m_mp) {
+      auto w = std::make_shared<kessler::Work>();
+      w->allocate(m_grid.b);
+      m_mp = w;
+    }
+    static_assert(kessler::nqv == 1 && kessler::nqc == 2, "moisture layout must match the dyncore");
+    const auto opt = kessler::Options::from_namelist(m_nl);
+    kessler::mp_driver(opt, m_c, m_grid, m_base, m_dt, m_state.rho, m_state.prs, dyn.pp3d, dyn.th3d,
+                       dyn.q3d, m_state.rain, *std::static_pointer_cast<kessler::Work>(m_mp));
+#else
+    throw std::runtime_error("cm1k: ptype=1 needs the Kessler scheme (physics/kessler), not built");
+#endif
+  } else {
+    throw std::runtime_error("cm1k: microphysics ptype=" + std::to_string(ptype) + " is not ported");
+  }
 }
 
 } // namespace cm1k

@@ -1,0 +1,1 @@
+cm1k_add_test(dynamics_tests SOURCES dyncore_step_tests.cpp)

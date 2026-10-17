@@ -6,6 +6,8 @@
 #include "share/cm1k_namelist.hpp"
 #include "share/cm1k_state.hpp"
 
+#include <memory>
+
 #include <string>
 #include <vector>
 
@@ -18,9 +20,14 @@ namespace cm1k {
 //   m.init_from_dump(DumpReader::step_dir(ref, 0));   // or m.init() (native)
 //   for (int n = 0; n < 10; ++n) m.step();
 //   m.write_dump(out_dir);
+class Dyncore;
+
 class Model {
 public:
   explicit Model(const Namelist& nl);
+  ~Model();
+  Model(Model&&) noexcept;
+  Model& operator=(Model&&) noexcept;
 
   // Native initialization: grid (param.F), base state (base.F), initial
   // perturbations (init3d.F).
@@ -50,6 +57,8 @@ public:
   Grid& grid() { return m_grid; }
   BaseState& base() { return m_base; }
   State& state() { return m_state; }
+  // The dynamical core (set up on the first step()).
+  Dyncore& dyncore();
 
   int nstep() const { return m_nstep; }
   double mtime() const { return m_mtime; }
@@ -57,6 +66,7 @@ public:
 
 private:
   void build_registry();
+  void microphysics();   // cm1.F: mp_driver call between solve2 and solve3
 
   Namelist m_nl;
   Constants m_c;
@@ -68,6 +78,10 @@ private:
   int m_nstep = 0;
   double m_mtime = 0;
   Real m_dt = 0;
+
+  std::unique_ptr<Dyncore> m_dyn;   // created/started lazily in step()
+  bool m_dyn_started = false;
+  std::shared_ptr<void> m_mp;       // microphysics work arrays
 };
 
 } // namespace cm1k
