@@ -155,6 +155,7 @@ void Model::step() {
     m_dyn_started = true;
   }
   dyn.sfc_and_turb(m_mtime);                     // no-op unless sgsmodel=1
+  dyn.diff2_stress();                            // no-op unless idiff=1, difforder=2
   m_nstep = m_nstep + 1;
   dyn.solve1();                                  // pre-RK tendencies
   dyn.solve2();                                  // RK3 loop, acoustic steps

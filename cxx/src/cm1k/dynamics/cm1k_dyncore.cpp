@@ -1,6 +1,7 @@
 #include "cm1k_dyncore.hpp"
 
 #include "dynamics/cm1k_adv.hpp"
+#include "dynamics/cm1k_rdamp_cor.hpp"
 #include "init/cm1k_init.hpp"
 
 #include <algorithm>
@@ -80,8 +81,25 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   c.csound = nl.getr("csound", 300.0);
   c.hadvordrs = nl.geti("hadvordrs", 5);
   c.vadvordrs = nl.geti("vadvordrs", 5);
+  c.imove = nl.geti("imove", 0);
+  c.betaplane = nl.geti("betaplane", 0);
+  c.tbc = nl.geti("tbc", 1);
+  c.fcor = nl.getr("fcor", 0.0);
+  c.umove = nl.getr("umove", 0.0);
+  c.vmove = nl.getr("vmove", 0.0);
+  c.kdiff2 = nl.getr("kdiff2", 75.0);
+  c.do_adapt_move = nl.getb("do_adapt_move", false);
 
   // param.F adjustments
+  if (c.icor == 0) c.betaplane = 0;
+  c.betaplane = std::min(std::max(c.betaplane, 0), 1);
+  if (c.axisymm == 1 || nl.geti("ny", 0) <= 3) c.betaplane = 0;
+  if (c.imove == 0) { c.umove = 0.0; c.vmove = 0.0; }
+  if (c.icor == 0) c.fcor = 0.0;
+  if (c.irdamp == 0 && c.hrdamp == 0) c.rdalpha = 0.0;
+  if (c.irdamp >= 1 && c.hrdamp >= 1) c.hrdamp = c.irdamp;
+  if (c.cm1setup >= 1 && c.idiff >= 1 && c.difforder == 2) c.idiff = 0;
+  if (c.axisymm == 1 && c.idiff == 1 && c.difforder == 6) { c.idiff = 0; c.difforder = 0; }
   c.idoles = (c.cm1setup == 1 || c.cm1setup == 4);
   if (!c.idoles && c.sgsmodel >= 1) c.sgsmodel = 0;
   if ((c.psolver >= 4 && c.psolver <= 7) && c.apmasscon == 1) c.apmasscon = 0;
@@ -107,12 +125,18 @@ void DynConfig::check() const {
   if (sgsmodel != 0 && sgsmodel != 1) unsupported("sgsmodel=" + std::to_string(sgsmodel) + " (only 0, 1)");
   if (turb) turb_opt.check();   // throws for every turbulence option that is not ported
   if (ipbl != 0) unsupported("ipbl");
-  if (idiff != 0) unsupported("idiff");
+  if (idiff != 0 && idiff != 1) unsupported("idiff=" + std::to_string(idiff) + " (only 0, 1)");
+  if (idiff == 1 && difforder != 2 && difforder != 6)
+    unsupported("difforder=" + std::to_string(difforder) + " with idiff=1 (only 2, 6)");
+  if (diff2() && idiss != 0) unsupported("idiss=1 with difforder=2 (dissipation rate of diff2def)");
+  if (diff2() && (bbc < 1 || bbc > 2 || tbc < 1 || tbc > 2))
+    unsupported("difforder=2 with bbc/tbc other than 1, 2");
   if (imoist == 1 && ptype != 0 && ptype != 1)
     unsupported("ptype=" + std::to_string(ptype) + " with imoist=1 (only 0 = qv only, 1 = Kessler)");
   if (irdamp != 0 && irdamp != 1) unsupported("irdamp=" + std::to_string(irdamp));
-  if (hrdamp != 0) unsupported("hrdamp");
-  if (icor != 0) unsupported("icor");
+  if (hrdamp != 0 && hrdamp != 1) unsupported("hrdamp=" + std::to_string(hrdamp));
+  if (icor == 1 && betaplane != 0) unsupported("betaplane=1");
+  if (do_adapt_move) unsupported("do_adapt_move");
   if (lspgrad != 0) unsupported("lspgrad");
   if (testcase != 0) unsupported("testcase");
   if (axisymm != 0) unsupported("axisymm");
@@ -191,8 +215,7 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
 
   // param.F: min_dx, min_dy, min_dz, Rayleigh damping coefficients
   auto xf = grid.xf.to_host(), yf = grid.yf.to_host();
-  auto zh = grid.zh.to_host(), zf = grid.zf.to_host();
-  auto sigmaf = grid.sigmaf.to_host();
+  auto zf = grid.zf.to_host();
   Real min_dx = 1.0e20, min_dy = 1.0e20, min_dz = 1.0e20;
   for (int i = 1; i <= ni; ++i) min_dx = std::min(min_dx, xf(i + 1) - xf(i));
   for (int j = 1; j <= nj; ++j) min_dy = std::min(min_dy, yf(j + 1) - yf(j));
@@ -200,27 +223,11 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     min_dz = std::min(min_dz, zf(i, j, k + 1) - zf(i, j, k));
   m_nsound = sound_nsound(m_cfg.psolver, B.nx, B.ny, min_dx, min_dy, min_dz, m_cfg.csound, double(m_dt));
 
+  // param.F: Rayleigh damping coefficients (cm1k_rdamp_cor.cpp)
   {
-    auto th = tauh.to_host(), ts = taus.to_host(), tf = tauf.to_host();
-    for (size_t n = 0; n < th.size(); ++n) { th.data()[n] = 0.0; ts.data()[n] = 0.0; }
-    for (size_t n = 0; n < tf.size(); ++n) tf.data()[n] = 0.0;
-    const Real maxz = sigmaf(nk + 1);
-    const Real zd = m_cfg.zd;
-    if (m_cfg.irdamp >= 1 && zd < maxz) {
-      if (zd < 0.5 * maxz)
-        throw std::runtime_error("cm1k dyncore: Rayleigh damping would be applied over more than half the domain (zd < maxz/2)");
-      for (int j = B.jb; j <= B.je; ++j) for (int i = B.ib; i <= B.ie; ++i) {
-        for (int k = 1; k <= nk; ++k)
-          if (zh(i, j, k) > zd) {
-            th(i, j, k) = 0.5 * (1.0 - std::cos(phys::pi * (zh(i, j, k) - zd) / (zf(i, j, nk + 1) - zd)));
-            ts(i, j, k) = th(i, j, k);
-          }
-        for (int k = 1; k <= nk + 1; ++k)
-          if (zf(i, j, k) > zd)
-            tf(i, j, k) = 0.5 * (1.0 - std::cos(phys::pi * (zf(i, j, k) - zd) / (zf(i, j, nk + 1) - zd)));
-      }
-    }
-    tauh.deep_copy_from(th); taus.deep_copy_from(ts); tauf.deep_copy_from(tf);
+    RdampParams rp;
+    rp.irdamp = m_cfg.irdamp; rp.hrdamp = m_cfg.hrdamp; rp.zd = m_cfg.zd; rp.xhd = m_cfg.xhd;
+    rdamp_coeffs(rp, grid, tauh, taus, tauf);
   }
 
   // 2nd-order extrapolation coefficients for rf at the surface and top (param.F)
@@ -237,6 +244,8 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     ts.allocate(B);
     m_tw.allocate(B);
   }
+
+  if (m_cfg.diff2()) m_d2.allocate(B);
 
   AdvOptions ao = AdvOptions::from_namelist(nl);
   ao.check();
@@ -340,6 +349,30 @@ void Dyncore::sfc_and_turb(double rtime) {
 }
 
 //===========================================================================
+// cm1.F (after sfc_and_turb): idiff>=1 and difforder=2 -> diff2def on the 3d
+// arrays (divx is scratch here: solve2 recomputes it before use)
+namespace {
+Diff2Params diff2_params(const DynConfig& cfg, const Grid& g) {
+  Diff2Params p;
+  p.ni = g.b.ni; p.nj = g.b.nj; p.nk = g.b.nk;
+  p.kdiff2 = cfg.kdiff2; p.rdx = g.rdx; p.rdy = g.rdy; p.rdz = g.rdz; p.smeps = cfg.smeps;
+  p.umove = cfg.umove; p.vmove = cfg.vmove;
+  p.wbc = cfg.wbc; p.ebc = cfg.ebc; p.sbc = cfg.sbc; p.nbc = cfg.nbc;
+  p.ibw = (cfg.wbc != 1) ? 1 : 0; p.ibe = (cfg.ebc != 1) ? 1 : 0;
+  p.ibs = (cfg.sbc != 1) ? 1 : 0; p.ibn = (cfg.nbc != 1) ? 1 : 0;
+  p.bbc = cfg.bbc; p.tbc = cfg.tbc;
+  return p;
+}
+} // namespace
+
+void Dyncore::diff2_stress() {
+  if (!m_cfg.diff2()) return;
+  const auto p = diff2_params(m_cfg, m_g);
+  diff2def(p, m_g, divx, m_s.rho, rf, m_d2.t11, m_d2.t12, m_d2.t13, m_d2.t22, m_d2.t23, m_d2.t33,
+           u3d, v3d, w3d);
+}
+
+//===========================================================================
 void Dyncore::solve1() {
   const auto& B = m_g.b;
   const int ni = B.ni, nj = B.nj, nk = B.nk;
@@ -369,6 +402,22 @@ void Dyncore::solve1() {
   if (cfg.imoist == 1) {
     for (int n = 1; n <= cfg.numq; ++n)
       Kokkos::parallel_for("qten0", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) { qten_(i, j, k, n) = 0.0; });
+  }
+
+  //  2nd-order diffusion, fixed viscosity (idiff=1, difforder=2; diff2.F)
+  if (cfg.diff2()) {
+    const auto p = diff2_params(cfg, m_g);
+    const auto& d = m_d2;
+    diff2u(p, m_g, d.dum, d.diffx, d.diffy, d.diffz, uten1, rho, divx, d.t11, d.t12, d.t13);
+    diff2v(p, m_g, d.dum, d.diffx, d.diffy, d.diffz, vten1, rho, divx, d.t22, d.t12, d.t23);
+    diff2w(p, m_g, d.dum, d.diffx, d.diffy, d.diffz, wten1, rho, rf, divx, d.t33, d.t13, d.t23);
+    diff2s(p, m_g, d.dum, d.diffx, d.diffy, d.diffz, tha, thten1, rho, rr, rf);
+    if (cfg.imoist == 1)
+      for (int n = 1; n <= cfg.numq; ++n)
+        diff2s(p, m_g, d.dum, d.diffx, d.diffy, d.diffz,
+               FArray3(Kokkos::subview(qa.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm}),
+               FArray3(Kokkos::subview(qten.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm}),
+               rho, rr, rf);
   }
 
   // subgrid turbulence (sgsmodel=0: exact no-op with km=kh=0; see
@@ -534,6 +583,9 @@ void Dyncore::solve2() {
       if (Kokkos::fabs(divx_(i, j, k)) < smeps) divx_(i, j, k) = 0.0;
     });
 
+    //  Coriolis terms (f plane)
+    if (cfg.icor == 1) coriolis(ni, nj, nk, cfg.fcor, cfg.umove, cfg.vmove, u3d, v3d, uten, vten);
+
     //  advection of u, v, w
     m_adv->advu(nrk, dttmp, fl, u3d, uten);
     m_adv->advv(nrk, dttmp, fl, v3d, vten);
@@ -614,7 +666,8 @@ void Dyncore::solve2() {
     });
     {
       AdvsArgs aa;
-      aa.wflag = 1; aa.pdef = 0; aa.pdefweno = 0; aa.weps = 10.0 * phys::epsilon; aa.diffit = 0;
+      aa.wflag = 1; aa.pdef = 0; aa.pdefweno = 0; aa.weps = 10.0 * phys::epsilon;
+      aa.diffit = (cfg.idiff == 1 && cfg.difforder == 6) ? 1 : 0;
       aa.hadvorder = cfg.hadvordrs; aa.vadvorder = cfg.vadvordrs;
       m_adv->advs(nrk, aa, dttmp, fl, tha, sadv, thten);
     }
@@ -632,7 +685,8 @@ void Dyncore::solve2() {
         AdvsArgs aa;
         aa.wflag = 1; aa.pdef = (nrk == nrkmax) ? 1 : 0; aa.pdefweno = (n == cfg.nqv) ? 0 : 1;
         aa.weps = 1.0e-2 * phys::epsilon;   // qmag(n)*epsilon, qmag = 1.0e-2 for Kessler
-        aa.diffit = 0; aa.hadvorder = cfg.hadvordrs; aa.vadvorder = cfg.vadvordrs;
+        aa.diffit = (cfg.idiff == 1 && cfg.difforder == 6) ? 1 : 0;
+        aa.hadvorder = cfg.hadvordrs; aa.vadvorder = cfg.vadvordrs;
         auto qan = FArray3(Kokkos::subview(qa.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm});
         auto q3n = FArray3(Kokkos::subview(q3d.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm});
         m_adv->advs(nrk, aa, dttmp, fl, qan, q3n, sten);
@@ -660,7 +714,7 @@ void Dyncore::solve2() {
           qcten_(i, j, k) = q3d_(i, j, k, nqc);
         });
       }
-      if (nrk == nrkmax) {
+      if (nrk == nrkmax || cfg.diff6()) {
         Kokkos::parallel_for("prsrho_m", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
           prs(i, j, k) = p00 * Kokkos::pow(pi0(i, j, k) + pp3d_(i, j, k), c.cpdrd);
           rho(i, j, k) = prs(i, j, k)
@@ -669,7 +723,7 @@ void Dyncore::solve2() {
         });
       }
     } else {
-      if (nrk == nrkmax) {
+      if (nrk == nrkmax || cfg.diff6()) {
         Kokkos::parallel_for("prsrho_d", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
           prs(i, j, k) = p00 * Kokkos::pow(pi0(i, j, k) + pp3d_(i, j, k), c.cpdrd);
           rho(i, j, k) = prs(i, j, k) / (c.rd * (th0(i, j, k) + th3d_(i, j, k)) * (pi0(i, j, k) + pp3d_(i, j, k)));
@@ -736,6 +790,14 @@ void Dyncore::solve2() {
           rho(i, j, k) = prs(i, j, k) / (c.rd * (th0(i, j, k) + th3d_(i, j, k)) * (pi0(i, j, k) + pp3d_(i, j, k)));
         });
       }
+    }
+
+    //  rr for the next RK stage (6th-order diffusion in advs uses 1/rho)
+    if (cfg.diff6() && nrk < nrkmax) {
+      auto rr_ = rr;
+      Kokkos::parallel_for("rr_rk", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        rr_(i, j, k) = 1.0 / rho(i, j, k);
+      });
     }
   } // rk loop
 }

@@ -2,6 +2,7 @@
 #define CM1K_DYNCORE_HPP
 
 #include "dynamics/cm1k_bc.hpp"
+#include "dynamics/cm1k_diff2.hpp"
 #include "dynamics/cm1k_sound.hpp"
 #include "physics/turb/cm1k_turb.hpp"
 #include "share/cm1k_constants.hpp"
@@ -23,16 +24,24 @@ struct DynConfig {
   int axisymm = 0, cuparam = 0, radopt = 0, iptra = 0, iprcl = 0, iinit = 1;
   int bbc = 1, idiss = 0, rterm = 0, adapt_dt = 0, isfcflx = 0, sfcmodel = 0, irbc = 4;
   int wbc = 1, ebc = 1, sbc = 1, nbc = 1;
-  bool terrain_flag = false, do_ib = false, do_lsnudge = false, do_recycle = false;
+  bool terrain_flag = false, do_ib = false, do_lsnudge = false, do_recycle = false, do_adapt_move = false;
   Real dtl = 0, alph = 0.60, kdiv = 0.10, rdalpha = 0, zd = 0, xhd = 0, csound = 300.0;
   Real smeps = 1.0e-60, tsmall = 0.000000000001, qsmall = 1.0e-24;   // cm1.F, DP build
   int hadvordrs = 5, vadvordrs = 5;
+  // Coriolis (icor=1, solve2), explicit diffusion (idiff/difforder; 6: in
+  // advection, 2: diff2.F), lateral Rayleigh damping (hrdamp, xhd)
+  int imove = 0, betaplane = 0, tbc = 1;
+  Real fcor = 0, umove = 0, vmove = 0, kdiff2 = 75.0;
   // derived (param.F)
   bool idoles = false, dohturb = false, dovturb = false;
   int numq = 0, nqv = 0, nqc = 0, nql1 = -2, nql2 = -2, iice = 0;
   // subgrid turbulence (sgsmodel=1 with cm1setup=1): physics/turb options
   bool turb = false;
   turb::Options turb_opt;
+
+  // explicit diffusion: 6th order inside advection, or diff2.F
+  bool diff6() const { return idiff >= 1 && difforder == 6; }
+  bool diff2() const { return idiff >= 1 && difforder == 2; }
 
   static DynConfig from_namelist(const Namelist& nl);
   void check() const;
@@ -82,6 +91,9 @@ public:
   // solve3.F/init3d.F: rf from rho on 0..ni+1, 0..nj+1 (public: it launches
   // device lambdas, which nvcc does not allow in private member functions)
   void compute_rf();
+  // idiff=1, difforder=2: cm1.F's diff2def (stresses for diff2u/v/w), called
+  // right after sfc_and_turb, at the same point of the time loop.
+  void diff2_stress();
 
   const DynConfig& config() const { return m_cfg; }
   int nsound() const { return m_nsound; }
@@ -103,6 +115,7 @@ private:
   void bc_scalars_after_init();
 
   turb::Work m_tw;
+  Diff2Work m_d2;   // idiff=1, difforder=2
   Real m_cgs1 = 0, m_cgs2 = 0, m_cgs3 = 0, m_cgt1 = 0, m_cgt2 = 0, m_cgt3 = 0;
 
   DynConfig m_cfg;
