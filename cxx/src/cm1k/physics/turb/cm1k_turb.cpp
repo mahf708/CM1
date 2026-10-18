@@ -108,10 +108,11 @@ void Options::check() const {
   // (cm1setup=2, ipbl=2; sgsmodel is 0 there, param.F) with or without the
   // horizontal Smagorinsky scheme (horizturb=1), see physics/pbl
   const bool les = (cm1setup == 1);
-  const bool pbl2 = (cm1setup == 2 && ipbl == 2);
+  // (also the MYNN PBL, ipbl=4/5, whose turb.F path is the same here)
+  const bool pbl2 = (cm1setup == 2 && (ipbl == 2 || ipbl == 4 || ipbl == 5));
   if (!les && !pbl2)
     fail("cm1setup=" + std::to_string(cm1setup) + " with ipbl=" + std::to_string(ipbl) +
-         " is not ported (only cm1setup=1 LES, or cm1setup=2 with ipbl=2)");
+         " is not ported (only cm1setup=1 LES, or cm1setup=2 with ipbl=2, 4, 5)");
   if (les && sgsmodel != 1) fail("sgsmodel=" + std::to_string(sgsmodel) + " is not ported (only 1, TKE)");
   if (les && ipbl != 0) fail("ipbl>0 with cm1setup=1 is not ported");
   if (les && horizturb != 0) fail("horizturb=1 with cm1setup=1 is not ported");
@@ -123,10 +124,12 @@ void Options::check() const {
   if (doimpl != 0 && doimpl != 1) fail("doimpl must be 0 or 1");
   if (idiss != 0 && idiss != 1) fail("idiss must be 0 or 1");
   if (ramp_sgs < 0) fail("ramp_sgs must be >= 0");
-  if (sfcmodel != 0 && sfcmodel != 1) fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0 and 1)");
+  if (sfcmodel != 0 && sfcmodel != 1 && sfcmodel != 6)
+    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0, 1 and 6)");
   if (dosfcflx && sfcmodel != 1) fail("surface fluxes need the surface layer (sfcmodel=1)");
   if (bbc != 1 && bbc != 3) fail("bbc=" + std::to_string(bbc) + " is not ported (only 1 free slip, 3 semi-slip)");
-  if ((bbc == 3) != (sfcmodel == 1)) fail("bbc=3 goes with sfcmodel=1 (and bbc=1 with sfcmodel=0)");
+  if ((bbc == 3) != (sfcmodel == 1 || sfcmodel == 6))
+    fail("bbc=3 goes with sfcmodel=1, 6 (and bbc=1 with sfcmodel=0)");
   if (tbc != 1) fail("tbc=" + std::to_string(tbc) + " is not ported (only free slip, tbc=1)");
   for (int v : {wbc, ebc, sbc, nbc})
     if (v < 1 || v > 4) fail("lateral boundary condition " + std::to_string(v) + " is not ported");

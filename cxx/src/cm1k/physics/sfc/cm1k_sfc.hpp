@@ -64,8 +64,10 @@ struct Options {
   Real cnst_shflx = 0.24, cnst_lhflx = 5.2e-5, cnst_znt = 0.16, cnst_ust = 0.25;
   bool dosfcflx = false;   // init_surface.F
 
-  // sfcmodel=1 (with bbc=3): the surface layer runs in sfc_and_turb
-  bool active() const { return sfcmodel == 1; }
+  // the surface arrays exist (allocated, dumped, bcs): sfcmodel=1 (this
+  // scheme, sfc_layer) or sfcmodel=6 (the MYNN surface layer, physics/sfc_mynn,
+  // run by pbl_mynn::surface_layer)
+  bool active() const { return sfcmodel == 1 || sfcmodel == 6; }
   static Options from_namelist(const Namelist& nl);
   void check() const;   // throws std::runtime_error for anything not ported
 };

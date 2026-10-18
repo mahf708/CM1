@@ -68,9 +68,12 @@ Options Options::from_namelist(const Namelist& nl) {
 void Options::check() const {
   auto fail = [](const std::string& m) { throw std::runtime_error("cm1k pbl: " + m); };
   if (cm1setup != 2) fail("cm1setup=" + std::to_string(cm1setup) + " is not ported (only 2)");
-  if (ipbl != 2) fail("ipbl=" + std::to_string(ipbl) + " is not ported (only 2, the simple PBL scheme)");
+  if (ipbl != 2 && ipbl != 4 && ipbl != 5)
+    fail("ipbl=" + std::to_string(ipbl) + " is not ported (only 2, the simple PBL scheme, and 4, 5, MYNN)");
   if (horizturb != 0 && horizturb != 1) fail("horizturb must be 0 or 1");
-  if (sfcmodel != 1) fail("ipbl=2 needs the surface layer sfcmodel=1 (the only one ported)");
+  if (ipbl == 2 && sfcmodel != 1) fail("ipbl=2 needs the surface layer sfcmodel=1 (the only one ported)");
+  if ((ipbl == 4 || ipbl == 5) && sfcmodel != 6)
+    fail("ipbl=" + std::to_string(ipbl) + " needs the MYNN surface layer sfcmodel=6 (the only one ported)");
   if (idiss != 0 && idiss != 1) fail("idiss must be 0 or 1");
   if (imoist == 1 && ptype != 1) fail("imoist=1 with ptype=" + std::to_string(ptype) + " is not ported (only 1)");
   if (terrain_flag) fail("terrain is not ported");

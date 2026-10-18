@@ -43,6 +43,10 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     m_use_pbl = cfg.pbl;
     m_ipbl = cfg.pbl_opt.ipbl;
     if (m_use_pbl) m_pbl.allocate(b);
+    // MYNN: carried arrays (zero at start, cm1.F), aliasing the surface and
+    // PBL arrays CM1 shares with it
+    m_use_mynn = cfg.mynn && m_sfc_opt.active();
+    if (m_use_mynn) m_mynn.allocate(b, m_sfc, m_pbl);
   }
   build_registry();
 }
@@ -72,13 +76,29 @@ void Model::build_registry() {
     if (m_sfc_opt.active()) m_reg.add("hpbl", m_sfc.hpbl);
     for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
   }
+  if (m_use_mynn) {
+    for (auto& [name, a] : m_mynn.dumped_sfc()) m_reg.add(name, a);
+    m_reg.add("hpbl", m_sfc.hpbl);
+    for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
+    m_reg.add("qipten", m_pbl.qipten);
+    for (auto& [name, a] : m_mynn.dumped_pbl()) m_reg.add(name, a);
+  }
 }
 
 std::vector<std::string> Model::pbl_field_names() const {
   std::vector<std::string> n;
-  if (!(m_use_pbl && m_ipbl == 2)) return n;
-  if (m_sfc_opt.active()) n.push_back("hpbl");
-  for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
+  if (m_use_pbl && m_ipbl == 2) {
+    if (m_sfc_opt.active()) n.push_back("hpbl");
+    for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
+  }
+  if (m_use_mynn) {
+    // src/cm1dump_state.inc: sfcmodel=6, then ipbl=4/5 blocks
+    for (auto& [name, a] : m_mynn.dumped_sfc()) n.push_back(name);
+    n.push_back("hpbl");
+    for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
+    n.push_back("qipten");
+    for (auto& [name, a] : m_mynn.dumped_pbl()) n.push_back(name);
+  }
   return n;
 }
 
@@ -162,6 +182,7 @@ Dyncore& Model::dyncore() {
     m_dyn->setup(m_nl, m_c, m_grid, m_base, m_state);
     if (m_sfc_opt.active()) m_dyn->set_surface(m_sfc);
     if (m_use_pbl) m_dyn->set_pbl(m_pbl);
+    if (m_use_mynn) m_dyn->set_mynn(m_mynn);
   }
   return *m_dyn;
 }
@@ -185,7 +206,7 @@ void Model::step() {
     dyn.start_from_state();
     m_dyn_started = true;
   }
-  dyn.sfc_and_turb(m_mtime);                     // no-op unless sgsmodel=1 or a PBL scheme
+  dyn.sfc_and_turb(m_mtime, m_nstep);            // no-op unless sgsmodel=1 or a PBL scheme
   dyn.diff2_stress();                            // no-op unless idiff=1, difforder=2
   m_nstep = m_nstep + 1;
   dyn.solve1();                                  // pre-RK tendencies

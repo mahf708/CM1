@@ -214,6 +214,72 @@ TEST_CASE("dyncore + simple PBL + Kessler: pbl2_kessler from Model::init (no dum
   run_case("pbl2_kessler", 0.0, true, true);
 }
 
+TEST_CASE("dyncore + MYNN 2.5 PBL + MYNN surface layer + Kessler: mynn25_kessler vs Fortran",
+          "[dyn][step][pbl][mynn][sfc][kessler]") {
+  // cm1setup=2, ipbl=4 (MYNN-EDMF level 2.5, qke advected in solve2,
+  // dissipative heating inside the scheme: param.F sets idiss=0),
+  // sfcmodel=6 over water (SLAB only diagnoses qsfc there), horizturb=1,
+  // Kessler. Compares every dumped surface array, the MYNN carried state
+  // (qke, qke3d, tsq, ..., mol, rmol, ...), hpbl and the PBL tendencies.
+  run_case("mynn25_kessler", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + MYNN 2.5 PBL + Kessler: mynn25_kessler from Model::init (no dump)",
+          "[dyn][step][init][pbl][mynn][sfc][kessler]") {
+  run_case("mynn25_kessler", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + MYNN 3 PBL + MYNN surface layer: mynn3_dry vs Fortran", "[dyn][step][pbl][mynn][sfc]") {
+  // ipbl=5 (level 3: tsq, qsq, cov prognostic), sfcmodel=6 over water with
+  // isftcflx=1, horizturb=0 (no gettau), dry
+  run_case("mynn3_dry", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + MYNN 3 PBL: mynn3_dry from Model::init (no dump)", "[dyn][step][init][pbl][mynn][sfc]") {
+  run_case("mynn3_dry", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + MYNN PBL: restarted from a mid-run dump", "[dyn][step][pbl][mynn][sfc]") {
+  // Needs consecutive dumps (local every-step references, e.g. of steps
+  // 40..51, in CM1K_EXTRA_REF_DIR/<case>). Restarting from dump N, the first
+  // step's sfc_and_turb must reproduce dump N+1's surface layer and MYNN
+  // output from state N and the dumped carried arrays alone, i.e. the dumps
+  // hold all of the scheme's state. (Other fields are approximate, see the
+  // kessler_tke restart test.)
+  const char* e = std::getenv("CM1K_EXTRA_REF_DIR");
+  if (!e) return;
+  for (const char* case_name : {"mynn25_kessler", "mynn3_dry"}) {
+    const std::string ref = std::string(e) + "/" + case_name;
+    if (!std::filesystem::exists(ref)) continue;
+    int nchecked = 0;
+    for (auto& d : std::filesystem::directory_iterator(ref)) {
+      const auto n = d.path().filename().string();
+      if (n.rfind("step_", 0) != 0) continue;
+      const int step = std::stoi(n.substr(5));
+      if (step == 0 || !std::filesystem::exists(DumpReader::step_dir(ref, step + 1))) continue;
+      Model m(Namelist::from_file(cm1k::testing::case_namelist(case_name)));
+      m.init_from_dump(DumpReader::step_dir(ref, step));
+      m.step();
+      DumpReader r(DumpReader::step_dir(ref, step + 1));
+      REQUIRE(r.nstep() == m.nstep());
+      std::vector<std::string> fields = m.pbl_field_names();
+      for (auto& [f, a] : m.surface().dumped()) fields.push_back(f);
+      for (auto& f : fields) {
+        if (f == "qke3d") continue;   // advected by the (approximately restarted) step
+        auto a = m.field3(f).to_host();
+        auto b = r.read_host<3>(f);
+        std::array<int, 3> lo, hi;
+        for (int k = 0; k < 3; ++k) { lo[k] = b.lb(k); hi[k] = b.ub(k); }
+        const auto st = diff<3>(a, b, lo, hi);
+        INFO(case_name << " restart from step " << step << ": " << f << " max abs " << st.max_abs);
+        CHECK(st.max_abs == 0.0);
+      }
+      ++nchecked;
+    }
+    std::printf("%s: restart PBL/surface checked from %d dumps\n", case_name, nchecked);
+  }
+}
+
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
   run_case("dry_bubble", 1e-12, true);
 }
@@ -307,5 +373,40 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
     y.set(k, v);
     INFO(k << " = " << v);
     REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());
+  }
+
+  // MYNN: cm1setup=2 with ipbl=4/5 and the MYNN surface layer (sfcmodel=6)
+  // over water; land (SLAB), other surface layers and options throw
+  for (const char* c : {"mynn25_kessler", "mynn3_dry"}) {
+    auto my = Namelist::from_file(cm1k::testing::case_namelist(c));
+    REQUIRE_NOTHROW(DynConfig::from_namelist(my).check());
+    const auto cfg = DynConfig::from_namelist(my);
+    REQUIRE(cfg.pbl);
+    REQUIRE(cfg.mynn);
+    REQUIRE(cfg.idiss == 0);   // param.F: MYNN does its own dissipative heating
+    REQUIRE_FALSE(cfg.mynn_opt.dosfcflx);
+    for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+           {"sfcmodel", "1"}, {"sfcmodel", "2"}, {"sfcmodel", "0"}, {"ipbl", "2"}, {"ipbl", "1"},
+           {"ipbl", "0"}, {"cm1setup", "1"}, {"cm1setup", "4"}, {"lu0", "3"}, {"initsfc", "2"},
+           {"isftcflx", "4"}, {"iz0tlnd", "2"}, {"oceanmodel", "2"}, {"pertflx", "1"}, {"imove", "1"},
+           {"terrain_flag", ".true."}, {"horizturb", "2"}, {"tbc", "3"}}) {
+      auto y = my;
+      y.set(k, v);
+      INFO(c << ": " << k << " = " << v);
+      REQUIRE_THROWS(DynConfig::from_namelist(y).check());
+    }
+    if (my.geti("imoist", 0) == 1) {   // (ptype is ignored when dry)
+      auto y = my;
+      y.set("ptype", "2");
+      REQUIRE_THROWS(DynConfig::from_namelist(y).check());
+    }
+    for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+           {"horizturb", "0"}, {"horizturb", "1"}, {"idiss", "0"}, {"idiss", "1"}, {"isftcflx", "2"},
+           {"isftcflx", "3"}, {"iz0tlnd", "1"}, {"lu0", "0"}, {"season", "2"}, {"doimpl", "0"}}) {
+      auto y = my;
+      y.set(k, v);
+      INFO(c << ": " << k << " = " << v);
+      REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());
+    }
   }
 }

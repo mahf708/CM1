@@ -102,15 +102,35 @@ Options Options::from_namelist(const Namelist& nl) {
 void Options::check() const {
   auto fail = [](const std::string& m) { throw std::runtime_error("cm1k sfc: " + m); };
   auto is01 = [](int v) { return v == 0 || v == 1; };
-  if (sfcmodel != 0 && sfcmodel != 1)
-    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0 and 1)");
+  if (sfcmodel != 0 && sfcmodel != 1 && sfcmodel != 6)
+    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0, 1 and 6)");
   if (sfcmodel == 0) {
     // param.F stops for these
     if (isfcflx != 0) fail("isfcflx=1 requires sfcmodel=1..7");
     if (bbc == 3) fail("bbc=3 requires sfcmodel>=1");
     return;
   }
-  if (bbc != 3) fail("sfcmodel=1 requires bbc=3");
+  if (bbc != 3) fail("sfcmodel>=1 requires bbc=3");
+  if (sfcmodel == 6) {
+    // MYNN surface layer (physics/sfc_mynn, pbl_mynn::surface_layer): the
+    // arrays and init_surface here; its own options in pbl_mynn::Coupling
+    if (oceanmodel != 1) fail("oceanmodel=" + std::to_string(oceanmodel) + " is not ported (only 1)");
+    if (pertflx != 0) fail("pertflx=1 requires sfcmodel=1 (param.F stops)");
+    if (initsfc != 1) fail("initsfc=" + std::to_string(initsfc) + " is not ported (only 1)");
+    if (season != 1 && season != 2) fail("season must be 1 or 2");
+    if (lu0 < 0 || lu0 > 33) fail("lu0 must be 0..33 (LANDUSE.TBL)");
+    if (tbc != 1) fail("tbc=" + std::to_string(tbc) + " is not ported with the surface layer (only 1)");
+    if (testcase != 0) fail("testcase=" + std::to_string(testcase) + " is not ported (only 0)");
+    if (imove != 0) fail("imove=1 (ground-relative winds with a moving domain) is not ported");
+    if (axisymm != 0) fail("axisymm=1 is not ported");
+    if (terrain_flag) fail("terrain is not ported");
+    if (!(cm1setup == 2 && (ipbl == 4 || ipbl == 5)))
+      fail("sfcmodel=6 is only ported with cm1setup=2 and the MYNN PBL (ipbl=4, 5)");
+    if (imoist == 1 && ptype != 0 && ptype != 1)
+      fail("imoist=1 with ptype=" + std::to_string(ptype) + " is not ported");
+    if (tsk0 < 100.0) fail("tsk is less than 100 K");   // init_surface.F stops
+    return;
+  }
   if (oceanmodel != 1) fail("oceanmodel=" + std::to_string(oceanmodel) + " is not ported (only 1)");
   if (!is01(isfcflx)) fail("isfcflx must be 0 or 1");
   if (cecd < 1 || cecd > 3) fail("cecd=" + std::to_string(cecd) + " is not ported (1, 2, 3)");
@@ -487,6 +507,7 @@ void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseSt
                const SfcState& s) {
   o.check();
   if (!o.active()) return;
+  if (o.sfcmodel != 1) throw std::runtime_error("cm1k sfc::sfc_layer: only for sfcmodel=1");
   const auto& b = g.b;
   const auto psfc = s.psfc, u1 = s.u1, v1 = s.v1, s1 = s.s1, t1 = s.t1;
   const auto u0 = base.u0, v0 = base.v0, th0 = base.th0;

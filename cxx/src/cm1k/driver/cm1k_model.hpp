@@ -2,6 +2,7 @@
 #define CM1K_MODEL_HPP
 
 #include "physics/pbl/cm1k_pbl.hpp"
+#include "physics/pbl_mynn/cm1k_mynn_coupling.hpp"
 #include "physics/sfc/cm1k_sfc.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
@@ -59,16 +60,22 @@ public:
   Grid& grid() { return m_grid; }
   BaseState& base() { return m_base; }
   State& state() { return m_state; }
-  // Surface layer (allocated only for sfcmodel=1; its dumped arrays are
-  // registered fields then).
+  // Surface layer (allocated only for sfcmodel=1 or 6; its dumped arrays
+  // are registered fields then).
   bool has_surface() const { return m_sfc_opt.active(); }
   sfc::SfcState& surface() { return m_sfc; }
   // PBL tendencies (allocated only for use_pbl, i.e. cm1setup=2 with
-  // ipbl>=1; for ipbl=2 they and the surface layer's hpbl are registered
-  // fields, as src/cm1dump_state.inc dumps them).
+  // ipbl>=1; for ipbl=2, 4, 5 they and the surface layer's hpbl are
+  // registered fields, as src/cm1dump_state.inc dumps them).
   bool has_pbl() const { return m_use_pbl; }
   pbl::Tendencies& pbl_tendencies() { return m_pbl; }
-  // Names of the PBL fields in the dumps (empty without ipbl=2).
+  // MYNN (ipbl=4/5 with sfcmodel=6): the arrays the scheme and its surface
+  // layer carry across steps (qke, tsq, ..., mol, rmol, ...), registered
+  // fields under their dump names (qke3d is CM1's advected qke).
+  bool has_mynn() const { return m_use_mynn; }
+  pbl_mynn::Carried& mynn() { return m_mynn; }
+  // Names of the PBL fields in the dumps (empty without ipbl=2, 4, 5);
+  // with MYNN also its carried arrays and the sfcmodel=6 ones.
   std::vector<std::string> pbl_field_names() const;
   // The dynamical core (set up on the first step()).
   Dyncore& dyncore();
@@ -91,6 +98,8 @@ private:
   bool m_use_pbl = false;
   int m_ipbl = 0;
   pbl::Tendencies m_pbl;
+  bool m_use_mynn = false;
+  pbl_mynn::Carried m_mynn;
   FieldRegistry m_reg;
 
   int m_nstep = 0;

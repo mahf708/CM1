@@ -12,7 +12,7 @@ diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lat
 except the `*_openbc*` cases),
 free-slip top and bottom, a warm bubble (`iinit = 1`) with no random
 perturbations (`irandp = 0`), and the time-split compressible solver
-(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*` and `pbl2_*` cases (see the table).
+(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*`, `pbl2_*` and `mynn*` cases (see the table).
 
 | Case | Grid (nx×ny×nz, dx, dz) | Length | Dumps | What it exercises |
 |---|---|---|---|---|
@@ -27,6 +27,8 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `kessler_periodic_long` | 40×40×40, 1 km, 500 m | 300 steps (1800 s) | every 50 steps | `kessler_periodic` run for 30 min: a deep convective cloud with rain, for long-run drift checks |
 | `pbl2_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | simple PBL scheme (`cm1setup = 2`, `ipbl = 2`: Bryan-Rotunno/Louis vertical eddy viscosity, bulk-Ri `hpbl`, implicit vertical diffusion) with the surface layer over land (`sfcmodel = 1`, `bbc = 3`, `isfcflx = 1`, `lu0 = 3`, `tsk0 = 305 K`, `cecd = 3`), no horizontal turbulence (`horizturb = 0`), dry, Weisman-Klemp sounding and winds; also dumps the surface arrays, `hpbl` and the PBL tendencies (`thpten`, `upten`, ...) |
 | `pbl2_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_dry` with Kessler microphysics over water (`lu0 = 16`, `cecd = 2`), horizontal Smagorinsky turbulence (`horizturb = 1`) and dissipative heating (`idiss = 1`) |
+| `mynn25_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_kessler` with the MYNN-EDMF level-2.5 PBL (`ipbl = 4`: prognostic `qke`, advected in each RK stage, mass flux, subgrid clouds, its own dissipative heating, so `param.F` resets `idiss` to 0) and the MYNN surface layer (`sfcmodel = 6`) over water (`lu0 = 16`, so SLAB only diagnoses `qsfc`); also dumps the MYNN carried arrays (`qke`, `qke3d`, `tsq`, `el_pbl`, `cldfra_bl`, ...), `mol`, `rmol`, `zol`, `ustm`, `qcpten`, `qipten`, `xkzh`, `xkzm` |
+| `mynn3_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_dry` with the MYNN-EDMF level-3 PBL (`ipbl = 5`: `tsq`, `qsq`, `cov` prognostic) and the MYNN surface layer (`sfcmodel = 6`, `isftcflx = 1`) over water (`xland0 = 2`, `lu0 = 16`), dry, no horizontal turbulence; dumps as `mynn25_kessler` |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 

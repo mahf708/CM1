@@ -95,4 +95,38 @@
           call dump3('upten',upten,ibb,ieb,jbb,jeb,kbb,keb)
           call dump3('vpten',vpten,ibb,ieb,jbb,jeb,kbb,keb)
         endif
+        if( sfcmodel.eq.6 )then
+          ! MYNN surface layer: the stability arrays it carries across steps
+          call dump3('mol',mol,ibl,iel,jbl,jel,1,1)
+          call dump3('rmol',rmol,ibl,iel,jbl,jel,1,1)
+          call dump3('zol',zol,ibl,iel,jbl,jel,1,1)
+          call dump3('ustm',ustm,ibl,iel,jbl,jel,1,1)
+        endif
+        if( use_pbl .and. (ipbl.eq.4 .or. ipbl.eq.5) )then
+          ! MYNN PBL (ipbl=4: level 2.5, ipbl=5: level 3): hpbl, the PBL
+          ! tendencies and diffusivities that sfc_and_turb computed from the
+          ! previous state (as for kmh..khv), the scheme's carried state, and
+          ! qke3d (qke advected by solve2, the next MYNN call's input)
+          call dump3('hpbl',hpbl,ibl,iel,jbl,jel,1,1)
+          call dump3('thpten',thpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qvpten',qvpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qcpten',qcpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qipten',qipten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('upten',upten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('vpten',vpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('xkzh',xkzh,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('xkzm',xkzm,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qke',qke,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('qke3d',qke3d,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('tsq',tsq,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('qsq',qsq,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('cov',cov,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('sh3d',sh3d,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('sm3d',sm3d,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('el_pbl',el_pbl,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('qc_bl',qc_bl,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('qi_bl',qi_bl,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('cldfra_bl',cldfra_bl,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+          call dump3('dqke',dqke,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+        endif
         call dump_end()

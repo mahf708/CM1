@@ -123,6 +123,11 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   c.pbl_opt = pbl::Options::from_namelist(nl);
   c.pbl = c.pbl_opt.use_pbl;
   if (c.pbl) c.turb_opt = turb::Options::from_namelist(nl);
+  // MYNN (ipbl=4/5, sfcmodel=6)
+  c.mynn_opt = pbl_mynn::Coupling::from_namelist(nl);
+  c.mynn = c.pbl && c.mynn_opt.active();
+  // param.F: dissipative heating is computed within ipbl=3,4,5
+  if ((c.ipbl == 3 || c.ipbl == 4 || c.ipbl == 5) && c.idiss >= 1 && c.cm1setup != 4) c.idiss = 0;
   return c;
 }
 
@@ -137,9 +142,10 @@ void DynConfig::check() const {
   if (ipbl != 0 && !pbl) unsupported("ipbl=" + std::to_string(ipbl) + " with cm1setup=" + std::to_string(cm1setup));
   if (cm1setup == 2 && ipbl <= 0) unsupported("cm1setup=2 without a PBL scheme (param.F: idopbl requires ipbl >= 1)");
   if (pbl) {
-    pbl_opt.check();   // throws for every PBL option that is not ported (only ipbl=2)
+    pbl_opt.check();   // throws for every PBL option that is not ported (ipbl=2, 4, 5)
     turb_opt.check();
   }
+  mynn_opt.check();    // ipbl=4/5 <-> sfcmodel=6, MYNN options, water only (no SLAB)
   if (idiff != 0 && idiff != 1) unsupported("idiff=" + std::to_string(idiff) + " (only 0, 1)");
   if (idiff == 1 && difforder != 2 && difforder != 6)
     unsupported("difforder=" + std::to_string(difforder) + " with idiff=1 (only 2, 6)");
@@ -165,6 +171,7 @@ void DynConfig::check() const {
   // zero and the term is a no-op; with sgsmodel=1 it is turb::dissheat
   // (bbc=3 adds the surface-layer term, from physics/sfc).
   // With ipbl=2 dissten is set by turbparam_vert/turbparam_horiz.
+  // (ipbl=4,5: idiss=0, MYNN's dissipative heating is part of thpten)
   if (idiss != 0 && ipbl != 0 && ipbl != 2) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
   if (rterm != 0) unsupported("rterm");
   if (adapt_dt != 0) unsupported("adapt_dt");
@@ -296,6 +303,7 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     ts.allocate(B);
     m_tw.allocate(B);
   }
+  if (m_cfg.mynn) m_mw.allocate(B);   // psi tables (init_physics.F), inputs, qke tendency
 
   if (m_cfg.diff2()) m_d2.allocate(B);
 
@@ -393,8 +401,9 @@ void Dyncore::compute_rf() {
 
 //===========================================================================
 // cm1.F:3748 sfc_and_turb (LES path), on the 3d arrays as CM1 passes them
-void Dyncore::sfc_and_turb(double rtime) {
+void Dyncore::sfc_and_turb(double rtime, int nstep) {
   auto& s = m_s;
+  m_nstep = nstep;
   if (m_cfg.pbl) {
     // mesoscale path (cm1setup=2, see physics/pbl/cm1k_pbl.hpp)
     const auto& to = m_cfg.turb_opt;
@@ -404,7 +413,14 @@ void Dyncore::sfc_and_turb(double rtime) {
     Kokkos::parallel_for("pbl_dissten0", box3(1, B.ni, 1, B.nj, 1, B.nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
       dissten(i, j, k) = 0.0;
     });
-    sfc::sfc_layer(m_cfg.sfc_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc);
+    if (m_cfg.mynn) {
+      // MYNN surface layer (sfcmodel=6)
+      if (!m_has_mynn) throw std::runtime_error("cm1k dyncore: the MYNN PBL needs set_mynn()");
+      pbl_mynn::surface_layer(m_cfg.mynn_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, nstep, u3d, v3d, th3d, pp3d,
+                              q3d, m_cfg.nqv, s.prs, s.rho, rf, m_sfc, m_mc, m_mw);
+    } else {
+      sfc::sfc_layer(m_cfg.sfc_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc);
+    }
     turb::sfc_bcs(to, B, m_sfc);
     turb::calcnm(to, m_c, B, m_g.rdz, m_g.c1, m_g.c2, m_g.mf, m_b.pi0, m_b.th0, ts.nm, m_tw.d1, m_tw.d2, m_tw.d3,
                  m_tw.d6, s.prs, pp3d, th3d, q3d);
@@ -414,7 +430,9 @@ void Dyncore::sfc_and_turb(double rtime) {
       pbl::turbparam_horiz(to, m_cfg.pbl_opt, B, ts.defh, s.kmh, s.khh, ts.dissten, m_sfc);
     if (m_cfg.pbl_opt.ipbl == 2)
       pbl::turbparam_vert(to, m_cfg.pbl_opt, m_g, ts.nm, ts.defv, s.kmv, s.khv, ts.dissten, m_sfc, m_tw.d4);
-    turb::gettau(to, B, s.kmh, s.kmv, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, rf, &m_sfc);
+    // turb.F "tau" block: idoles .or. ipbl=2 .or. horizturb=1 .or. cm1setup=3
+    if (m_cfg.pbl_opt.ipbl == 2 || m_cfg.pbl_opt.horizturb == 1)
+      turb::gettau(to, B, s.kmh, s.kmv, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, rf, &m_sfc);
     pbl(rtime);
     return;
   }
@@ -441,6 +459,11 @@ void Dyncore::set_pbl(const pbl::Tendencies& t) {
   m_has_pbl = true;
 }
 
+void Dyncore::set_mynn(const pbl_mynn::Carried& c) {
+  m_mc = c;   // shallow: the views are shared with the caller
+  m_has_mynn = true;
+}
+
 // turb.F sfc_and_turb, "doingpbl" block (see the header for the hook).
 void Dyncore::pbl(double /*rtime*/) {
   if (!m_cfg.pbl) return;
@@ -450,6 +473,12 @@ void Dyncore::pbl(double /*rtime*/) {
   case 2:   // dobr09
     pbl::br09(m_cfg.turb_opt, m_cfg.pbl_opt, m_g, m_b, m_dt, u3d, v3d, w3d, th3d, q3d, s.rho, rr, rf, s.kmv, s.khv,
               ts.t13, ts.t23, m_sfc, m_pt, m_tw);
+    break;
+  case 4:   // domynn (MYNN level 2.5)
+  case 5:   // (level 3)
+    if (!m_has_mynn) throw std::runtime_error("cm1k dyncore: the MYNN PBL needs set_mynn()");
+    pbl_mynn::pbl(m_cfg.mynn_opt, m_g, m_b, m_dt, m_nstep, u3d, v3d, w3d, th3d, pp3d, q3d, m_cfg.nqv, m_cfg.nqc,
+                  /*nqi=*/0, s.prs, s.rho, m_mc, m_mw);
     break;
   default:
     unsupported("ipbl=" + std::to_string(m_cfg.pbl_opt.ipbl));
@@ -901,6 +930,9 @@ void Dyncore::solve2() {
       turb::tke_rk_update(cfg.turb_opt, B, dttmp, s.tkea, wten, tke3d);
     }
 
+    //  qke advection for the MYNN PBL (solve2.F ~1806)
+    if (cfg.mynn) advect_qke(nrk, dttmp);
+
     //  Finish pressure, density (apmasscon)
     if (dopf) {
       auto h3 = dumk3.to_host(), h4 = dumk4.to_host();
@@ -935,6 +967,38 @@ void Dyncore::solve2() {
       });
     }
   } // rk loop
+}
+
+//===========================================================================
+// solve2.F, "qke advection (for PBL schemes with TKE)", ipbl=4/5 with
+// bl_mynn_tkeadvect: CM1's qke3d is m_mc.st.qke_adv, its qke_adv (the
+// advective tendency) is m_mw.qketen.
+void Dyncore::advect_qke(int nrk, Real dttmp) {
+  if (!m_has_mynn) throw std::runtime_error("cm1k dyncore: the MYNN PBL needs set_mynn()");
+  const auto& B = m_g.b;
+  const int ni = B.ni, nj = B.nj, nk = B.nk;
+  auto qke = m_mc.st.qke, qke3d = m_mc.st.qke_adv, qke_adv = m_mw.qketen;
+  if (nrk == 1) {
+    Kokkos::parallel_for("qke_adv0", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      qke3d(i, j, k) = qke(i, j, k);
+      qke_adv(i, j, k) = 0.0;
+    });
+  } else {
+    Kokkos::parallel_for("qke_adv0", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      qke_adv(i, j, k) = 0.0;
+    });
+  }
+  bcs(m_bc, qke3d);
+  AdvsArgs aa;
+  aa.wflag = 1; aa.pdef = 1; aa.pdefweno = 1; aa.weps = 10.0 * phys::epsilon;
+  aa.diffit = (m_cfg.idiff == 1 && m_cfg.difforder == 6) ? 1 : 0;
+  aa.hadvorder = m_cfg.hadvordrs; aa.vadvorder = m_cfg.vadvordrs;
+  const AdvFluxes fl{rru, rrv, rrw, divx, m_s.rho, rr};
+  m_adv->advs(nrk, aa, dttmp, fl, qke, qke3d, qke_adv);
+  Kokkos::parallel_for("qke3d", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    qke3d(i, j, k) = qke(i, j, k) + dttmp * qke_adv(i, j, k);
+    if (qke3d(i, j, k) < 1.0e-10) qke3d(i, j, k) = 0.0;
+  });
 }
 
 //===========================================================================

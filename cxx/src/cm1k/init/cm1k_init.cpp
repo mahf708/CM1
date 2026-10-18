@@ -659,7 +659,11 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
   if (irandp == 1 && nl.getb("use_truly_random_pert", false)) unsupported("use_truly_random_pert = .true.");
   if (nl.geti("iptra", 0) != 0) unsupported("iptra = 1");
   if (nl.getb("do_ib", false)) unsupported("do_ib = .true.");
-  if ((idopbl && (ipbl == 4 || ipbl == 5)) || nl.geti("sfcmodel", 0) == 6) unsupported("MYNN tke");
+  // param.F sets iusetke for MYNN (ipbl=4/5 or sfcmodel=6); init3d.F only
+  // uses it together with idoles (cm1setup=1, 4), so cm1setup=2 is unaffected
+  // (MYNN's arrays start at 0, cm1.F).
+  if (idoles && ((idopbl && (ipbl == 4 || ipbl == 5)) || nl.geti("sfcmodel", 0) == 6))
+    unsupported("MYNN tke with LES (cm1setup=1, 4)");
   const bool iusetke = idoles && (sgsmodel == 1 || sgsmodel == 3 || sgsmodel == 4 || sgsmodel == 5);
   const int nqv = 1, nqc = 2;
 

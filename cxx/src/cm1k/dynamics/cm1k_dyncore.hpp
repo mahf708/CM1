@@ -6,6 +6,7 @@
 #include "dynamics/cm1k_openbc.hpp"
 #include "dynamics/cm1k_sound.hpp"
 #include "physics/pbl/cm1k_pbl.hpp"
+#include "physics/pbl_mynn/cm1k_mynn_coupling.hpp"
 #include "physics/turb/cm1k_turb.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
@@ -47,6 +48,10 @@ struct DynConfig {
   // turbsz/turbuz/turbvz, horizturb=1). Only cm1setup=2, ipbl=2 is ported.
   bool pbl = false;
   pbl::Options pbl_opt;
+  // MYNN (cm1setup=2, ipbl=4/5 with the MYNN surface layer sfcmodel=6):
+  // physics/pbl_mynn/cm1k_mynn_coupling.hpp
+  bool mynn = false;
+  pbl_mynn::Coupling mynn_opt;
 
   // explicit diffusion: 6th order inside advection, or diff2.F
   bool diff6() const { return idiff >= 1 && difforder == 6; }
@@ -103,11 +108,13 @@ public:
   // Model::step calls it at the start of each step, which is the same point
   // in the sequence (between mtime=mtime+dt and the next solve1).
   bool turb_enabled() const { return m_cfg.turb; }
-  void sfc_and_turb(double rtime);
+  // nstep: the model step (CM1's nstep at that call: 0 in the startup pass).
+  void sfc_and_turb(double rtime, int nstep);
   // cm1setup=2 (ipbl>=1) runs the mesoscale sequence of sfc_and_turb
-  // instead: surface layer (with gethpbl2 for ipbl=2), calcnm, calcdef,
-  // turbparam_horiz (horizturb=1), turbparam_vert (ipbl=2), gettau, then the
-  // PBL scheme through pbl() below.
+  // instead: surface layer (sfcmodel=1 with gethpbl2 for ipbl=2, or the MYNN
+  // surface layer sfcmodel=6), calcnm, calcdef, turbparam_horiz
+  // (horizturb=1), turbparam_vert (ipbl=2), gettau (ipbl=2 or horizturb=1),
+  // then the PBL scheme through pbl() below.
   bool pbl_enabled() const { return m_cfg.pbl; }
   // The surface-layer arrays (sfcmodel=1), owned by the Model; sfc_and_turb
   // updates them and solve1 reads them. Call after setup().
@@ -115,6 +122,12 @@ public:
   // The PBL tendencies (DynConfig::pbl), owned by the Model (they are in the
   // dumps); pbl() fills them and solve1 applies them. Call after setup().
   void set_pbl(const pbl::Tendencies& t);
+  // MYNN's carried arrays (DynConfig::mynn), owned by the Model (they are in
+  // the dumps). Call after setup().
+  void set_mynn(const pbl_mynn::Carried& c);
+  // solve2.F: qke advection for the MYNN PBL, one RK stage (public: it
+  // launches device lambdas)
+  void advect_qke(int nrk, Real dttmp);
   // PBL dispatch hook, the "doingpbl" block of turb.F sfc_and_turb: called
   // by sfc_and_turb (cm1setup=2) after the eddy viscosities and stresses of
   // the current state are set (s.kmh..khv, ts.t11..t33, ts.nm/defv/defh,
@@ -125,7 +138,10 @@ public:
   // block; then pbl() applies bcs to upten and vpten (use_pbl). Dispatch on
   // m_cfg.pbl_opt.ipbl:
   //   2: pbl::br09 (simple Bryan-Rotunno/Louis scheme, CM1's dobr09)
-  //   1 (YSU), 4/5 (MYNN), ...: not ported yet. A new scheme adds its case
+  //   4/5: pbl_mynn::pbl (MYNN-EDMF; its surface layer sfcmodel=6 runs in
+  //     sfc_and_turb, qke is advected in solve2; carried arrays in
+  //     pbl_mynn::Carried, set with set_mynn())
+  //   1 (YSU), ...: not ported yet. A new scheme adds its case
   //     here (inputs: u3d/v3d/w3d/th3d/pp3d/q3d, s.prs, s.rho, rr, rf, the
   //     surface state m_sfc), any extra outputs or carried arrays to
   //     pbl::Tendencies (allocated from DynConfig::pbl_opt), its options to
@@ -168,6 +184,10 @@ private:
   bool m_has_sfc = false;
   pbl::Tendencies m_pt;
   bool m_has_pbl = false;
+  pbl_mynn::Carried m_mc;   // MYNN (DynConfig::mynn)
+  pbl_mynn::Work m_mw;
+  bool m_has_mynn = false;
+  int m_nstep = 0;          // model step at sfc_and_turb (MYNN initflag, SFCLAY_mynn itimestep)
   Real m_cgs1 = 0, m_cgs2 = 0, m_cgs3 = 0, m_cgt1 = 0, m_cgt2 = 0, m_cgt3 = 0;
 
   DynConfig m_cfg;
