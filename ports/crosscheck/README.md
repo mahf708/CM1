@@ -33,12 +33,12 @@ the Kessler cases. A GPU build of cm1k must agree to 1e-10 up to step 4, then
 GPU cases (150 steps) is 1.1e-10, in `ppi` on `cbl_sfc_moist`, from the device
 math library and FMA contraction.
 
-**Known gap.** On the bundled `supercell_kessler` (open radiative boundaries,
-`irbc=4`), cm1x differs from cm1k and Fortran by ~2e-8 from step 5, growing
-to ~2e-6 by 30 minutes, at the lateral boundaries; with periodic boundaries
-(`--set wbc=1 --set ebc=1 --set sbc=1 --set nbc=1`) it agrees to 2e-11. cm1k
-is bitwise identical to Fortran on this case. CI runs it with
-`--tol cm1k~cm1x:numpy=1e-5` until the cm1x side is fixed.
+**Bitwise numpy.** With glibc's libm pinned (`GLIBC_TUNABLES`, as in CI) and
+numpy's own AVX-512 exp/log/pow turned off (`NPY_DISABLE_CPU_FEATURES`, see
+`.github/workflows/crosscheck.yml`), cm1x on numpy is bitwise identical to
+cm1k on the CPU, including the open-boundary `supercell_kessler` over
+30 minutes, whose radiative boundaries amplify a one-ulp difference to ~1e-6.
+Without that setting the supercell drifts to ~1e-6 and fails the 1e-9 check.
 
 **Conventions it accounts for.** CM1 and cm1k keep the eddy viscosities
 (`kmh kmv khh khv`) of the previous step in the state between steps, while

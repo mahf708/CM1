@@ -36,7 +36,7 @@ concurrency:
 
 env:
   # cm1x (ports/array) from the array-port branch (claude/project-thread-p9tdpk)
-  CM1X_REF_SHA: a5a480de8238497f5a10924f385bb7186ff75544
+  CM1X_REF_SHA: 29efb6444692a88a2863be1e5c08d54799481094
   REF_CASES: >-
     kessler_periodic kessler_bubble kessler_openbc kessler_tke
     dry_shear cbl_sfc_moist pbl2_kessler ysu_kessler mynn25_kessler
@@ -46,6 +46,10 @@ env:
   # glibc picks libm code paths (FMA/AVX2) by CPU, and they can differ in the
   # last bit; refs are made on one runner and compared on another (as cm1k.yml).
   GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX512F,-AVX2,-FMA,-FMA4
+  # numpy's own AVX-512 exp/log/pow differ from glibc's in the last bit; with
+  # them off cm1x:numpy calls glibc like CM1 and cm1k (and the open-boundary
+  # supercell, which amplifies last-bit differences, stays bitwise).
+  NPY_DISABLE_CPU_FEATURES: AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4
   OMPI_ALLOW_RUN_AS_ROOT: 1
   OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
   OMP_PROC_BIND: "false"
@@ -175,10 +179,7 @@ jobs:
           run kessler_bubble 150 --impl cm1k --impl cm1x:numpy $(F kessler_bubble)
           run kessler_openbc 150 --impl cm1k --impl cm1x:numpy $(F kessler_openbc)
           run kessler_tke 150 --impl cm1k --impl cm1x:numpy $(F kessler_tke)
-          # Known cm1x gap on open radiative boundaries (irbc=4): ~2e-8 from step 5,
-          # ~2e-6 by 30 min (periodic boundaries: 2e-11); cm1k is bitwise to Fortran.
-          run "$CM1X_ROOT/ports/reference/supercell_kessler" 300 --impl cm1k --impl cm1x:numpy \
-            --tol cm1k~cm1x:numpy=1e-5
+          run "$CM1X_ROOT/ports/reference/supercell_kessler" 300 --impl cm1k --impl cm1x:numpy
           run kessler_periodic_long 300 --impl cm1k --impl cm1x:numpy
           cat xc/report.md >> "$GITHUB_STEP_SUMMARY"
           exit $status
