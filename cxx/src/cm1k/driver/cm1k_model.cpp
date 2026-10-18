@@ -64,6 +64,10 @@ void Model::build_registry() {
     m_reg.add(a->label(), *a);
   for (auto* a : {&g.zh, &g.mh, &g.rmh, &g.c1, &g.c2, &g.zf, &g.mf, &g.rmf})
     m_reg.add(a->label(), *a);
+  if (g.b.terrain_flag)   // src/cm1dump_state.inc: dumped only with terrain
+    for (auto* a : {&g.zs, &g.gz, &g.rgz, &g.gzu, &g.rgzu, &g.gzv, &g.rgzv, &g.dzdx, &g.dzdy,
+                    &g.gx, &g.gxu, &g.gy, &g.gyv})
+      m_reg.add(a->label(), *a);
   auto& bs = m_base;
   for (auto* a : {&bs.pi0, &bs.th0, &bs.rho0, &bs.prs0, &bs.thv0, &bs.rth0, &bs.qv0, &bs.qc0, &bs.qi0,
                   &bs.rr0, &bs.rf0, &bs.rrf0, &bs.u0, &bs.v0})
@@ -153,6 +157,11 @@ void Model::init_from_dump(const std::string& step_dir) {
     else                       r.read_into<3>(name, field3(name));
   }
   if (m_sfc_opt.has_layer()) sfc::set_dsxy(m_sfc_opt, m_grid, m_sfc);   // not in the dumps
+  if (m_grid.b.terrain_flag) {   // init_terrain.F: zt = maxz = sigmaf(nk+1) (not in the dumps)
+    auto sigmaf = m_grid.sigmaf.to_host();
+    m_grid.zt = sigmaf(m_grid.b.nk + 1);
+    m_grid.rzt = 1.0 / sigmaf(m_grid.b.nk + 1);
+  }
   m_nstep = r.nstep();
   m_mtime = r.mtime();
   m_dyn.reset();           // the dynamical core is set up again from these arrays

@@ -1,6 +1,7 @@
 #include "init/cm1k_init.hpp"
 
 #include "init/cm1k_cm1libs.hpp"
+#include "dynamics/cm1k_adv_routines.hpp"
 
 #include <cmath>
 #include <cstring>
@@ -101,7 +102,6 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
   if (nl.geti("stretch_y", 0) != 0) unsupported("stretch_y != 0");
   const int stretch_z = nl.geti("stretch_z", 0);
   if (stretch_z != 0 && stretch_z != 1) unsupported("stretch_z = " + std::to_string(stretch_z));
-  if (nl.getb("terrain_flag", false)) unsupported("terrain_flag = .true.");
   if (nl.geti("axisymm", 0) != 0) unsupported("axisymm = 1");
   if (nl.geti("irst", 0) != 0) unsupported("irst = 1 (restart)");
   if (nk < 4) unsupported("nz < 4");
@@ -261,9 +261,119 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
   for (int k = 1; k <= nk; ++k)
     if ((zf(1, 1, k + 1) - zf(1, 1, k)) < smeps) throw std::runtime_error("cm1k init: dz <= 0");
 
-  // terrain section (terrain_flag = .false.)
+  // ---- terrain (param.F "BEGIN TERRAIN", init_terrain.F) ----
   for (int k = kb; k <= ke; ++k) rds(k) = 1.0;
   for (int k = kb; k <= ke + 1; ++k) rdsf(k) = 1.0;
+  // zs, gz, ..., gx, ... keep the defaults Grid::allocate gives them
+  if (B.terrain_flag) {
+    auto zs = g.zs.to_host(), gz = g.gz.to_host(), rgz = g.rgz.to_host();
+    auto gzu = g.gzu.to_host(), rgzu = g.rgzu.to_host(), gzv = g.gzv.to_host(), rgzv = g.rgzv.to_host();
+    auto dzdx = g.dzdx.to_host(), dzdy = g.dzdy.to_host();
+    auto gx = g.gx.to_host(), gxu = g.gxu.to_host(), gy = g.gy.to_host(), gyv = g.gyv.to_host();
+    const Real rdx = g.rdx, rdy = g.rdy;
+    const int itern = nl.geti("itern", 0);
+    if (itern == 1) {
+      // bell-shaped (Durran and Klemp 1983)
+      const Real hh = 400.0, aa = 1000.0, xc = 0.0 + 0.5 * dx;
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie; ++i) {
+          const Real r = (xh(i) - xc) / aa;
+          zs(i, j, 1) = hh / (1.0 + r * r);
+        }
+    } else if (itern == 2) {
+      // Schaer case (Klemp et al. 2003)
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie; ++i) {
+          const Real xval = dx * double(i - ni / 2);
+          const Real r = xval / 5000.0, cs = std::cos(phys::pi * xval / 4000.0);
+          zs(i, j, 1) = 250.0 * std::exp(-(r * r)) * (cs * cs);
+        }
+    } else if (itern == 3) {
+      // Doernbrack et al. (2005)
+      const Real hh = 500.0, aa = 20000.0;
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie; ++i) {
+          const Real ax = xh(i) - 0.25 * info.maxx, ay = yh(j) - 0.25 * info.maxy;
+          const Real xval = std::sqrt(ax * ax + ay * ay);
+          const Real r = xval / aa;
+          zs(i, j, 1) = hh * (std::pow(1.0 + r * r, -1.5));
+        }
+    } else {
+      // itern = 4 reads perts.dat (GrADS file); not ported
+      unsupported("itern = " + std::to_string(itern) + " (terrain_flag = .true.)");
+    }
+    bc2d(bc, zs, 1);
+
+    const Real zt = info.maxz, rzt = 1.0 / info.maxz;
+    g.zt = zt; g.rzt = rzt;
+    for (int k = 1; k <= nk; ++k)
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie; ++i) zh(i, j, k) = zs(i, j, 1) + sigma(k) * (zt - zs(i, j, 1)) / zt;
+    for (int k = kb; k <= ke + 1; ++k)
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie; ++i) zf(i, j, k) = zs(i, j, 1) + sigmaf(k) * (zt - zs(i, j, 1)) / zt;
+
+    // zsgrad (adv_routines.F); gz is its scratch array
+    {
+      const int n = std::max(nl.geti("hadvordrs", 5), nl.geti("hadvordrv", 5));
+      auto zsi = [&](int i, int j) { return zs(i, j, 1); };
+      auto interp = [&](int o, auto s) -> Real {   // s(m): zs at offset m from the face (m = -1 is upwind side)
+        if (o <= 2) return 0.5 * (s(-1) + s(0));
+        if (o == 3 || o == 4) return adv::flx4(s(-2), s(-1), s(0), s(1));
+        if (o == 5 || o == 6) return adv::flx6(s(-3), s(-2), s(-1), s(0), s(1), s(2));
+        if (o == 7 || o == 8) return adv::flx8(s(-4), s(-3), s(-2), s(-1), s(0), s(1), s(2), s(3));
+        return adv::flx10(s(-5), s(-4), s(-3), s(-2), s(-1), s(0), s(1), s(2), s(3), s(4));
+      };
+      for (int j = 1; j <= nj; ++j) {
+        for (int i = 1; i <= ni + 1; ++i) gz(i, j, 1) = interp(n, [&](int m) { return zsi(i + m, j); });
+        for (int i = 1; i <= ni; ++i) dzdx(i, j, 1) = (gz(i + 1, j, 1) - gz(i, j, 1)) * rdx * uh(i);
+      }
+      for (int i = 1; i <= ni; ++i) {
+        for (int j = 1; j <= nj + 1; ++j) gz(i, j, 1) = interp(n, [&](int m) { return zsi(i, j + m); });
+        for (int j = 1; j <= nj; ++j) dzdy(i, j, 1) = (gz(i, j + 1, 1) - gz(i, j, 1)) * rdy * vh(j);
+      }
+    }
+    bc2d(bc, dzdx, 1);
+    bc2d(bc, dzdy, 1);
+
+    // the metric terms
+    for (int j = jb; j <= je; ++j)
+      for (int i = ib; i <= ie; ++i) {
+        gz(i, j, 1) = zt / (zt - zs(i, j, 1));
+        rgz(i, j, 1) = (zt - zs(i, j, 1)) / zt;
+      }
+    bc2d(bc, rgz, 1);
+    for (int j = jb + 1; j <= je; ++j)
+      for (int i = ib + 1; i <= ie; ++i) {
+        gzu(i, j, 1) = zt / (zt - 0.5 * (zs(i - 1, j, 1) + zs(i, j, 1)));
+        rgzu(i, j, 1) = (zt - 0.5 * (zs(i - 1, j, 1) + zs(i, j, 1))) / zt;
+        gzv(i, j, 1) = zt / (zt - 0.5 * (zs(i, j - 1, 1) + zs(i, j, 1)));
+        rgzv(i, j, 1) = (zt - 0.5 * (zs(i, j - 1, 1) + zs(i, j, 1))) / zt;
+      }
+    for (int k = 1; k <= nk + 1; ++k)
+      for (int j = jb + 1; j <= je - 1; ++j)
+        for (int i = ib + 1; i <= ie - 1; ++i) {
+          gx(i, j, k) = (zt - sigmaf(k)) * gz(i, j, 1) * (rgzu(i + 1, j, 1) - rgzu(i, j, 1)) * rdx * uh(i);
+          gxu(i, j, k) = (zt - sigmaf(k)) * gzu(i, j, 1) * (rgz(i, j, 1) - rgz(i - 1, j, 1)) * rdx * uf(i);
+          gy(i, j, k) = (zt - sigmaf(k)) * gz(i, j, 1) * (rgzv(i, j + 1, 1) - rgzv(i, j, 1)) * rdy * vh(j);
+          gyv(i, j, k) = (zt - sigmaf(k)) * gzv(i, j, 1) * (rgz(i, j, 1) - rgz(i, j - 1, 1)) * rdy * vf(j);
+        }
+    for (int j = jb; j <= je; ++j)
+      for (int i = ib; i <= ie; ++i) {
+        zf(i, j, 0) = zf(i, j, 1) - (zf(i, j, 2) - zf(i, j, 1));
+        zf(i, j, nk + 2) = zf(i, j, nk + 1) + (zf(i, j, nk + 1) - zf(i, j, nk));
+        zh(i, j, 0) = 0.5 * (zf(i, j, 0) + zf(i, j, 1));
+        zh(i, j, nk + 1) = 0.5 * (zf(i, j, nk + 1) + zf(i, j, nk + 2));
+      }
+    for (int k = 2; k <= nk; ++k) rds(k) = 1.0 / (sigma(k) - sigma(k - 1));
+    for (int k = 1; k <= nk; ++k) rdsf(k) = 1.0 / (sigmaf(k + 1) - sigmaf(k));
+
+    for (auto p : std::initializer_list<decltype(std::make_pair(&g.zs, &zs))>{
+             {&g.zs, &zs}, {&g.gz, &gz}, {&g.rgz, &rgz}, {&g.gzu, &gzu}, {&g.rgzu, &rgzu}, {&g.gzv, &gzv},
+             {&g.rgzv, &rgzv}, {&g.dzdx, &dzdx}, {&g.dzdy, &dzdy}, {&g.gx, &gx}, {&g.gxu, &gxu},
+             {&g.gy, &gy}, {&g.gyv, &gyv}})
+      p.first->deep_copy_from(*p.second);
+  }
 
   for (int k = kb; k <= ke; ++k)
     for (int j = jb; j <= je; ++j)
@@ -446,6 +556,55 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
         for (int k = 1; k <= nk; ++k)
           rh0(i, j, k) = qv0(i, j, k) / (rslf(prs0(i, j, k), th0(i, j, k) * pi0(i, j, k)));
       }
+  } else if (isnd == 9) {
+    // constant Brunt-Vaisala frequency
+    const Real ns1 = 0.0001, ns2 = 0.0000, zl1 = 40000.0;
+    for (int j = jb; j <= je; ++j)
+      for (int i = ib; i <= ie; ++i) {
+        Real th_sfc = 288.00, pi_sfc = 1.0, zsfc, ns;
+        if (zh(i, j, 1) < zl1) {
+          zsfc = 0.0;
+          ns = ns1;
+        } else {
+          if (std::abs(ns1) < 1.0e-6) {
+            pi_sfc = pi_sfc - g_ * zl1 / (cp * th_sfc);
+          } else {
+            pi_sfc = pi_sfc + g_ * g_ / (cp * ns1 * th_sfc) * (std::exp(-ns1 * zl1 / g_) - 1.0);
+            th_sfc = th_sfc * std::exp(ns1 * zl1 / g_);
+          }
+          zsfc = zl1;
+          ns = ns2;
+        }
+        for (int k = 1; k <= nk; ++k) {
+          qv0(i, j, k) = 0.0;
+          qc0(i, j, k) = 0.0;
+          rh0(i, j, k) = 0.0;
+          if (std::abs(ns) < 1.0e-6) {
+            thv0(i, j, k) = th_sfc;
+            pi0(i, j, k) = pi_sfc - g_ * (zh(i, j, k) - zsfc) / (cp * th_sfc);
+          } else {
+            thv0(i, j, k) = th_sfc * std::exp(ns * (zh(i, j, k) - zsfc) / g_);
+            pi0(i, j, k) = pi_sfc + g_ * g_ / (cp * ns * th_sfc) * (std::exp(-ns * (zh(i, j, k) - zsfc) / g_) - 1.0);
+          }
+          prs0(i, j, k) = p00 * std::pow(pi0(i, j, k), cpdrd);
+          th0(i, j, k) = thv0(i, j, k);
+          for (int n = 1; n <= 20; ++n) {
+            t0(i, j, k) = th0(i, j, k) * pi0(i, j, k);
+            qv0(i, j, k) = rh0(i, j, k) * rslf(prs0(i, j, k), t0(i, j, k));
+            th0(i, j, k) = thv0(i, j, k) * (1.0 + qv0(i, j, k) + qc0(i, j, k)) / (1.0 + reps * qv0(i, j, k));
+          }
+          if (zh(i, j, k + 1) > zl1 && zsfc < 1.0) {
+            if (std::abs(ns1) < 1.0e-6) {
+              pi_sfc = pi_sfc - g_ * zl1 / (cp * th_sfc);
+            } else {
+              pi_sfc = pi_sfc + g_ * g_ / (cp * ns1 * th_sfc) * (std::exp(-ns1 * zl1 / g_) - 1.0);
+              th_sfc = th_sfc * std::exp(ns1 * zl1 / g_);
+            }
+            zsfc = zl1;
+            ns = ns2;
+          }
+        }
+      }
   } else {
     unsupported("isnd = " + std::to_string(isnd));
   }
@@ -556,6 +715,15 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
             v0(i, j, k) = vmax1;
           }
         }
+  } else if (iwnd == 6) {
+    // constant wind (testcase = 0: the default uval, vval)
+    const Real uval = 10.0, vval = 0.0;
+    for (int k = kb; k <= ke; ++k)
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie + 1; ++i) u0(i, j, k) = uval;
+    for (int k = kb; k <= ke; ++k)
+      for (int j = jb; j <= je + 1; ++j)
+        for (int i = ib; i <= ie; ++i) v0(i, j, k) = vval;
   } else {
     unsupported("iwnd = " + std::to_string(iwnd));
   }
@@ -801,6 +969,15 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
   bcu(bc, u0);
   bcv(bc, v0);
   bcs(bc, th0);
+  if (B.terrain_flag) {
+    // bcwsfc (bc.F): w at the surface from the terrain slope, then bc2d
+    auto gz = g.gz.to_host(), dzdx = g.dzdx.to_host(), dzdy = g.dzdy.to_host();
+    for (int j = 0; j <= nj + 1; ++j)
+      for (int i = 0; i <= ni + 1; ++i)
+        wa(i, j, 1) = 0.5 * ((ua(i, j, 1) + ua(i + 1, j, 1)) * dzdx(i, j, 1)
+                             + (va(i, j, 1) + va(i, j + 1, 1)) * dzdy(i, j, 1)) * gz(i, j, 1);
+    bc2d(bc, wa, 1);
+  }
   if (idoles && iusetke) {
     for (int j = 1; j <= nj; ++j)
       for (int i = 1; i <= ni; ++i) tkea(i, j, 1) = tkea(i, j, 2);

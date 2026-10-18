@@ -52,6 +52,10 @@ Bounds Bounds::from_namelist(const Namelist& nl) {
   b.numq = 1;
   if (imoist == 1 && ptype == 1) b.numq = 3;   // Kessler: qv, qc, qr
   b.nrain = 1;
+  b.terrain_flag = nl.getb("terrain_flag", false);
+  if (b.terrain_flag) {
+    b.itb = b.ib; b.ite = b.ie; b.jtb = b.jb; b.jte = b.je; b.ktb = b.kb; b.kte = b.ke;
+  }
   if (nl.geti("imove", 0) == 1) b.nrain = 2;   // param.F: ground- and domain-relative swaths
   return b;
 }
@@ -85,6 +89,23 @@ void Grid::allocate(const Bounds& bb) {
   zf  = FArray3("zf",  {B.ib, B.jb, B.kb}, {B.ie, B.je, B.ke + 1});
   mf  = FArray3("mf",  {B.ib, B.jb, B.kb}, {B.ie, B.je, B.ke + 1});
   rmf = FArray3("rmf", {B.ib, B.jb, B.kb}, {B.ie, B.je, B.ke + 1});
+  // terrain metrics, with param.F's defaults (no terrain: gz = 1, ...)
+  zs = FArray3("zs", {B.ib, B.jb, 1}, {B.ie, B.je, 1});
+  zs.fill(0.0);
+  auto t2 = [&](const char* name, Real v) {
+    FArray3 a(name, {B.itb, B.jtb, 1}, {B.ite, B.jte, 1});
+    a.fill(v);
+    return a;
+  };
+  gz = t2("gz", 1.0);   rgz = t2("rgz", 1.0);
+  gzu = t2("gzu", 1.0); rgzu = t2("rgzu", 1.0);
+  gzv = t2("gzv", 1.0); rgzv = t2("rgzv", 1.0);
+  dzdx = t2("dzdx", 0.0); dzdy = t2("dzdy", 0.0);
+  gx  = FArray3("gx",  {B.itb, B.jtb, B.ktb}, {B.ite, B.jte, B.kte});
+  gxu = FArray3("gxu", {B.itb, B.jtb, B.ktb}, {B.ite, B.jte, B.kte});
+  gy  = FArray3("gy",  {B.itb, B.jtb, B.ktb}, {B.ite, B.jte, B.kte});
+  gyv = FArray3("gyv", {B.itb, B.jtb, B.ktb}, {B.ite, B.jte, B.kte});
+  for (auto* p : {&gx, &gxu, &gy, &gyv}) p->fill(0.0);
 }
 
 } // namespace cm1k

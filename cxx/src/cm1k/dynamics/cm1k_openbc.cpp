@@ -222,6 +222,86 @@ void ssopenbcn(const OpenBcParams& p, const FArray1& vh, const RadBc& r, const F
 }
 
 //---------------------------------------------------------------------------
+// ssopenbc* with terrain: dum1 = u (v) at w points on the two columns next
+// to the boundary (i1, i1+1), then the update with the metric terms
+namespace {
+void uv_at_w(const OpenBcParams& p, const OpenBcTerrain& t, const FArray3& u, int i1, int i2, int j1, int j2) {
+  const int nk = p.nk;
+  auto dum1 = t.dum1; auto rds = t.rds; auto sigma = t.sigma; auto sigmaf = t.sigmaf;
+  const Real cgs1 = t.cgs1, cgs2 = t.cgs2, cgs3 = t.cgs3, cgt1 = t.cgt1, cgt2 = t.cgt2, cgt3 = t.cgt3;
+  Kokkos::parallel_for("ssopenbc_uw", box3(i1, i2, j1, j2, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+    if (k == 1) {
+      dum1(i, j, 1) = cgs1 * u(i, j, 1) + cgs2 * u(i, j, 2) + cgs3 * u(i, j, 3);
+    } else if (k == nk + 1) {
+      dum1(i, j, nk + 1) = cgt1 * u(i, j, nk) + cgt2 * u(i, j, nk - 1) + cgt3 * u(i, j, nk - 2);
+    } else {
+      const Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+      const Real r1 = 1.0 - r2;
+      dum1(i, j, k) = r1 * u(i, j, k - 1) + r2 * u(i, j, k);
+    }
+  });
+}
+} // namespace
+
+void ssopenbcw(const OpenBcParams& p, const OpenBcTerrain& t, const FArray1& uh, const RadBc& r,
+               const FArray3& u3d, const FArray3& uten, Real dts) {
+  uv_at_w(p, t, u3d, 1, 2, 1, p.nj);
+  const Real rdx = p.rdx;
+  auto radbcw = r.radbcw; auto gz = t.gz; auto rgzu = t.rgzu; auto gx = t.gx; auto dum1 = t.dum1; auto rdsf = t.rdsf;
+  Kokkos::parallel_for("ssopenbcw_t", box2(1, p.nj, 1, p.nk), KOKKOS_LAMBDA(int j, int k) {
+    u3d(1, j, k) = u3d(1, j, k) + dts * (-radbcw(j, k) * (
+                     gz(1, j, 1) * (u3d(2, j, k) * rgzu(2, j, 1) - u3d(1, j, k) * rgzu(1, j, 1)) * rdx * uh(1)
+                     + 0.5 * (gx(1, j, k + 1) * (dum1(2, j, k + 1) + dum1(1, j, k + 1))
+                              - gx(1, j, k) * (dum1(2, j, k) + dum1(1, j, k))) * rdsf(k))
+                   + uten(1, j, k));
+  });
+}
+
+void ssopenbce(const OpenBcParams& p, const OpenBcTerrain& t, const FArray1& uh, const RadBc& r,
+               const FArray3& u3d, const FArray3& uten, Real dts) {
+  const int ni = p.ni;
+  uv_at_w(p, t, u3d, ni, ni + 1, 1, p.nj);
+  const Real rdx = p.rdx;
+  auto radbce = r.radbce; auto gz = t.gz; auto rgzu = t.rgzu; auto gx = t.gx; auto dum1 = t.dum1; auto rdsf = t.rdsf;
+  Kokkos::parallel_for("ssopenbce_t", box2(1, p.nj, 1, p.nk), KOKKOS_LAMBDA(int j, int k) {
+    u3d(ni + 1, j, k) = u3d(ni + 1, j, k) + dts * (-radbce(j, k) * (
+                          gz(ni, j, 1) * (u3d(ni + 1, j, k) * rgzu(ni + 1, j, 1) - u3d(ni, j, k) * rgzu(ni, j, 1)) * rdx * uh(ni)
+                          + 0.5 * (gx(ni, j, k + 1) * (dum1(ni + 1, j, k + 1) + dum1(ni, j, k + 1))
+                                   - gx(ni, j, k) * (dum1(ni + 1, j, k) + dum1(ni, j, k))) * rdsf(k))
+                        + uten(ni + 1, j, k));
+  });
+}
+
+void ssopenbcs(const OpenBcParams& p, const OpenBcTerrain& t, const FArray1& vh, const RadBc& r,
+               const FArray3& v3d, const FArray3& vten, Real dts) {
+  uv_at_w(p, t, v3d, 1, p.ni, 1, 2);
+  const Real rdy = p.rdy;
+  auto radbcs = r.radbcs; auto gz = t.gz; auto rgzv = t.rgzv; auto gy = t.gy; auto dum1 = t.dum1; auto rdsf = t.rdsf;
+  Kokkos::parallel_for("ssopenbcs_t", box2(1, p.ni, 1, p.nk), KOKKOS_LAMBDA(int i, int k) {
+    v3d(i, 1, k) = v3d(i, 1, k) + dts * (-radbcs(i, k) * (
+                     gz(i, 1, 1) * (v3d(i, 2, k) * rgzv(i, 2, 1) - v3d(i, 1, k) * rgzv(i, 1, 1)) * rdy * vh(1)
+                     + 0.5 * (gy(i, 1, k + 1) * (dum1(i, 2, k + 1) + dum1(i, 1, k + 1))
+                              - gy(i, 1, k) * (dum1(i, 2, k) + dum1(i, 1, k))) * rdsf(k))
+                   + vten(i, 1, k));
+  });
+}
+
+void ssopenbcn(const OpenBcParams& p, const OpenBcTerrain& t, const FArray1& vh, const RadBc& r,
+               const FArray3& v3d, const FArray3& vten, Real dts) {
+  const int nj = p.nj;
+  uv_at_w(p, t, v3d, 1, p.ni, nj, nj + 1);
+  const Real rdy = p.rdy;
+  auto radbcn = r.radbcn; auto gz = t.gz; auto rgzv = t.rgzv; auto gy = t.gy; auto dum1 = t.dum1; auto rdsf = t.rdsf;
+  Kokkos::parallel_for("ssopenbcn_t", box2(1, p.ni, 1, p.nk), KOKKOS_LAMBDA(int i, int k) {
+    v3d(i, nj + 1, k) = v3d(i, nj + 1, k) + dts * (-radbcn(i, k) * (
+                          gz(i, nj, 1) * (v3d(i, nj + 1, k) * rgzv(i, nj + 1, 1) - v3d(i, nj, k) * rgzv(i, nj, 1)) * rdy * vh(nj)
+                          + 0.5 * (gy(i, nj, k + 1) * (dum1(i, nj + 1, k + 1) + dum1(i, nj, k + 1))
+                                   - gy(i, nj, k) * (dum1(i, nj + 1, k) + dum1(i, nj, k))) * rdsf(k))
+                        + vten(i, nj + 1, k));
+  });
+}
+
+//---------------------------------------------------------------------------
 namespace {
 // fluxout/fluxin: serial sum over k (double), as in the Fortran.
 void sum_levels(int nk, const FArray1& temout, const FArray1& temin, double& fluxout, double& fluxin) {
@@ -326,11 +406,21 @@ void sound_openbc(const SoundOpenBc& o, const FArray3& u3d, const FArray3& uten,
     if (p.ibw == 1 || p.ibe == 1) radbcew(p, o.rad, u3d);
     if (p.ibs == 1 || p.ibn == 1) radbcns(p, o.rad, v3d);
   }
-  if (p.wbc == 2 && p.ibw == 1) ssopenbcw(p, o.uh, o.rad, u3d, uten, dts);
-  if (p.ebc == 2 && p.ibe == 1) ssopenbce(p, o.uh, o.rad, u3d, uten, dts);
+  if (o.terrain) {
+    if (p.wbc == 2 && p.ibw == 1) ssopenbcw(p, o.t, o.uh, o.rad, u3d, uten, dts);
+    if (p.ebc == 2 && p.ibe == 1) ssopenbce(p, o.t, o.uh, o.rad, u3d, uten, dts);
+  } else {
+    if (p.wbc == 2 && p.ibw == 1) ssopenbcw(p, o.uh, o.rad, u3d, uten, dts);
+    if (p.ebc == 2 && p.ibe == 1) ssopenbce(p, o.uh, o.rad, u3d, uten, dts);
+  }
   if (p.roflux == 1) restrict_openbc_we(p, o.rvh, o.rmh, o.rho0, u3d, o.work, o.work2);
-  if (p.sbc == 2 && p.ibs == 1) ssopenbcs(p, o.vh, o.rad, v3d, vten, dts);
-  if (p.nbc == 2 && p.ibn == 1) ssopenbcn(p, o.vh, o.rad, v3d, vten, dts);
+  if (o.terrain) {
+    if (p.sbc == 2 && p.ibs == 1) ssopenbcs(p, o.t, o.vh, o.rad, v3d, vten, dts);
+    if (p.nbc == 2 && p.ibn == 1) ssopenbcn(p, o.t, o.vh, o.rad, v3d, vten, dts);
+  } else {
+    if (p.sbc == 2 && p.ibs == 1) ssopenbcs(p, o.vh, o.rad, v3d, vten, dts);
+    if (p.nbc == 2 && p.ibn == 1) ssopenbcn(p, o.vh, o.rad, v3d, vten, dts);
+  }
   if (p.roflux == 1) restrict_openbc_sn(p, o.ruh, o.rmh, o.rho0, v3d, o.work, o.work2);
 }
 

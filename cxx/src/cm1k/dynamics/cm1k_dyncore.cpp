@@ -159,7 +159,7 @@ void DynConfig::check() const {
   if (hrdamp != 0 && hrdamp != 1) unsupported("hrdamp=" + std::to_string(hrdamp));
   if (icor == 1 && betaplane != 0) unsupported("betaplane=1");
   if (do_adapt_move) unsupported("do_adapt_move");
-  if (lspgrad != 0) unsupported("lspgrad");
+  if (lspgrad != 0 && lspgrad != 1) unsupported("lspgrad=" + std::to_string(lspgrad) + " (only 0, 1)");
   if (testcase != 0) unsupported("testcase");
   if (axisymm != 0) unsupported("axisymm");
   if (cuparam != 0) unsupported("cuparam");
@@ -185,7 +185,6 @@ void DynConfig::check() const {
   if (sfc_opt.has_layer() && !(turb && sgsmodel == 1) && !pbl)
     unsupported("the surface layer (sfcmodel=" + std::to_string(sfcmodel) +
                 ") without the LES TKE scheme (sgsmodel=1) or a PBL scheme");
-  if (terrain_flag) unsupported("terrain_flag");
   if (do_ib) unsupported("do_ib");
   if (do_lsnudge) unsupported("do_lsnudge");
   if (do_recycle) unsupported("eddy recycling");
@@ -267,6 +266,16 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     m_sobc.rmh = grid.rmh; m_sobc.rho0 = base.rho0;
     m_sobc.work = FArray1("obc_temout", {1}, {B.nk});
     m_sobc.work2 = FArray1("obc_temin", {1}, {B.nk});
+    if (m_cfg.terrain_flag) {
+      // ssopenbc* terrain branches (dum1 of sound.F is scratch there)
+      const auto ex = init::extrap_coeffs(grid.sigma.to_host(), grid.sigmaf.to_host(), B.nk);
+      auto& t = m_sobc.t;
+      m_sobc.terrain = true;
+      t.rds = grid.rds; t.sigma = grid.sigma; t.rdsf = grid.rdsf; t.sigmaf = grid.sigmaf;
+      t.gz = grid.gz; t.rgzu = grid.rgzu; t.rgzv = grid.rgzv; t.gx = grid.gx; t.gy = grid.gy;
+      t.dum1 = FArray3("obc_dum1", {B.ib, B.jb, B.kb}, {B.ie, B.je, B.ke});
+      t.cgs1 = ex.cgs1; t.cgs2 = ex.cgs2; t.cgs3 = ex.cgs3; t.cgt1 = ex.cgt1; t.cgt2 = ex.cgt2; t.cgt3 = ex.cgt3;
+    }
   }
 
   // param.F: min_dx, min_dy, min_dz, Rayleigh damping coefficients
@@ -351,6 +360,11 @@ void Dyncore::start_from_state() {
   u3d.deep_copy_from(s.ua); bcu(m_bc, u3d);
   v3d.deep_copy_from(s.va); bcv(m_bc, v3d);
   w3d.deep_copy_from(s.wa); bcw(m_bc, w3d, 1);
+  if (m_cfg.terrain_flag) {
+    // the surface w CM1 carries (getset, solve3: bcwsfc then bc2d)
+    bcwsfc(m_bc, m_g.gz, m_g.dzdx, m_g.dzdy, u3d, v3d, w3d);
+    bc2d(m_bc, w3d, 1);
+  }
   pp3d.deep_copy_from(s.ppi);
   th3d.deep_copy_from(s.tha); bcs(m_bc, th3d);
   if (m_cfg.imoist == 1) {
@@ -601,7 +615,7 @@ void Dyncore::solve1() {
   auto tauh_ = tauh; auto taus_ = taus; auto tauf_ = tauf;
 
   //  Rayleigh damping and set tendency arrays
-  if (cfg.irdamp == 1) {
+  if (cfg.irdamp == 1 || cfg.hrdamp == 1) {
     const Real rdalpha = cfg.rdalpha;
     Kokkos::parallel_for("rdamp", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       uten1_(i, j, k) = -rdalpha * 0.5 * (tauh_(i - 1, j, k) + tauh_(i, j, k)) * (ua(i, j, k) - u0(i, j, k));
@@ -618,6 +632,18 @@ void Dyncore::solve1() {
   if (cfg.imoist == 1) {
     for (int n = 1; n <= cfg.numq; ++n)
       Kokkos::parallel_for("qten0", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) { qten_(i, j, k, n) = 0.0; });
+  }
+
+  //  large-scale pressure gradient (lspgrad=1: geostrophic balance with the
+  //  base-state winds, including the grid staggering and umove/vmove)
+  if (cfg.lspgrad == 1) {
+    const Real fcor = cfg.fcor, umove = cfg.umove, vmove = cfg.vmove;
+    Kokkos::parallel_for("lspgrad1", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      uten1_(i, j, k) = uten1_(i, j, k) - fcor * (0.25 * ((v0(i, j, k) + v0(i, j + 1, k))
+                                                          + (v0(i - 1, j, k) + v0(i - 1, j + 1, k))) + vmove);
+      vten1_(i, j, k) = vten1_(i, j, k) + fcor * (0.25 * ((u0(i, j, k) + u0(i + 1, j, k))
+                                                          + (u0(i, j - 1, k) + u0(i + 1, j - 1, k))) + umove);
+    });
   }
 
   //  2nd-order diffusion, fixed viscosity (idiff=1, difforder=2; diff2.F)
@@ -738,9 +764,22 @@ void Dyncore::solve2() {
   auto dumk3_ = dumk3; auto dumk4_ = dumk4;
 
   const AdvFluxes fl{rru, rrv, rrw, divx, rho, rr};
+  // terrain metrics (cm1k Grid: the 2D ones are (i,j,1))
+  const bool terrain = cfg.terrain_flag;
+  auto gz = m_g.gz; auto rgzu = m_g.rgzu; auto rgzv = m_g.rgzv; auto dzdx = m_g.dzdx; auto dzdy = m_g.dzdy;
+  auto gxu = m_g.gxu; auto gyv = m_g.gyv;
+  auto sigma = m_g.sigma; auto sigmaf = m_g.sigmaf; auto rds = m_g.rds; auto rdsf = m_g.rdsf;
+  const Real zt = m_g.zt, rzt = m_g.rzt;
+  auto dum1_ = dum1;
 
   for (int nrk = 1; nrk <= nrkmax; ++nrk) {
     const Real dttmp = dt / Real(nrkmax + 1 - nrk);
+
+    //  terrain: w at the surface from the current u, v (stages 2, 3)
+    if (terrain && nrk >= 2) {
+      bcwsfc(m_bc, m_g.gz, m_g.dzdx, m_g.dzdy, u3d, v3d, w3d);
+      bc2d(m_bc, w3d, 1);
+    }
 
     //  misc. variables: dum8 = buoyancy, t11 = theta_rho, t22 = ppterm
     if (cfg.imoist == 1) {
@@ -792,27 +831,59 @@ void Dyncore::solve2() {
       wten_(i, j, k) = wten1_(i, j, k);
     });
 
-    //  Get rru,rrv,rrw,divx (without terrain)
-    Kokkos::parallel_for("rru", box3(0, ni + 2, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      rru_(i, j, k) = rho0(1, 1, k) * u3d_(i, j, k);
-    });
-    Kokkos::parallel_for("rrv", box3(0, ni + 1, 0, nj + 2, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      rrv_(i, j, k) = rho0(1, 1, k) * v3d_(i, j, k);
-    });
-    Kokkos::parallel_for("rrw", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      if (k == 1) {
-        rrw_(i, j, 1) = 0.0;
-        rrw_(i, j, nk + 1) = 0.0;
-      } else {
-        rrw_(i, j, k) = rf0(1, 1, k) * w3d_(i, j, k);
-      }
-    });
-    Kokkos::parallel_for("divx", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      divx_(i, j, k) = ((rru_(i + 1, j, k) - rru_(i, j, k)) * rdx * uh(i)
-                       + (rrv_(i, j + 1, k) - rrv_(i, j, k)) * rdy * vh(j))
-                       + (rrw_(i, j, k + 1) - rrw_(i, j, k)) * rdz * mh(1, 1, k);
-      if (Kokkos::fabs(divx_(i, j, k)) < smeps) divx_(i, j, k) = 0.0;
-    });
+    //  Get rru,rrv,rrw,divx
+    if (!terrain) {
+      Kokkos::parallel_for("rru", box3(0, ni + 2, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        rru_(i, j, k) = rho0(1, 1, k) * u3d_(i, j, k);
+      });
+      Kokkos::parallel_for("rrv", box3(0, ni + 1, 0, nj + 2, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        rrv_(i, j, k) = rho0(1, 1, k) * v3d_(i, j, k);
+      });
+      Kokkos::parallel_for("rrw", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (k == 1) {
+          rrw_(i, j, 1) = 0.0;
+          rrw_(i, j, nk + 1) = 0.0;
+        } else {
+          rrw_(i, j, k) = rf0(1, 1, k) * w3d_(i, j, k);
+        }
+      });
+      Kokkos::parallel_for("divx", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        divx_(i, j, k) = ((rru_(i + 1, j, k) - rru_(i, j, k)) * rdx * uh(i)
+                         + (rrv_(i, j + 1, k) - rrv_(i, j, k)) * rdy * vh(j))
+                         + (rrw_(i, j, k + 1) - rrw_(i, j, k)) * rdz * mh(1, 1, k);
+        if (Kokkos::fabs(divx_(i, j, k)) < smeps) divx_(i, j, k) = 0.0;
+      });
+    } else {
+      // with terrain
+      Kokkos::parallel_for("rru_t", box3(0, ni + 2, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        rru_(i, j, k) = 0.5 * (rho0(i - 1, j, k) + rho0(i, j, k)) * u3d_(i, j, k) * rgzu(i, j, 1);
+      });
+      Kokkos::parallel_for("rrv_t", box3(0, ni + 1, 0, nj + 2, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        rrv_(i, j, k) = 0.5 * (rho0(i, j - 1, k) + rho0(i, j, k)) * v3d_(i, j, k) * rgzv(i, j, 1);
+      });
+      Kokkos::parallel_for("rrw_t", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (k == 1) {
+          rrw_(i, j, 1) = 0.0;
+          rrw_(i, j, nk + 1) = 0.0;
+        } else {
+          Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+          Real r1 = 1.0 - r2;
+          r1 = 0.5 * r1;
+          r2 = 0.5 * r2;
+          rrw_(i, j, k) = rf0(i, j, k) * w3d_(i, j, k)
+                        + ((r2 * (rru_(i, j, k) + rru_(i + 1, j, k)) + r1 * (rru_(i, j, k - 1) + rru_(i + 1, j, k - 1))) * dzdx(i, j, 1)
+                           + (r2 * (rrv_(i, j, k) + rrv_(i, j + 1, k)) + r1 * (rrv_(i, j, k - 1) + rrv_(i, j + 1, k - 1))) * dzdy(i, j, 1))
+                          * (sigmaf(k) - zt) * gz(i, j, 1) * rzt;
+        }
+      });
+      bcw(m_bc, rrw, 0);
+      Kokkos::parallel_for("divx_t", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        divx_(i, j, k) = ((rru_(i + 1, j, k) - rru_(i, j, k)) * rdx * uh(i)
+                         + (rrv_(i, j + 1, k) - rrv_(i, j, k)) * rdy * vh(j))
+                         + (rrw_(i, j, k + 1) - rrw_(i, j, k)) * rdsf(k);
+        if (Kokkos::fabs(divx_(i, j, k)) < smeps) divx_(i, j, k) = 0.0;
+      });
+    }
 
     //  Coriolis terms (f plane)
     if (cfg.icor == 1) coriolis(ni, nj, nk, cfg.fcor, cfg.umove, cfg.vmove, u3d, v3d, uten, vten);
@@ -830,11 +901,40 @@ void Dyncore::solve2() {
       wten_(i, j, k) = wten_(i, j, k) + (c1(i, j, k) * dum8_(i, j, k - 1) + c2(i, j, k) * dum8_(i, j, k));
     });
 
+    //  terrain (cm1r19 termod1): the part of the horizontal pressure
+    //  gradient from the buoyancy (dum8) along the sloping coordinate
+    if (terrain) {
+      bcs(m_bc, dum8);
+      Kokkos::parallel_for("termod1_d1", box3(0, ni + 1, 0, nj + 1, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (k == 1 || k == nk + 1) dum1_(i, j, k) = 0.0;
+        else dum1_(i, j, k) = c1(i, j, k) * dum8_(i, j, k - 1) + c2(i, j, k) * dum8_(i, j, k);
+      });
+      const int ibw = m_obc.ibw, ibe = m_obc.ibe, ibs = m_obc.ibs, ibn = m_obc.ibn;
+      Kokkos::parallel_for("termod1_u", box3(1 + ibw, ni + 1 - ibe, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        uten_(i, j, k) = uten_(i, j, k) + (0.125 * ((dum1_(i, j, k + 1) + dum1_(i - 1, j, k + 1))
+                                                    + (dum1_(i, j, k) + dum1_(i - 1, j, k)))
+                                           - 0.25 * (dum8_(i, j, k) + dum8_(i - 1, j, k)))
+                                          * (gxu(i, j, k) + gxu(i, j, k + 1));
+      });
+      Kokkos::parallel_for("termod1_v", box3(1, ni, 1 + ibs, nj + 1 - ibn, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        vten_(i, j, k) = vten_(i, j, k) + (0.125 * ((dum1_(i, j, k + 1) + dum1_(i, j - 1, k + 1))
+                                                    + (dum1_(i, j, k) + dum1_(i, j - 1, k)))
+                                           - 0.25 * (dum8_(i, j, k) + dum8_(i, j - 1, k)))
+                                          * (gyv(i, j, k) + gyv(i, j, k + 1));
+      });
+    }
+
     //  Pressure equation
-    Kokkos::parallel_for("sadv_pi", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      const Real tem = pi0(1, 1, k);
-      sadv_(i, j, k) = tem + pp3d_(i, j, k);
-    });
+    if (!terrain) {
+      Kokkos::parallel_for("sadv_pi", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        const Real tem = pi0(1, 1, k);
+        sadv_(i, j, k) = tem + pp3d_(i, j, k);
+      });
+    } else {
+      Kokkos::parallel_for("sadv_pi_t", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        sadv_(i, j, k) = pi0(i, j, k) + pp3d_(i, j, k);
+      });
+    }
 
     //  call sound
     {
@@ -852,6 +952,13 @@ void Dyncore::solve2() {
       a.ppi = ppi; a.pp3d = pp3d; a.piadv = sadv; a.ppten = ppten; a.ppx = ppx;
       a.thv = t11; a.ppterm = t22;
       if (m_sobc.rad.radbcw.is_allocated()) a.obc = &m_sobc;
+      if (terrain) {
+        a.terrain = true; a.zt = zt; a.rzt = rzt;
+        a.ibw = m_obc.ibw; a.ibe = m_obc.ibe; a.ibs = m_obc.ibs; a.ibn = m_obc.ibn;
+        a.rds = rds; a.rdsf = rdsf; a.sigma = sigma; a.sigmaf = sigmaf;
+        a.gz = gz; a.rgzu = rgzu; a.rgzv = rgzv; a.dzdx = dzdx; a.dzdy = dzdy; a.gxu = gxu; a.gyv = gyv;
+        a.rho0 = rho0; a.rrf0 = m_b.rrf0; a.dum3 = dum3;
+      }
       sound(m_bc, a);
     }
 
@@ -860,33 +967,88 @@ void Dyncore::solve2() {
 
     //  For Bryan-Fritsch equation set, compute 3d divergence (into t11),
     //  from the small-step-averaged velocities
-    if (cfg.imoist == 1 && cfg.eqtset == 2) {
+    if (cfg.imoist == 1 && cfg.eqtset == 2 && !terrain) {
       Kokkos::parallel_for("getdiv", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         t11_(i, j, k) = ((rru_(i + 1, j, k) - rru_(i, j, k)) * rdx * uh(i)
                         + (rrv_(i, j + 1, k) - rrv_(i, j, k)) * rdy * vh(j))
                         + (rrw_(i, j, k + 1) - rrw_(i, j, k)) * rdz * mh(1, 1, k);
         if (Kokkos::fabs(t11_(i, j, k)) < smeps) t11_(i, j, k) = 0.0;
       });
+    } else if (cfg.imoist == 1 && cfg.eqtset == 2) {
+      // getdiv (misclibs.F), Cartesian with terrain; dum1..dum3 are scratch
+      Kokkos::parallel_for("getdiv_t1", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (j <= nj) dum1_(i, j, k) = rru_(i, j, k) * rgzu(i, j, 1);
+        if (i <= ni) dum2_(i, j, k) = rrv_(i, j, k) * rgzv(i, j, 1);
+      });
+      Kokkos::parallel_for("getdiv_t2", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (k == 1) {
+          dum3_(i, j, 1) = 0.0;
+          dum3_(i, j, nk + 1) = 0.0;
+        } else {
+          Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+          Real r1 = 1.0 - r2;
+          r1 = 0.5 * r1;
+          r2 = 0.5 * r2;
+          dum3_(i, j, k) = rrw_(i, j, k)
+                         + ((r2 * (dum1_(i, j, k) + dum1_(i + 1, j, k)) + r1 * (dum1_(i, j, k - 1) + dum1_(i + 1, j, k - 1))) * dzdx(i, j, 1)
+                            + (r2 * (dum2_(i, j, k) + dum2_(i, j + 1, k)) + r1 * (dum2_(i, j, k - 1) + dum2_(i, j + 1, k - 1))) * dzdy(i, j, 1))
+                           * (sigmaf(k) - zt) * gz(i, j, 1) * rzt;
+        }
+      });
+      Kokkos::parallel_for("getdiv_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        t11_(i, j, k) = ((dum1_(i + 1, j, k) - dum1_(i, j, k)) * rdx * uh(i)
+                        + (dum2_(i, j + 1, k) - dum2_(i, j, k)) * rdy * vh(j))
+                        + (dum3_(i, j, k + 1) - dum3_(i, j, k)) * rdsf(k);
+        if (Kokkos::fabs(t11_(i, j, k)) < smeps) t11_(i, j, k) = 0.0;
+      });
     }
 
     //  getdivx: small-step-averaged mass fluxes and their divergence
-    Kokkos::parallel_for("getdivx_uv", krange(1, nk), KOKKOS_LAMBDA(int k) {
-      const Real tem = rho0(1, 1, k);
-      for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni + 1; ++i) rru_(i, j, k) = rru_(i, j, k) * tem;
-      for (int j = 1; j <= nj + 1; ++j) for (int i = 1; i <= ni; ++i) rrv_(i, j, k) = rrv_(i, j, k) * tem;
-      if (k == 1) {
-        for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni; ++i) { rrw_(i, j, 1) = 0.0; rrw_(i, j, nk + 1) = 0.0; }
-      } else {
-        const Real temf = rf0(1, 1, k);
-        for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni; ++i) rrw_(i, j, k) = rrw_(i, j, k) * temf;
-      }
-    });
-    Kokkos::parallel_for("getdivx", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      divx_(i, j, k) = ((rru_(i + 1, j, k) - rru_(i, j, k)) * rdx * uh(i)
-                       + (rrv_(i, j + 1, k) - rrv_(i, j, k)) * rdy * vh(j))
-                       + (rrw_(i, j, k + 1) - rrw_(i, j, k)) * rdz * mh(1, 1, k);
-      if (Kokkos::fabs(divx_(i, j, k)) < smeps) divx_(i, j, k) = 0.0;
-    });
+    if (!terrain) {
+      Kokkos::parallel_for("getdivx_uv", krange(1, nk), KOKKOS_LAMBDA(int k) {
+        const Real tem = rho0(1, 1, k);
+        for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni + 1; ++i) rru_(i, j, k) = rru_(i, j, k) * tem;
+        for (int j = 1; j <= nj + 1; ++j) for (int i = 1; i <= ni; ++i) rrv_(i, j, k) = rrv_(i, j, k) * tem;
+        if (k == 1) {
+          for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni; ++i) { rrw_(i, j, 1) = 0.0; rrw_(i, j, nk + 1) = 0.0; }
+        } else {
+          const Real temf = rf0(1, 1, k);
+          for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni; ++i) rrw_(i, j, k) = rrw_(i, j, k) * temf;
+        }
+      });
+      Kokkos::parallel_for("getdivx", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        divx_(i, j, k) = ((rru_(i + 1, j, k) - rru_(i, j, k)) * rdx * uh(i)
+                         + (rrv_(i, j + 1, k) - rrv_(i, j, k)) * rdy * vh(j))
+                         + (rrw_(i, j, k + 1) - rrw_(i, j, k)) * rdz * mh(1, 1, k);
+        if (Kokkos::fabs(divx_(i, j, k)) < smeps) divx_(i, j, k) = 0.0;
+      });
+    } else {
+      Kokkos::parallel_for("getdivx_uv_t", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (j <= nj) rru_(i, j, k) = 0.5 * (rho0(i - 1, j, k) + rho0(i, j, k)) * rru_(i, j, k) * rgzu(i, j, 1);
+        if (i <= ni) rrv_(i, j, k) = 0.5 * (rho0(i, j - 1, k) + rho0(i, j, k)) * rrv_(i, j, k) * rgzv(i, j, 1);
+      });
+      Kokkos::parallel_for("getdivx_w_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (k == 1) {
+          rrw_(i, j, 1) = 0.0;
+          rrw_(i, j, nk + 1) = 0.0;
+        } else {
+          Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+          Real r1 = 1.0 - r2;
+          r1 = 0.5 * r1;
+          r2 = 0.5 * r2;
+          rrw_(i, j, k) = rf0(i, j, k) * rrw_(i, j, k)
+                        + ((r2 * (rru_(i, j, k) + rru_(i + 1, j, k)) + r1 * (rru_(i, j, k - 1) + rru_(i + 1, j, k - 1))) * dzdx(i, j, 1)
+                           + (r2 * (rrv_(i, j, k) + rrv_(i, j + 1, k)) + r1 * (rrv_(i, j, k - 1) + rrv_(i, j + 1, k - 1))) * dzdy(i, j, 1))
+                          * (sigmaf(k) - zt) * gz(i, j, 1) * rzt;
+        }
+      });
+      Kokkos::parallel_for("getdivx_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        divx_(i, j, k) = ((rru_(i + 1, j, k) - rru_(i, j, k)) * rdx * uh(i)
+                         + (rrv_(i, j + 1, k) - rrv_(i, j, k)) * rdy * vh(j))
+                         + (rrw_(i, j, k + 1) - rrw_(i, j, k)) * rdsf(k);
+        if (Kokkos::fabs(divx_(i, j, k)) < smeps) divx_(i, j, k) = 0.0;
+      });
+    }
 
     //  THETA-equation
     if (cfg.imoist == 1 && cfg.eqtset == 2) {
@@ -898,10 +1060,16 @@ void Dyncore::solve2() {
         thten_(i, j, k) = thten1_(i, j, k);
       });
     }
-    Kokkos::parallel_for("sadv_th", box3(B.ib, B.ie, B.jb, B.je, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      const Real tem = th0(1, 1, k) - phys::th0r;
-      sadv_(i, j, k) = tem + th3d_(i, j, k);
-    });
+    if (!terrain) {
+      Kokkos::parallel_for("sadv_th", box3(B.ib, B.ie, B.jb, B.je, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        const Real tem = th0(1, 1, k) - phys::th0r;
+        sadv_(i, j, k) = tem + th3d_(i, j, k);
+      });
+    } else {
+      Kokkos::parallel_for("sadv_th_t", box3(B.ib, B.ie, B.jb, B.je, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        sadv_(i, j, k) = (th0(i, j, k) - phys::th0r) + th3d_(i, j, k);
+      });
+    }
     {
       AdvsArgs aa;
       aa.wflag = 1; aa.pdef = 0; aa.pdefweno = 0; aa.weps = 10.0 * phys::epsilon;
@@ -985,6 +1153,7 @@ void Dyncore::solve2() {
     bcu(m_bc, u3d);
     bcv(m_bc, v3d);
     bcw(m_bc, w3d, 1);
+    if (terrain) bcwsfc(m_bc, m_g.gz, m_g.dzdx, m_g.dzdy, u3d, v3d, w3d);
     if (nrk < nrkmax) {
       bcp(m_bc, rho);
       bcp(m_bc, pp3d);
@@ -1129,6 +1298,12 @@ void Dyncore::solve3() {
       qvten_(i, j, k) = (q3d_(i, j, k, nqv) - qvten_(i, j, k)) * rdt;
       qcten_(i, j, k) = (q3d_(i, j, k, nqc) - qcten_(i, j, k)) * rdt;
     });
+  }
+
+  //  terrain: w at the surface (solve3.F, before the copy)
+  if (cfg.terrain_flag) {
+    bcwsfc(m_bc, m_g.gz, m_g.dzdx, m_g.dzdy, u3d, v3d, w3d);
+    bc2d(m_bc, w3d, 1);
   }
 
   //  Equate the two arrays

@@ -58,6 +58,23 @@
         call dump3('khh',khh,ibc,iec,jbc,jec,kbc,kec)
         call dump3('khv',khv,ibc,iec,jbc,jec,kbc,kec)
         call dump3('rain',rain,ib,ie,jb,je,1,nrain)
+        if( terrain_flag )then
+          ! terrain (param.F/init_terrain.F): 2D metrics dumped with a
+          ! third dimension 1:1, then the 3D ones
+          call dump3('zs',zs,ib,ie,jb,je,1,1)
+          call dump3('gz',gz,itb,ite,jtb,jte,1,1)
+          call dump3('rgz',rgz,itb,ite,jtb,jte,1,1)
+          call dump3('gzu',gzu,itb,ite,jtb,jte,1,1)
+          call dump3('rgzu',rgzu,itb,ite,jtb,jte,1,1)
+          call dump3('gzv',gzv,itb,ite,jtb,jte,1,1)
+          call dump3('rgzv',rgzv,itb,ite,jtb,jte,1,1)
+          call dump3('dzdx',dzdx,itb,ite,jtb,jte,1,1)
+          call dump3('dzdy',dzdy,itb,ite,jtb,jte,1,1)
+          call dump3('gx',gx,itb,ite,jtb,jte,ktb,kte)
+          call dump3('gxu',gxu,itb,ite,jtb,jte,ktb,kte)
+          call dump3('gy',gy,itb,ite,jtb,jte,ktb,kte)
+          call dump3('gyv',gyv,itb,ite,jtb,jte,ktb,kte)
+        endif
         if( sfcmodel.ge.1 )then
           ! surface layer (2D arrays, dumped with a third dimension 1:1):
           ! inputs carried across steps, then what sfc_and_turb computed

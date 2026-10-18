@@ -81,7 +81,31 @@ void sound(const BcParams& bc, const SoundArgs& a) {
     dtv(i, j) = dts * dtv0(i, j);
   });
 
-  //  Arrays for vertically implicit solver (without terrain)
+  const bool terrain = a.terrain;
+  auto gz = a.gz; auto rgzu = a.rgzu; auto rgzv = a.rgzv; auto dzdx = a.dzdx; auto dzdy = a.dzdy;
+  auto gxu = a.gxu; auto gyv = a.gyv; auto rho0 = a.rho0; auto rrf0 = a.rrf0; auto dum3 = a.dum3;
+  auto rds = a.rds; auto rdsf = a.rdsf; auto sigma = a.sigma; auto sigmaf = a.sigmaf;
+  const Real zt = a.zt, rzt = a.rzt;
+  const int ibw = a.ibw, ibe = a.ibe, ibs = a.ibs, ibn = a.ibn;
+
+  //  Arrays for vertically implicit solver
+  if (terrain) {
+    // with terrain: "s" velocities ARE coupled with reference density
+    Kokkos::parallel_for("sound_coef_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      const Real tem = dts * rdsf(k);
+      qk(i, j, k) = tem * ppterm(i, j, k) * gz(i, j, 1);
+      const Real tem2 = dts * gz(i, j, 1) * rdsf(k) * rr0(i, j, k);
+      pk2(i, j, k) = tem2 * rf0(i, j, k + 1) * (-c2(i, j, k + 1) * piadv(i, j, k + 1) + (1.0 - c1(i, j, k + 1)) * piadv(i, j, k));
+      pk1(i, j, k) = tem2 * rf0(i, j, k) * (+c1(i, j, k) * piadv(i, j, k - 1) + (c2(i, j, k) - 1.0) * piadv(i, j, k));
+      if (k >= 2) {
+        const Real tem1 = dts * rds(k) * cp;
+        mm(i, j, k) = tem1 * (c2(i, j, k) * thv(i, j, k) + c1(i, j, k) * thv(i, j, k - 1)) * gz(i, j, 1);
+      } else {
+        dum3(i, j, 1) = 0.0;
+        dum3(i, j, nk + 1) = 0.0;
+      }
+    });
+  } else
   Kokkos::parallel_for("sound_coef", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     const Real tem = dts * rdz * mh(1, 1, k);
     const Real r2 = dts * rdz * mh(1, 1, k) * rr0(1, 1, k) * rf0(1, 1, k + 1);
@@ -129,7 +153,31 @@ void sound(const BcParams& bc, const SoundArgs& a) {
     //  open boundary conditions (radbc for irbc=2, ssopenbc*, roflux)
     if (a.obc) sound_openbc(*a.obc, u3d, uten, v3d, vten, dts);
 
-    //  integrate u,v forward in time (Cartesian grid without terrain)
+    //  integrate u,v forward in time
+    if (terrain) {
+      // Cartesian grid with terrain
+      Kokkos::parallel_for("sound_uv_t1", box3(0, ni + 1, 0, nj + 1, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (k == 1 || k == nk + 1) dum1(i, j, k) = 0.0;
+        else dum1(i, j, k) = (ppd(i, j, k) - ppd(i, j, k - 1)) * rds(k);
+      });
+      const Real tem = cp * 0.5;
+      Kokkos::parallel_for("sound_u_t", box3(1 + ibw, ni + 1 - ibe, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        u3d(i, j, k) = u3d(i, j, k) + dts * (uten(i, j, k)
+                       - tem * (thv(i, j, k) + thv(i - 1, j, k)) * (
+                           (ppd(i, j, k) - ppd(i - 1, j, k)) * rdx * uf(i)
+                           + 0.125 * ((dum1(i, j, k + 1) + dum1(i - 1, j, k + 1))
+                                      + (dum1(i, j, k) + dum1(i - 1, j, k)))
+                               * (gxu(i, j, k) + gxu(i, j, k + 1))));
+      });
+      Kokkos::parallel_for("sound_v_t", box3(1, ni, 1 + ibs, nj + 1 - ibn, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        v3d(i, j, k) = v3d(i, j, k) + dts * (vten(i, j, k)
+                       - tem * (thv(i, j, k) + thv(i, j - 1, k)) * (
+                           (ppd(i, j, k) - ppd(i, j - 1, k)) * rdy * vf(j)
+                           + 0.125 * ((dum1(i, j, k + 1) + dum1(i, j - 1, k + 1))
+                                      + (dum1(i, j, k) + dum1(i, j - 1, k)))
+                               * (gyv(i, j, k) + gyv(i, j, k + 1))));
+      });
+    } else
     Kokkos::parallel_for("sound_uv", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       u3d(i, j, k) = u3d(i, j, k) + dtu(i, j) * (uten(i, j, k)
                      - tem1 * (ppd(i, j, k) - ppd(i - 1, j, k)) * uf(i)
@@ -139,6 +187,57 @@ void sound(const BcParams& bc, const SoundArgs& a) {
                            * (thv(i, j, k) + thv(i, j - 1, k)));
     });
 
+    if (terrain) {
+      //  terms for the horizontal divergence (terrain only)
+      Kokkos::parallel_for("sound_hd1", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (j <= nj) dum1(i, j, k) = u3d(i, j, k) * rgzu(i, j, 1);
+        if (i <= ni) dum2(i, j, k) = v3d(i, j, k) * rgzv(i, j, 1);
+      });
+      Kokkos::parallel_for("sound_hd3", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        const Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+        const Real r1 = 1.0 - r2;
+        dum3(i, j, k) = 0.5 * ((r2 * (dum1(i, j, k) + dum1(i + 1, j, k)) + r1 * (dum1(i, j, k - 1) + dum1(i + 1, j, k - 1))) * dzdx(i, j, 1)
+                               + (r2 * (dum2(i, j, k) + dum2(i, j + 1, k)) + r1 * (dum2(i, j, k - 1) + dum2(i, j + 1, k - 1))) * dzdy(i, j, 1))
+                        * (sigmaf(k) - zt) * gz(i, j, 1) * rzt;
+      });
+      //  update arrays for vertically implicit solver (advection: below)
+      Kokkos::parallel_for("sound_fpk_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        Real div = gz(i, j, 1) * (((dum1(i + 1, j, k) - dum1(i, j, k)) * rdx * uh(i)
+                                   + (dum2(i, j + 1, k) - dum2(i, j, k)) * rdy * vh(j))
+                                  + (dum3(i, j, k + 1) - dum3(i, j, k)) * rdsf(k));
+        if (Kokkos::fabs(div) < smeps) div = 0.0;
+        Real w1 = w3d(i, j, k), w2 = w3d(i, j, k + 1);
+        if (k == 1) w1 = 0.0;
+        if (k == nk) w2 = 0.0;
+        fpk(i, j, k) = dts * (ppten(i, j, k) - ppterm(i, j, k) * div) + beta * (-qk(i, j, k) * (w2 - w1));
+      });
+      //  advection for terrain
+      bcwsfc(bc, gz, dzdx, dzdy, u3d, v3d, w3d);
+      Kokkos::parallel_for("sound_adv1", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (j <= nj) dum1(i, j, k) = 0.5 * (rho0(i - 1, j, k) + rho0(i, j, k)) * dum1(i, j, k);
+        if (i <= ni) dum2(i, j, k) = 0.5 * (rho0(i, j - 1, k) + rho0(i, j, k)) * dum2(i, j, k);
+      });
+      Kokkos::parallel_for("sound_adv3", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        const Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+        const Real r1 = 1.0 - r2;
+        // NOTE: dum3 is NOT coupled with density
+        dum3(i, j, k) = 0.5 * ((r2 * (dum1(i, j, k) + dum1(i + 1, j, k)) + r1 * (dum1(i, j, k - 1) + dum1(i + 1, j, k - 1))) * dzdx(i, j, 1)
+                               + (r2 * (dum2(i, j, k) + dum2(i, j + 1, k)) + r1 * (dum2(i, j, k - 1) + dum2(i, j + 1, k - 1))) * dzdy(i, j, 1))
+                        * (sigmaf(k) - zt) * gz(i, j, 1) * rzt * rrf0(i, j, k);
+      });
+      Kokkos::parallel_for("sound_adv", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        const Real u2 = temx * dum1(i + 1, j, k) * uh(i);
+        const Real u1 = temx * dum1(i, j, k) * uh(i);
+        const Real v2 = temy * dum2(i, j + 1, k) * vh(j);
+        const Real v1 = temy * dum2(i, j, k) * vh(j);
+        const Real w2 = dum3(i, j, k + 1) + beta * w3d(i, j, k + 1);
+        const Real w1 = dum3(i, j, k) + beta * w3d(i, j, k);
+        fpk(i, j, k) = fpk(i, j, k)
+                     + (-(u2 * (piadv(i + 1, j, k) - piadv(i, j, k)) + u1 * (piadv(i, j, k) - piadv(i - 1, j, k)))
+                        - (v2 * (piadv(i, j + 1, k) - piadv(i, j, k)) + v1 * (piadv(i, j, k) - piadv(i, j - 1, k)))) * rr0(i, j, k) * gz(i, j, 1)
+                     + (w1 * pk1(i, j, k) + w2 * pk2(i, j, k));
+      });
+    } else
     //  update arrays for vertically implicit solver
     Kokkos::parallel_for("sound_fpk", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       Real div = (u3d(i + 1, j, k) - u3d(i, j, k)) * rdx * uh(i)
@@ -197,7 +296,20 @@ void sound(const BcParams& bc, const SoundArgs& a) {
         w3d(i, j, k) = dum1(i, j, k) * w3d(i, j, k + 1) + dum2(i, j, k);
     });
 
-    //  get new pp (without terrain), divergence damping
+    //  get new pp, divergence damping
+    if (terrain) {
+      Kokkos::parallel_for("sound_pp_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        Real w1 = w3d(i, j, k), w2 = w3d(i, j, k + 1);
+        if (k == 1) w1 = 0.0;
+        if (k == nk) w2 = 0.0;
+        ppd(i, j, k) = pp3d(i, j, k);
+        pp3d(i, j, k) = pp3d(i, j, k) + fpk(i, j, k)
+                      + alph * (w1 * (pk1(i, j, k) + qk(i, j, k)) + w2 * (pk2(i, j, k) - qk(i, j, k)));
+        if (Kokkos::fabs(pp3d(i, j, k)) < smeps) pp3d(i, j, k) = 0.0;
+        dum1(i, j, k) = kdiv * (pp3d(i, j, k) - ppd(i, j, k));
+        ppd(i, j, k) = pp3d(i, j, k) + dum1(i, j, k);
+      });
+    } else
     Kokkos::parallel_for("sound_pp", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       ppd(i, j, k) = pp3d(i, j, k);
       pp3d(i, j, k) = pp3d(i, j, k) + fpk(i, j, k)

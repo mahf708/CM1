@@ -8,8 +8,8 @@
 // irbc=4) and sound.F (irbc=2, ssopenbc*, roflux).
 //
 // Serial runs only (the `#ifndef MPI` view of the Fortran): ibw = 1 iff
-// wbc /= 1, etc. Cartesian grid without terrain (the terrain branches of
-// ssopenbc* are not ported; DynConfig::check throws for terrain_flag).
+// wbc /= 1, etc. Cartesian grid, with or without terrain (ssopenbc*: the
+// terrain branches through OpenBcTerrain).
 //
 // Options (namelist, with param.F/cm1.F defaults):
 //   irbc     = 1 (Klemp-Wilhelmson, large steps), 2 (Klemp-Wilhelmson,
@@ -68,6 +68,23 @@ void ssopenbcs(const OpenBcParams& p, const FArray1& vh, const RadBc& r, const F
 void ssopenbcn(const OpenBcParams& p, const FArray1& vh, const RadBc& r, const FArray3& v3d,
                const FArray3& vten, Real dts);
 
+// Terrain metrics for the terrain branches of ssopenbcw/e/s/n (the 2D ones
+// as (i,j,1)); dum1 is scratch (u or v at w points), cgs*/cgt* the
+// extrapolation coefficients of param.F.
+struct OpenBcTerrain {
+  FArray1 rds, sigma, rdsf, sigmaf;
+  FArray3 gz, rgzu, rgzv, gx, gy, dum1;
+  Real cgs1 = 0, cgs2 = 0, cgs3 = 0, cgt1 = 0, cgt2 = 0, cgt3 = 0;
+};
+void ssopenbcw(const OpenBcParams& p, const OpenBcTerrain& t, const FArray1& uh, const RadBc& r,
+               const FArray3& u3d, const FArray3& uten, Real dts);
+void ssopenbce(const OpenBcParams& p, const OpenBcTerrain& t, const FArray1& uh, const RadBc& r,
+               const FArray3& u3d, const FArray3& uten, Real dts);
+void ssopenbcs(const OpenBcParams& p, const OpenBcTerrain& t, const FArray1& vh, const RadBc& r,
+               const FArray3& v3d, const FArray3& vten, Real dts);
+void ssopenbcn(const OpenBcParams& p, const OpenBcTerrain& t, const FArray1& vh, const RadBc& r,
+               const FArray3& v3d, const FArray3& vten, Real dts);
+
 // bc.F restrict_openbc_we / restrict_openbc_sn (roflux = 1). The per-level
 // sums are double precision (as in the Fortran), summed over k on the host.
 // `work` is a scratch array with at least nk elements starting at index 1
@@ -86,6 +103,8 @@ struct SoundOpenBc {
   RadBc rad;
   FArray1 uh, vh, ruh, rvh, work, work2;
   FArray3 rmh, rho0;
+  bool terrain = false;   // terrain_flag: ssopenbc* take the terrain branches
+  OpenBcTerrain t;
 };
 void sound_openbc(const SoundOpenBc& o, const FArray3& u3d, const FArray3& uten, const FArray3& v3d,
                   const FArray3& vten, Real dts);

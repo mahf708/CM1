@@ -2,6 +2,7 @@
 // pdefy1/y2, pdefz). See cm1k_adv.hpp for what is supported.
 #include "dynamics/cm1k_adv.hpp"
 #include "dynamics/cm1k_adv_routines.hpp"
+#include "dynamics/cm1k_bc.hpp"
 #include "share/cm1k_constants.hpp"
 
 #include <stdexcept>
@@ -60,7 +61,6 @@ void AdvOptions::set_boundary_flags() {
 
 void AdvOptions::check() const {
   auto fail = [](const std::string& m) { throw std::runtime_error("cm1k advection: " + m); };
-  if (terrain_flag) fail("terrain_flag = .true. is not ported");
   if (axisymm != 0) fail("axisymm = 1 is not ported");
   if (do_ib) fail("do_ib = .true. (immersed boundaries) is not ported");
   if (dolsw) fail("large-scale subsidence (dolsw, testcase 3-7) is not ported");
@@ -101,24 +101,24 @@ void bcs_halo(const Bounds& b, const AdvOptions& o, const FArray3& s, int dir) {
   if (dir == 0) {
     const int wbc = o.wbc, ebc = o.ebc;
     Kokkos::parallel_for("bcs_x", box3(1, ng, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      if (wbc == 1)                  s(1 - i, j, k) = s(ni + 1 - i, j, k);
+      if (wbc == 1)                  s(1 - i, j, k) = s(pwrap(ni + 1 - i, 1, ni), j, k);
       else if (wbc == 2)             s(1 - i, j, k) = s(1, j, k);
       else                           s(1 - i, j, k) = s(i, j, k);
     });
     Kokkos::parallel_for("bcs_x", box3(1, ng, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      if (ebc == 1)                  s(ni + i, j, k) = s(i, j, k);
+      if (ebc == 1)                  s(ni + i, j, k) = s(pwrap(i, 1, ni), j, k);
       else if (ebc == 2)             s(ni + i, j, k) = s(ni, j, k);
       else                           s(ni + i, j, k) = s(ni + 1 - i, j, k);
     });
   } else {
     const int sbc = o.sbc, nbc = o.nbc;
     Kokkos::parallel_for("bcs_y", box3(1, ni, 1, ng, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      if (sbc == 1)                  s(i, 1 - j, k) = s(i, nj + 1 - j, k);
+      if (sbc == 1)                  s(i, 1 - j, k) = s(i, pwrap(nj + 1 - j, 1, nj), k);
       else if (sbc == 2)             s(i, 1 - j, k) = s(i, 1, k);
       else                           s(i, 1 - j, k) = s(i, j, k);
     });
     Kokkos::parallel_for("bcs_y", box3(1, ni, 1, ng, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      if (nbc == 1)                  s(i, nj + j, k) = s(i, j, k);
+      if (nbc == 1)                  s(i, nj + j, k) = s(i, pwrap(j, 1, nj), k);
       else if (nbc == 2)             s(i, nj + j, k) = s(i, nj, k);
       else                           s(i, nj + j, k) = s(i, nj + 1 - j, k);
     });
@@ -181,6 +181,9 @@ void Advection::advs(int nrk, const AdvsArgs& args, Real dt, const AdvFluxes& f,
   const FArray3 rru = f.rru, rrv = f.rrv, rrw = f.rrw, divx = f.divx;
   const FArray3 dumx = this->dumx, dumy = this->dumy, dumz = this->dumz;
   const FArray3 advx = this->advx, advy = this->advy, advz = this->advz;
+  const bool terrain = o.terrain_flag;
+  const FArray3 gz = m_g.gz, rgz = m_g.rgz;
+  const FArray1 rdsf = m_g.rdsf;
   const double weps = args.weps;
   const int pdef = args.pdef;
   const Real smeps = o.smeps;
@@ -266,6 +269,12 @@ void Advection::advs(int nrk, const AdvsArgs& args, Real dt, const AdvFluxes& f,
   const bool dopdef = (pdef == 1);   // pdscheme = 1 (hard-wired in param.F)
   // pdefx1 / pdefy1: dum = rho0*s0 + dt*(adv + s*div)   (dumx, dumy reused)
   if (dopdef) {
+    if (terrain)
+      Kokkos::parallel_for("pdefx1_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        dumx(i, j, k) = rho0(i, j, k)*s0(i, j, k)+dt*( advx(i, j, k)
+                       +s(i, j, k)*(rru(i + 1, j, k)-rru(i, j, k))*rdx*uh(i) )*gz(i, j, 1);
+      });
+    else
     Kokkos::parallel_for("pdefx1", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       dumx(i, j, k) = rho0(1, 1, k)*s0(i, j, k)+dt*( advx(i, j, k)
                      +s(i, j, k)*(rru(i + 1, j, k)-rru(i, j, k))*rdx*uh(i) );
@@ -278,6 +287,12 @@ void Advection::advs(int nrk, const AdvsArgs& args, Real dt, const AdvFluxes& f,
     });
     bcs_halo(b, o, dumx, 0);
 
+    if (terrain)
+      Kokkos::parallel_for("pdefy1_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        dumy(i, j, k) = rho0(i, j, k)*s0(i, j, k)+dt*( advy(i, j, k)
+                       +s(i, j, k)*(rrv(i, j + 1, k)-rrv(i, j, k))*rdy*vh(j) )*gz(i, j, 1);
+      });
+    else
     Kokkos::parallel_for("pdefy1", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       dumy(i, j, k) = rho0(1, 1, k)*s0(i, j, k)+dt*( advy(i, j, k)
                      +s(i, j, k)*(rrv(i, j + 1, k)-rrv(i, j, k))*rdy*vh(j) );
@@ -294,6 +309,13 @@ void Advection::advs(int nrk, const AdvsArgs& args, Real dt, const AdvFluxes& f,
   // vertical fluxes
   vadv_flux(m_g, o, 1, hscheme(doweno, o.weno_order, args.vadvorder), args.pdefweno, weps, rrw, s, dumz);
 
+  if (terrain)
+    Kokkos::parallel_for("advs_vadv_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      if (k == 1)       advz(i, j, k) = -dumz(i, j, 2)*rdsf(1);
+      else if (k == nk) advz(i, j, k) = +dumz(i, j, nk)*rdsf(nk);
+      else              advz(i, j, k) = -(dumz(i, j, k + 1)-dumz(i, j, k))*rdsf(k);
+    });
+  else
   Kokkos::parallel_for("advs_vadv", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     if (k == 1)       advz(i, j, k) = -dumz(i, j, 2)*rdz*mh(1, 1, 1);
     else if (k == nk) advz(i, j, k) = +dumz(i, j, nk)*rdz*mh(1, 1, nk);
@@ -303,6 +325,31 @@ void Advection::advs(int nrk, const AdvsArgs& args, Real dt, const AdvFluxes& f,
   if (dopdef) {
     const Real rdt = 1.0/dt;
     // pdefz
+    if (terrain) {
+      Kokkos::parallel_for("pdefz1_t", box3(1, ni, 1, nj, 0, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (k == 0 || k == nk + 1) dumz(i, j, k) = 0.0;
+        else dumz(i, j, k) = rho0(i, j, k)*s0(i, j, k)+dt*( advz(i, j, k)
+                            +s(i, j, k)*(rrw(i, j, k + 1)-rrw(i, j, k))*rdsf(k) )*gz(i, j, 1);
+      });
+      Kokkos::parallel_for("pdefz2_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        Real mass;
+        if (pdef_gather(PdefLine{dumz, i, j, k, 0, 0, 1}, smeps, mass))
+          advz(i, j, k) = (dumz(i, j, k)+mass-rho0(i, j, k)*s0(i, j, k))*rdt*rgz(i, j, 1)
+                         -s(i, j, k)*(rrw(i, j, k + 1)-rrw(i, j, k))*rdsf(k);
+      });
+      Kokkos::parallel_for("pdefx2_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        Real mass;
+        if (pdef_gather(PdefLine{dumx, i, j, k, 1, 0, 0}, smeps, mass))
+          advx(i, j, k) = (dumx(i, j, k)+mass-rho0(i, j, k)*s0(i, j, k))*rdt*rgz(i, j, 1)
+                         -s(i, j, k)*(rru(i + 1, j, k)-rru(i, j, k))*rdx*uh(i);
+      });
+      Kokkos::parallel_for("pdefy2_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        Real mass;
+        if (pdef_gather(PdefLine{dumy, i, j, k, 0, 1, 0}, smeps, mass))
+          advy(i, j, k) = (dumy(i, j, k)+mass-rho0(i, j, k)*s0(i, j, k))*rdt*rgz(i, j, 1)
+                         -s(i, j, k)*(rrv(i, j + 1, k)-rrv(i, j, k))*rdy*vh(j);
+      });
+    } else {
     Kokkos::parallel_for("pdefz1", box3(1, ni, 1, nj, 0, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
       if (k == 0 || k == nk + 1) dumz(i, j, k) = 0.0;
       else dumz(i, j, k) = rho0(1, 1, k)*s0(i, j, k)+dt*( advz(i, j, k)
@@ -328,8 +375,15 @@ void Advection::advs(int nrk, const AdvsArgs& args, Real dt, const AdvFluxes& f,
         advy(i, j, k) = (dumy(i, j, k)+mass-rho0(1, 1, k)*s0(i, j, k))*rdt
                        -s(i, j, k)*(rrv(i, j + 1, k)-rrv(i, j, k))*rdy*vh(j);
     });
+    }
   }
 
+  if (terrain)
+    Kokkos::parallel_for("advs_sten_t", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      sten(i, j, k) = sten(i, j, k)+( (advx(i, j, k)+advy(i, j, k))+advz(i, j, k)
+                                     +s(i, j, k)*divx(i, j, k) )*rr0(i, j, k)*gz(i, j, 1);
+    });
+  else
   Kokkos::parallel_for("advs_sten", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     sten(i, j, k) = sten(i, j, k)+( (advx(i, j, k)+advy(i, j, k))+advz(i, j, k)
                                    +s(i, j, k)*divx(i, j, k) )*rr0(1, 1, k);
@@ -416,6 +470,21 @@ void Advection::advu(int nrk, Real dt, const AdvFluxes& f, const FArray3& u3d, c
 
   vadv_flux(m_g, o, 2, hscheme(doweno, o.weno_order, o.vadvordrv), 0, weps, rrw, u3d, dumz);
 
+  if (o.terrain_flag) {
+    const FArray1 rdsf = m_g.rdsf;
+    const FArray3 gzu = m_g.gzu;
+    Kokkos::parallel_for("advu_ten_t", box3(i1, i2, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      Real az;
+      if (k == 1)       az = -dumz(i, j, k + 1)*rdsf(k);
+      else if (k == nk) az = +dumz(i, j, k)*rdsf(k);
+      else              az = -(dumz(i, j, k + 1)-dumz(i, j, k))*rdsf(k);
+      advz(i, j, k) = az;
+      uten(i, j, k) = uten(i, j, k)+( (advx(i, j, k)+advy(i, j, k))+az
+                     +u3d(i, j, k)*0.5*(divx(i, j, k)+divx(i - 1, j, k)) )
+                    *gzu(i, j, 1)/(0.5*(rho0(i - 1, j, k)+rho0(i, j, k)));
+    });
+    return;
+  }
   Kokkos::parallel_for("advu_ten", box3(i1, i2, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     Real az;
     if (k == 1)       az = -dumz(i, j, k + 1)*rdz*mh(1, 1, k);
@@ -507,6 +576,21 @@ void Advection::advv(int nrk, Real dt, const AdvFluxes& f, const FArray3& v3d, c
 
   vadv_flux(m_g, o, 3, hscheme(doweno, o.weno_order, o.vadvordrv), 0, weps, rrw, v3d, dumz);
 
+  if (o.terrain_flag) {
+    const FArray1 rdsf = m_g.rdsf;
+    const FArray3 gzv = m_g.gzv;
+    Kokkos::parallel_for("advv_ten_t", box3(1, ni, j1, j2, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      Real az;
+      if (k == 1)       az = -dumz(i, j, k + 1)*rdsf(k);
+      else if (k == nk) az = +dumz(i, j, k)*rdsf(k);
+      else              az = -(dumz(i, j, k + 1)-dumz(i, j, k))*rdsf(k);
+      advz(i, j, k) = az;
+      vten(i, j, k) = vten(i, j, k)+( (advx(i, j, k)+advy(i, j, k))+az
+                     +v3d(i, j, k)*0.5*(divx(i, j, k)+divx(i, j - 1, k)) )
+                    *gzv(i, j, 1)/(0.5*(rho0(i, j - 1, k)+rho0(i, j, k)));
+    });
+    return;
+  }
   Kokkos::parallel_for("advv_ten", box3(1, ni, j1, j2, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     Real az;
     if (k == 1)       az = -dumz(i, j, k + 1)*rdz*mh(1, 1, k);
@@ -649,6 +733,17 @@ void Advection::advw(int nrk, Real dt, const AdvFluxes& f, const FArray3& w3d, c
 
   vadv_flux(m_g, o, 4, hscheme(doweno, o.weno_order, vadvorder), 0, weps, rrw, w3d, dumz);
 
+  if (o.terrain_flag) {
+    const FArray1 rds = m_g.rds;
+    const FArray3 gz = m_g.gz;
+    Kokkos::parallel_for("advw_ten_t", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      const Real az = -(dumz(i, j, k)-dumz(i, j, k - 1))*rds(k);
+      advz(i, j, k) = az;
+      wten(i, j, k) = wten(i, j, k)+( (advx(i, j, k)+advy(i, j, k))+az
+                     +w3d(i, j, k)*(c2(i, j, k)*divx(i, j, k)+c1(i, j, k)*divx(i, j, k - 1)) )*rrf0(i, j, k)*gz(i, j, 1);
+    });
+    return;
+  }
   Kokkos::parallel_for("advw_ten", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     const Real az = -(dumz(i, j, k)-dumz(i, j, k - 1))*rdz*mf(1, 1, k);
     advz(i, j, k) = az;
