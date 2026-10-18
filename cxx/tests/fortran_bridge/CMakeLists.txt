@@ -12,8 +12,16 @@ set(CM1F_BRIDGE_FFLAGS -fdefault-real-8 -fdefault-double-8 -ffp-contract=off -ff
 add_library(cm1f_bridge_turbcopy STATIC ${CM1F_TURBCOPY})
 target_link_libraries(cm1f_bridge_turbcopy PUBLIC cm1f)
 target_compile_options(cm1f_bridge_turbcopy PRIVATE ${CM1F_BRIDGE_FFLAGS})
+# Same for cm1f_bridge_thomcopy.F90 (copies of thompson.F and mp_driver.F
+# under other module names, see the file).
+set(CM1F_THOMCOPY ${CMAKE_CURRENT_SOURCE_DIR}/cm1f_bridge_thomcopy.F90)
+list(REMOVE_ITEM CM1F_BRIDGE_SOURCES ${CM1F_THOMCOPY})
+add_library(cm1f_bridge_thomcopy STATIC ${CM1F_THOMCOPY})
+target_link_libraries(cm1f_bridge_thomcopy PUBLIC cm1f)
+# thompson.F's own flags (Cm1Fortran.cmake), so the copy computes as the original
+target_compile_options(cm1f_bridge_thomcopy PRIVATE ${CM1F_BRIDGE_FFLAGS} -fallow-argument-mismatch -O2 -finline-functions -w)
 add_library(cm1f_bridge STATIC ${CM1F_BRIDGE_SOURCES})
-target_link_libraries(cm1f_bridge PUBLIC cm1f_bridge_turbcopy cm1f)
+target_link_libraries(cm1f_bridge PUBLIC cm1f_bridge_turbcopy cm1f_bridge_thomcopy cm1f)
 target_compile_options(cm1f_bridge PRIVATE ${CM1F_BRIDGE_FFLAGS})
 # The surface-layer shims copy loops of solve1.F/sfcphys.F that call alog;
 # gfortran would vectorize those through glibc's libmvec (_ZGVbN2v_log, not
