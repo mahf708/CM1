@@ -317,6 +317,27 @@ TEST_CASE("dyncore + simple PBL + MM5 surface layer + SLAB + Kessler: pbl2_sfcla
   run_case("pbl2_sfclay_land", 0.0, false, true);
 }
 
+// terrain-following coordinate (terrain_flag): bit-for-bit
+TEST_CASE("dyncore + terrain: nh_mountain_waves vs Fortran", "[dyn][step][terrain][openbc]") {
+  // 2D bell (itern=1), open E/W (irbc=4), WENO scalars, Coriolis + lspgrad, Rayleigh damping
+  run_case("nh_mountain_waves", 0.0);
+}
+
+TEST_CASE("dyncore + terrain: nh_mountain_waves from Model::init (no dump)", "[dyn][step][init][terrain][openbc]") {
+  run_case("nh_mountain_waves", 0.0, true);
+}
+
+TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke vs Fortran",
+          "[dyn][step][terrain][kessler][turb]") {
+  // 3D hill (itern=3), periodic, TKE (doimpl=1, idiss=1) and Kessler
+  run_case("kessler_terrain_tke", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke from Model::init (no dump)",
+          "[dyn][step][init][terrain][kessler][turb]") {
+  run_case("kessler_terrain_tke", 0.0, true, true);
+}
+
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
   run_case("dry_bubble", 1e-12, true);
 }
@@ -331,8 +352,24 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   REQUIRE_THROWS(DynConfig::from_namelist(nl).check());
   nl.set("psolver", "3");
   REQUIRE_NOTHROW(DynConfig::from_namelist(nl).check());
+  // terrain: ported on these paths; diff2, imove, the surface layer and PBL schemes throw
   nl.set("terrain_flag", ".true.");
-  REQUIRE_THROWS(DynConfig::from_namelist(nl).check());
+  REQUIRE_NOTHROW(DynConfig::from_namelist(nl).check());
+  for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{{"imove", "1"}, {"idiff", "1"}}) {
+    auto x = nl;
+    x.set(k, v);
+    if (k == "idiff") { x.set("difforder", "2"); x.set("cm1setup", "0"); }   // (param.F: cm1setup>=1 turns diff2 off)
+    INFO("terrain with " << k << " = " << v);
+    REQUIRE_THROWS(DynConfig::from_namelist(x).check());
+  }
+  {
+    auto x = nl;
+    x.set("idiff", "1"); x.set("difforder", "6");
+    REQUIRE_NOTHROW(DynConfig::from_namelist(x).check());
+    auto sf = Namelist::from_file(cm1k::testing::case_namelist("cbl_sfc"));
+    sf.set("terrain_flag", ".true.");
+    REQUIRE_THROWS(DynConfig::from_namelist(sf).check());
+  }
   nl.set("terrain_flag", ".false.");
   // lateral boundaries: 1..4 are ported (2 with irbc = 1, 2, 4)
   nl.set("wbc", "2"); nl.set("ebc", "2");

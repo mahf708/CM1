@@ -249,11 +249,11 @@ void turbw(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
 void turbuz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
             const FArray3& u, const FArray3& w, const FArray3& t13, const FArray3& kmv,
             const FArray3& turbz, const FArray3& dum1, const FArray3& dum2, const FArray3& dum3,
-            const FArray3& dum7);
+            const FArray3& dum7, const FArray3& dum9 = FArray3());
 void turbvz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
             const FArray3& v, const FArray3& w, const FArray3& t23, const FArray3& kmv,
             const FArray3& turbz, const FArray3& dum1, const FArray3& dum2, const FArray3& dum3,
-            const FArray3& dum7);
+            const FArray3& dum7, const FArray3& dum9 = FArray3());
 // turbtend.F turbsz: vertical subgrid flux divergence of s into turbz
 // (1..ni,1..nj,1..nk; rho-weighted, the caller multiplies by rr). dum7/dum8:
 // vimpl coefficients (doimpl=1); iflux=1 with dosfcflx uses sflux at k=1.

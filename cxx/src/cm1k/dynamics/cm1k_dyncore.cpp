@@ -186,6 +186,15 @@ void DynConfig::check() const {
     unsupported("the surface layer (sfcmodel=" + std::to_string(sfcmodel) +
                 ") without the LES TKE scheme (sgsmodel=1) or a PBL scheme");
   if (do_ib) unsupported("do_ib");
+  // terrain-following coordinate: everything above that has a terrain branch
+  // is ported (advection, sound psolver=3, open boundaries, TKE sgsmodel=1,
+  // Rayleigh damping, diff6, Coriolis/lspgrad, Kessler); these are not
+  if (terrain_flag) {
+    if (diff2()) unsupported("difforder=2 with terrain (diff2.F stops: cannot use diff2u with terrain)");
+    if (imove != 0) unsupported("imove=1 with terrain (param.F)");
+    if (pbl) unsupported("PBL schemes (cm1setup=2) with terrain");
+    if (sfc_opt.has_layer()) unsupported("the surface layer (sfcmodel>=1, bbc=3) with terrain");
+  }
   if (do_lsnudge) unsupported("do_lsnudge");
   if (do_recycle) unsupported("eddy recycling");
   // lateral boundaries 1 (periodic), 2 (open-radiative, see cm1k_openbc),
