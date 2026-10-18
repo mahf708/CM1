@@ -109,6 +109,13 @@ KOKKOS_INLINE_FUNCTION void tridin(int n, int nt, const Col& al, const Col& cm, 
 
 } // namespace
 
+void Carried::allocate(const Bounds& b) {
+  xkzh = FArray3("xkzh", {b.ib, b.jb, b.kb}, {b.ie, b.je, b.ke});
+  xkzm = FArray3("xkzm", {b.ib, b.jb, b.kb}, {b.ie, b.je, b.ke});
+}
+
+std::vector<std::pair<std::string, FArray3>> Carried::dumped() const { return {{"xkzh", xkzh}, {"xkzm", xkzm}}; }
+
 void Workspace::ensure(int ni, int nj, int nk) {
   if (!err.data()) err = Kokkos::View<int, Device>("cm1k::pbl_gfs::err");
   if (w.extent(0) == size_t(ni) && w.extent(1) == size_t(nj) && w.extent(2) == size_t(nk + 2)) return;

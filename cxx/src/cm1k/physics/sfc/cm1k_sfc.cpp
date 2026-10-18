@@ -121,8 +121,8 @@ Options Options::from_namelist(const Namelist& nl) {
 void Options::check() const {
   auto fail = [](const std::string& m) { throw std::runtime_error("cm1k sfc: " + m); };
   auto is01 = [](int v) { return v == 0 || v == 1; };
-  if (!((sfcmodel >= 0 && sfcmodel <= 3) || sfcmodel == 6))
-    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0, 1, 2, 3, 6)");
+  if (!((sfcmodel >= 0 && sfcmodel <= 4) || sfcmodel == 6))
+    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0, 1, 2, 3, 4, 6)");
   if (sfcmodel == 0) {
     // param.F stops for these
     if (isfcflx != 0) fail("isfcflx=1 requires sfcmodel=1..7");
@@ -170,11 +170,23 @@ void Options::check() const {
     if (!(cm1setup == 1 && ipbl == 0) && !(cm1setup == 2 && ipbl == 2))
       fail("sfcmodel=1 with cm1setup=" + std::to_string(cm1setup) + " and ipbl=" + std::to_string(ipbl) +
            " is not ported (only cm1setup=1 with ipbl=0, or cm1setup=2 with ipbl=2)");
+  } else if (sfcmodel == 4) {
+    // the GFDL surface layer with the GFS-EDMF PBL (ipbl=3), over water
+    if (!(cm1setup == 2 && ipbl == 3))
+      fail("sfcmodel=4 with cm1setup=" + std::to_string(cm1setup) + " and ipbl=" + std::to_string(ipbl) +
+           " is not ported (only cm1setup=2 with ipbl=3)");
+    if (pertflx != 0) fail("pertflx=1 can only be used with sfcmodel=1");   // param.F stops
+    if (set_flx != 0 || set_ust != 0 || set_znt != 0) fail("set_flx/set_ust/set_znt are not ported with sfcmodel=4");
+    if (lu0 < 1 || lu0 > 33) fail("lu_index must be between 1 and 33 with sfcmodel=4");   // init_surface.F stops
+    // SF_GFDL reads smois(i,1,j) of CM1's 2D smois over land (out of bounds)
+    if (lu0 != 16) fail("sfcmodel=4 over land (lu0=" + std::to_string(lu0) + ") is not ported (only water, lu0=16)");
+    if (tmn0 < 100.0) fail("tmn is less than 100 K");   // init_surface.F stops
   } else {
-    // the WRF/MM5 surface layers with YSU (ipbl=1) or the simple PBL scheme
-    if (!(cm1setup == 2 && (ipbl == 1 || ipbl == 2)))
+    // the WRF/MM5 surface layers with YSU (ipbl=1), the simple PBL scheme
+    // (ipbl=2) or GFS-EDMF (ipbl=3)
+    if (!(cm1setup == 2 && (ipbl == 1 || ipbl == 2 || ipbl == 3)))
       fail("sfcmodel=" + std::to_string(sfcmodel) + " with cm1setup=" + std::to_string(cm1setup) +
-           " and ipbl=" + std::to_string(ipbl) + " is not ported (only cm1setup=2 with ipbl=1 or 2)");
+           " and ipbl=" + std::to_string(ipbl) + " is not ported (only cm1setup=2 with ipbl=1, 2 or 3)");
     if (pertflx != 0) fail("pertflx=1 can only be used with sfcmodel=1");   // param.F stops
     if (set_flx != 0 || set_ust != 0) fail("set_flx/set_ust are not ported with sfcmodel=2,3");
     if (lu0 < 1 || lu0 > 33) fail("lu_index must be between 1 and 33 with sfcmodel=2,3");   // init_surface.F stops

@@ -109,11 +109,12 @@ void Options::check() const {
   // with or without the horizontal Smagorinsky scheme (horizturb=1), see
   // physics/pbl
   const bool les = (cm1setup == 1);
-  // (also the MYNN PBL, ipbl=4/5, whose turb.F path is the same here)
-  const bool pbl2 = (cm1setup == 2 && (ipbl == 1 || ipbl == 2 || ipbl == 4 || ipbl == 5));
+  // (also GFS-EDMF, ipbl=3, and the MYNN PBL, ipbl=4/5, whose turb.F path is
+  // the same here)
+  const bool pbl2 = (cm1setup == 2 && (ipbl == 1 || ipbl == 2 || ipbl == 3 || ipbl == 4 || ipbl == 5));
   if (!les && !pbl2)
     fail("cm1setup=" + std::to_string(cm1setup) + " with ipbl=" + std::to_string(ipbl) +
-         " is not ported (only cm1setup=1 LES, or cm1setup=2 with ipbl=1, 2, 4, 5)");
+         " is not ported (only cm1setup=1 LES, or cm1setup=2 with ipbl=1..5)");
   if (les && sgsmodel != 1) fail("sgsmodel=" + std::to_string(sgsmodel) + " is not ported (only 1, TKE)");
   if (les && ipbl != 0) fail("ipbl>0 with cm1setup=1 is not ported");
   if (les && horizturb != 0) fail("horizturb=1 with cm1setup=1 is not ported");

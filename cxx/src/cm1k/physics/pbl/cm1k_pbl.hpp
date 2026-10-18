@@ -26,6 +26,9 @@
 //   * ipbl = 2: sfcmodel = 1 (physics/sfc, with isfcflx = 0/1), or 2, 3
 //     (the WRF/MM5 surface layers + SLAB, physics/sfclay, physics/slab)
 //   * ipbl = 1: sfcmodel = 2, 3
+//   * ipbl = 3 (GFS-EDMF, physics/pbl_gfs) with sfcmodel = 2, 3 or 4 (the
+//     GFDL surface layer, physics/sfc_gfdl, over water); param.F sets
+//     idiss = 0 (the dissipative heating is part of thpten)
 //   * ipbl = 4, 5 (MYNN-EDMF, physics/pbl_mynn) with the MYNN surface layer
 //     sfcmodel = 6 (physics/sfc_mynn) over water; the glue is
 //     physics/pbl_mynn/cm1k_mynn_coupling.hpp
@@ -50,7 +53,7 @@
 //
 // Not ported: budgets (tdiag/udiag/vdiag/qdiag td_pbl...), the nstep=1 print
 // of turbparam_vert, output_dissten, YSU's xkzh/xkzm outputs (computed, not
-// stored), the other PBL schemes (GFS-EDMF, MYJ: ipbl = 3, 6) and
+// stored), the other PBL schemes (MYJ: ipbl = 6) and
 // cm1setup = 4.
 
 #include "physics/sfc/cm1k_sfc.hpp"

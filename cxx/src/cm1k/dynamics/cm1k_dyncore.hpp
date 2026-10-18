@@ -6,7 +6,9 @@
 #include "dynamics/cm1k_openbc.hpp"
 #include "dynamics/cm1k_sound.hpp"
 #include "physics/pbl/cm1k_pbl.hpp"
+#include "physics/pbl_gfs/cm1k_pbl_gfs.hpp"
 #include "physics/pbl_mynn/cm1k_mynn_coupling.hpp"
+#include "physics/sfc_gfdl/cm1k_gfdl_driver.hpp"
 #include "physics/pbl_ysu/cm1k_pbl_ysu.hpp"
 #include "physics/sfclay/cm1k_sfclay_driver.hpp"
 #include "physics/turb/cm1k_turb.hpp"
@@ -137,6 +139,12 @@ public:
   // MYNN's carried arrays (DynConfig::mynn), owned by the Model (they are in
   // the dumps). Call after setup().
   void set_mynn(const pbl_mynn::Carried& c);
+  // sfcmodel=4: the GFDL surface-layer state (its common arrays are the
+  // set_surface ones), owned by the Model. Call after setup().
+  void set_gfdl_surface(const sfc_gfdl::GfdlSurface& w);
+  // ipbl=3: GFS-EDMF's diffusivities xkzh, xkzm (in the dumps), owned by
+  // the Model. Call after setup().
+  void set_gfs(const pbl_gfs::Carried& c);
   // solve2.F: qke advection for the MYNN PBL, one RK stage (public: it
   // launches device lambdas)
   void advect_qke(int nrk, Real dttmp);
@@ -156,7 +164,11 @@ public:
   //   4/5: pbl_mynn::pbl (MYNN-EDMF; its surface layer sfcmodel=6 runs in
   //     sfc_and_turb, qke is advected in solve2; carried arrays in
   //     pbl_mynn::Carried, set with set_mynn())
-  //   3, 6, ...: not ported yet. A new scheme adds its case
+  //   3: pbl_gfs::gfsedmf (GFS-EDMF, CM1's dogfsedmf: the wrfphys inputs,
+  //     z = zf, znt = mznt with sfcmodel=4 (else znt); u*, wspd, hpbl and
+  //     xkzh/xkzm (set_gfs) from the scheme; its dissipative heating is
+  //     part of thpten, dissten = its TKE dissipation)
+  //   6, ...: not ported yet. A new scheme adds its case
   //     here (inputs: u3d/v3d/w3d/th3d/pp3d/q3d, s.prs, s.rho, rr, rf, the
   //     surface state m_sfc), any extra outputs or carried arrays to
   //     pbl::Tendencies (allocated from DynConfig::pbl_opt), its options to
@@ -208,8 +220,13 @@ private:
   struct WrfWork {
     FArray3 d1, d2, d3, d4, d5, d6, d7, qv, qc, qi, rth, xkzh, xkzm, kpbl2d, wstar, delta;
     pbl_ysu::Workspace ysu;
+    pbl_gfs::Workspace gfs;
     wrfphys::WrfConst c{};
   } m_ww;
+  sfc_gfdl::GfdlSurface m_gsfc;   // sfcmodel=4
+  bool m_has_gsfc = false;
+  pbl_gfs::Carried m_gc;          // ipbl=3
+  bool m_has_gfs = false;
   pbl::Tendencies m_pt;
   bool m_has_pbl = false;
   pbl_mynn::Carried m_mc;   // MYNN (DynConfig::mynn)

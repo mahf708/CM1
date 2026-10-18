@@ -38,6 +38,8 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   }
   // sfcmodel=2,3: the WRF surface-layer state (tables, tmn, emiss, thc)
   if (m_sfc_opt.wrf()) m_wsfc.setup(m_sfc_opt, sfclay::Options::from_namelist(nl), b, m_sfc);
+  // sfcmodel=4: the GFDL surface-layer state (tables, SLAB's tmn, emiss, thc)
+  if (m_sfc_opt.gfdl()) m_gsfc.setup(m_sfc_opt, b, m_sfc);
   // PBL tendency arrays: allocated from the dynamical core's configuration
   // (DynConfig::pbl, param.F use_pbl); zero at start as in cm1.F
   {
@@ -45,6 +47,7 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     m_use_pbl = cfg.pbl;
     m_ipbl = cfg.pbl_opt.ipbl;
     if (m_use_pbl) m_pbl.allocate(b);
+    if (m_use_pbl && m_ipbl == 3) m_gfs.allocate(b);   // GFS-EDMF: xkzh, xkzm
     // MYNN: carried arrays (zero at start, cm1.F), aliasing the surface and
     // PBL arrays CM1 shares with it
     m_use_mynn = cfg.mynn && m_sfc_opt.mynn();
@@ -80,6 +83,13 @@ void Model::build_registry() {
     if (m_sfc_opt.has_layer()) m_reg.add("hpbl", m_sfc.hpbl);
     for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
   }
+  if (m_sfc_opt.gfdl())
+    for (auto& [name, a] : m_gsfc.dumped()) m_reg.add(name, a);
+  if (m_use_pbl && m_ipbl == 3) {
+    m_reg.add("hpbl", m_sfc.hpbl);
+    for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
+    for (auto& [name, a] : m_gfs.dumped()) m_reg.add(name, a);
+  }
   if (m_use_mynn) {
     for (auto& [name, a] : m_mynn.dumped_sfc()) m_reg.add(name, a);
     m_reg.add("hpbl", m_sfc.hpbl);
@@ -102,6 +112,14 @@ std::vector<std::string> Model::pbl_field_names() const {
     for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
     n.push_back("qipten");
     for (auto& [name, a] : m_mynn.dumped_pbl()) n.push_back(name);
+  }
+  // src/cm1dump_state.inc: sfcmodel=4, then ipbl=3 blocks
+  if (m_sfc_opt.gfdl())
+    for (auto& [name, a] : m_gsfc.dumped()) n.push_back(name);
+  if (m_use_pbl && m_ipbl == 3) {
+    n.push_back("hpbl");
+    for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
+    for (auto& [name, a] : m_gfs.dumped()) n.push_back(name);
   }
   return n;
 }
@@ -176,6 +194,7 @@ void Model::init() {
   if (m_sfc_opt.has_layer()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
   if (m_sfc_opt.wrf()) sfclay::init_soil(m_grid.b, m_wsfc);                 // tslb
   if (m_use_mynn) m_mynn.init_soil(m_grid.b, m_sfc);                       // tslb (sfcmodel=6)
+  if (m_sfc_opt.gfdl()) m_gsfc.init_soil(m_grid.b);                          // tslb (sfcmodel=4)
   m_nstep = 0;
   m_mtime = 0;
   m_dyn.reset();            // the dynamical core is set up again from the new grid
@@ -190,6 +209,8 @@ Dyncore& Model::dyncore() {
     if (m_sfc_opt.wrf()) m_dyn->set_wrf_surface(m_wsfc);
     if (m_use_pbl) m_dyn->set_pbl(m_pbl);
     if (m_use_mynn) m_dyn->set_mynn(m_mynn);
+    if (m_sfc_opt.gfdl()) m_dyn->set_gfdl_surface(m_gsfc);
+    if (m_use_pbl && m_ipbl == 3) m_dyn->set_gfs(m_gfs);
   }
   return *m_dyn;
 }

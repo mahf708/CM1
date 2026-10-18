@@ -53,6 +53,11 @@
 // FArray3 (ib:ie,jb:je,1:1). Interior points 1..ni x 1..nj.
 
 #include "physics/sfclay/cm1k_wrf_common.hpp"
+#include "share/cm1k_grid.hpp"
+
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace cm1k::pbl_gfs {
 
@@ -81,6 +86,17 @@ struct Workspace {
   Kokkos::View<Real****, Kokkos::LayoutLeft, Device> w;
   Kokkos::View<int, Device> err;
   void ensure(int ni, int nj, int nk);
+};
+
+// The ipbl=3 arrays the Model owns (in the dumps): xkzh = dkt3d, xkzm =
+// dku3d, cm1.F's (ibb:ieb,jbb:jeb,kbb:keb) = (ib:ie,jb:je,kb:ke), zero at
+// start.
+struct Carried {
+  FArray3 xkzh, xkzm;
+  void allocate(const Bounds& b);
+  // (name, array) as src/cm1dump_state.inc writes them, after hpbl and the
+  // pbl::Tendencies ones: xkzh, xkzm
+  std::vector<std::pair<std::string, FArray3>> dumped() const;
 };
 
 // turb.F dogfsedmf: BL_GFSEDMF on all columns. Needs nk >= 4.

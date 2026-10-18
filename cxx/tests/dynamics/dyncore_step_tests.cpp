@@ -346,6 +346,45 @@ TEST_CASE("dyncore + simple PBL + MM5 surface layer + SLAB + Kessler: pbl2_sfcla
   run_case("pbl2_sfclay_land", 0.0, false, true);
 }
 
+TEST_CASE("dyncore + GFS-EDMF PBL + GFDL surface layer + Kessler: gfs_kessler vs Fortran",
+          "[dyn][step][pbl][sfc][gfs][kessler]") {
+  // cm1setup=2, ipbl=3 (GFS-EDMF: K profile, mass flux, stratocumulus
+  // mixing, dissipative heating in thpten) with sfcmodel=4 (SF_GFDL over
+  // water: z0 from the 10-m wind, mznt carried across steps, zntmp = mznt),
+  // horizturb=1, Kessler. Compares every dumped surface array, the GFDL
+  // ones (mznt, mol, rmol, zol, br, gz1oz0, psim, psih), hpbl, the PBL
+  // tendencies and xkzh, xkzm.
+  run_case("gfs_kessler", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + GFS-EDMF + GFDL surface layer + Kessler: gfs_kessler from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][gfs][kessler]") {
+  run_case("gfs_kessler", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + GFS-EDMF PBL + revised MM5 surface layer + SLAB: gfs_dry vs Fortran",
+          "[dyn][step][pbl][sfc][gfs][slab]") {
+  // ipbl=3 with sfcmodel=3 (sf_sfclayrev) over land (lu0=3: SLAB, mznt =
+  // znt), horizturb=0, dry
+  run_case("gfs_dry", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + GFS-EDMF PBL + revised MM5 surface layer + SLAB: gfs_dry from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][gfs][slab]") {
+  run_case("gfs_dry", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + GFS-EDMF PBL + MM5 surface layer + SLAB + Kessler: gfs_sfclay_land vs Fortran",
+          "[dyn][step][pbl][sfc][gfs][slab][kessler]") {
+  // ipbl=3 with sfcmodel=2 (SFCLAY) over land, Kessler
+  run_case("gfs_sfclay_land", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + GFS-EDMF PBL + MM5 surface layer + SLAB + Kessler: gfs_sfclay_land from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][gfs][slab][kessler]") {
+  run_case("gfs_sfclay_land", 0.0, true, true);
+}
+
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
   run_case("dry_bubble", 1e-12, true);
 }
