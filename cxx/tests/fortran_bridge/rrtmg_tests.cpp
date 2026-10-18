@@ -2,6 +2,7 @@
 // module_ra_rrtmg_sw.F, bit for bit.
 #include "physics/rrtmg/cm1k_rrtmg_lw.hpp"
 #include "physics/rrtmg/cm1k_rrtmg_lw_tables.hpp"
+#include "physics/rrtmg/cm1k_rrtmg_sw_tables.hpp"
 
 #include "cm1k_test_utils.hpp"
 
@@ -14,6 +15,10 @@
 #include <vector>
 
 extern "C" {
+void cm1f_rrtmg_swinit();
+void cm1f_rrtmg_sw_scalars(double* v);
+double cm1f_rrtmg_sw_scalar(const char* name);
+int cm1f_rrtmg_sw_table(const char* name, double* out, int n);
 void cm1f_rrtmg_lwinit(double p_top, int kme, int* nlayers);
 void cm1f_rrtmg_lw_scalars(double* v);
 int cm1f_rrtmg_lw_table(const char* name, double* out, int n);
@@ -90,6 +95,36 @@ TEST_CASE("rrtmg lw tables match rrtmg_lwinit", "[fortran_bridge][rrtmg]") {
                         h.clight,  h.avogad,  h.alosmt,   h.gascon, h.radcn1, h.radcn2, h.sbcnst,
                         h.secdy,   h.abscld1, h.absliq0,  h.bpade,  h.wtdiff, h.rec_6,  double(h.nxmol)};
   require_same("lw scalars", c, v, 21);
+}
+
+TEST_CASE("rrtmg sw tables match rrtmg_swinit", "[fortran_bridge][rrtmg]") {
+  {
+    InRunDir rd;
+    cm1f_rrtmg_swinit();
+  }
+  auto t = rrtmg::sw_tables(1005.7, 9.81, rrtmg::find_data_file("RRTMG_SW_DATA", CM1K_SOURCE_RUN_DIR));
+  for (auto& [name, a] : t->real_arrays) {
+    if (name.rfind("rad.", 0) == 0 && name != "rad.retab") continue;
+    std::vector<double> f(a.second);
+    REQUIRE(cm1f_rrtmg_sw_table(name.c_str(), f.data(), int(f.size())) == int(f.size()));
+    require_same(name, a.first, f.data(), f.size());
+  }
+  for (auto& [name, a] : t->int_arrays) {
+    std::vector<double> f(a.second), c(a.second);
+    REQUIRE(cm1f_rrtmg_sw_table(name.c_str(), f.data(), int(f.size())) == int(f.size()));
+    for (size_t i = 0; i < c.size(); ++i) c[i] = a.first[i];
+    require_same(name, c.data(), f.data(), f.size());
+  }
+  for (auto& [name, v] : t->scalars) {
+    const double f = cm1f_rrtmg_sw_scalar(name.c_str());
+    require_same(name, &v, &f, 1);
+  }
+  double v[16];
+  cm1f_rrtmg_sw_scalars(v);
+  const auto& h = t->host;
+  const double c[16] = {h.heatfac, h.oneminus, h.pi,     h.grav,   h.planck, h.boltz, h.clight,  h.avogad,
+                        h.alosmt,  h.gascon,   h.radcn1, h.radcn2, h.sbcnst, h.secdy, h.bpade, h.tau_tbl};
+  require_same("sw scalars", c, v, 16);
 }
 
 namespace {
