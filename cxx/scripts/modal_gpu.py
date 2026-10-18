@@ -23,8 +23,13 @@ from pathlib import Path
 
 import modal
 
+# Modal re-imports this file inside the container (as /root/modal_gpu.py),
+# where there is no checkout around it; the workspace path only matters
+# locally, and check() is handed it as an argument.
+_HERE = Path(__file__).resolve()
 WS = Path(
-    os.environ.get("GITHUB_WORKSPACE", Path(__file__).resolve().parents[2])
+    os.environ.get("GITHUB_WORKSPACE")
+    or (_HERE.parents[2] if len(_HERE.parents) > 2 else _HERE.parent)
 ).resolve()
 GPU = os.environ.get("CM1K_MODAL_GPU", "T4")
 CUDA_IMAGE = os.environ.get("CM1K_CUDA_IMAGE", "nvidia/cuda:12.6.3-devel-ubuntu24.04")
