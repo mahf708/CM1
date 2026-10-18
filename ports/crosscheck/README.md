@@ -26,10 +26,17 @@ out of tolerance, 2 an implementation cannot run the case.
 **Tolerances.** The relative difference of a field is
 `max|a-b| / max(max|a|, max|b|)` over the interior points. Pairs of exact
 implementations (cm1k on the CPU, Fortran) must agree to 1e-12 (in practice
-they are bitwise identical). Pairs involving cm1x or a GPU build must agree to
-1e-10 up to step 4 and 1e-6 up to step 100 (the schedule the cm1x tests
-use), then 3e-5: over the 30-minute supercell the differences grow to ~1e-5
-in the pressure perturbation under the rain shaft.
+they are bitwise identical). Pairs involving cm1x must agree to 1e-9: its
+differences are round-off from operation order, below ~1e-10 over 300 steps on
+the Kessler cases. A GPU build of cm1k gets 1e-10 up to step 4, 1e-6 up to
+step 100, then 3e-5, until its differences are measured.
+
+**Known gap.** On the bundled `supercell_kessler` (open radiative boundaries,
+`irbc=4`), cm1x differs from cm1k and Fortran by ~2e-8 from step 5, growing
+to ~2e-6 by 30 minutes, at the lateral boundaries; with periodic boundaries
+(`--set wbc=1 --set ebc=1 --set sbc=1 --set nbc=1`) it agrees to 2e-11. cm1k
+is bitwise identical to Fortran on this case. CI runs it with
+`--tol cm1k~cm1x:numpy=1e-5` until the cm1x side is fixed.
 
 **Conventions it accounts for.** CM1 and cm1k keep the eddy viscosities
 (`kmh kmv khh khv`) of the previous step in the state between steps, while

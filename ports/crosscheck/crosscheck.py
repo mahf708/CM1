@@ -47,17 +47,15 @@ TURB_FIELDS = ("tkea", "kmh", "kmv", "khh", "khv")
 LAGGED_K = ("kmh", "kmv", "khh", "khv")
 
 # Expected agreement (relative), as (last step, tolerance) pieces.  cm1k is
-# bitwise-identical to the double-precision Fortran on the CPU (cxx tests);
-# cm1x agrees to round-off for the first steps, and from step ~5 the
-# differences of a few ulps in the moist physics grow to ~1e-8 (two Fortran
-# builds with different flags differ by as much; ports/array tests use the
-# same schedule); past step 100 in deep moist convection (supercell_kessler,
-# 30 min) they reach ~1e-5 in the pressure perturbation under the rain shaft
-# and in the eddy viscosities.  A GPU build of cm1k is not bitwise either (device math
-# library), so it gets the cm1x schedule.
+# bitwise-identical to the double-precision Fortran on the CPU (cxx tests).
+# cm1x differs by round-off only (a few ulps from operation order), which on
+# the Kessler cases stays below ~1e-10 over 300 steps.  A device build of
+# cm1k is not bitwise (device math library, FMA contraction) and its
+# differences are not yet measured, so it gets a schedule that lets them grow.
 TOLERANCES = {
     "bitwise": [(math.inf, 1e-12)],
-    "roundoff": [(4, 1e-10), (100, 1e-6), (math.inf, 3e-5)],
+    "roundoff": [(math.inf, 1e-9)],
+    "device": [(4, 1e-10), (100, 1e-6), (math.inf, 3e-5)],
 }
 
 
@@ -85,6 +83,7 @@ class Cm1k:
     """cm1k.Model from the namelist (native init, cxx/src/cm1k/init)."""
 
     exact = True  # bitwise vs Fortran on host backends
+    device = False
 
     def __init__(self, namelist, overrides=None):
         import cm1k
@@ -96,6 +95,7 @@ class Cm1k:
             "cm1k" if space in ("Serial", "OpenMP", "Threads") else f"cm1k:{space}"
         )
         self.exact = space in ("Serial", "OpenMP", "Threads")
+        self.device = not self.exact
         self.qnames = [f"qa_{q}" for q in self.m.qname]
         self.les = int(self.m.namelist.get("sgsmodel", 0)) == 1
 
@@ -117,6 +117,7 @@ class Cm1x:
     """cm1x.model.Model with -DDP thresholds (fortran_dp=True)."""
 
     exact = False
+    device = False
 
     def __init__(self, namelist, backend="numpy", jit=False, overrides=None):
         from cm1x.model import Model
@@ -173,6 +174,7 @@ class Fortran:
     """CM1's float64 dumps (one step_NNNNNN directory per dumped step)."""
 
     exact = True
+    device = False
 
     def __init__(self, ref_dir):
         try:
@@ -332,7 +334,13 @@ def main(argv=None):
             key = f"{a.name}~{b.name}"
             sched = (
                 overrides.get(key)
-                or TOLERANCES["bitwise" if a.exact and b.exact else "roundoff"]
+                or TOLERANCES[
+                    "device"
+                    if a.device or b.device
+                    else "bitwise"
+                    if a.exact and b.exact
+                    else "roundoff"
+                ]
             )
             pairs.append((a, b, key, sched))
 
