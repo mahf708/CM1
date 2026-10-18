@@ -532,7 +532,7 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
     REQUIRE(cfg.pbl_opt.l_inf == 0.0);      // param.F: ipbl=1
     for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
            {"sfcmodel", "0"}, {"sfcmodel", "1"}, {"sfcmodel", "4"}, {"sfcmodel", "6"}, {"sfcmodel", "7"},
-           {"cm1setup", "1"}, {"cm1setup", "4"}, {"ipbl", "3"}, {"ipbl", "4"}, {"ipbl", "5"},
+           {"cm1setup", "1"}, {"cm1setup", "4"}, {"ipbl", "4"}, {"ipbl", "5"},
            {"pertflx", "1"}, {"lu0", "0"}, {"lu0", "34"}, {"tmn0", "50.0"}, {"oceanmodel", "2"},
            {"isftcflx", "3"}, {"iz0tlnd", "3"}, {"set_flx", "1"}, {"imove", "1"}, {"terrain_flag", ".true."}}) {
       auto y = ys;
@@ -541,13 +541,67 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
       REQUIRE_THROWS(DynConfig::from_namelist(y).check());
     }
     for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
-           {"sfcmodel", "2"}, {"sfcmodel", "3"}, {"ipbl", "2"}, {"horizturb", "0"}, {"horizturb", "1"},
+           {"sfcmodel", "2"}, {"sfcmodel", "3"}, {"ipbl", "2"}, {"ipbl", "3"}, {"horizturb", "0"}, {"horizturb", "1"},
            {"idiss", "0"}, {"isftcflx", "1"}, {"iz0tlnd", "1"}, {"lu0", "16"}, {"lu0", "18"},
            {"season", "2"}, {"set_znt", "1"}, {"isfcflx", "0"}}) {
       auto y = ys;
       y.set(k, v);
       INFO(k << " = " << v);
       REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());
+    }
+  }
+
+  // GFS-EDMF: cm1setup=2, ipbl=3 with the GFDL surface layer (sfcmodel=4,
+  // water only) or the WRF/MM5 ones (sfcmodel=2,3)
+  for (const char* c : {"gfs_kessler", "gfs_dry", "gfs_sfclay_land"}) {
+    auto gf = Namelist::from_file(cm1k::testing::case_namelist(c));
+    INFO(c);
+    REQUIRE_NOTHROW(DynConfig::from_namelist(gf).check());
+    const auto cfg = DynConfig::from_namelist(gf);
+    REQUIRE(cfg.pbl);
+    REQUIRE(cfg.idiss == 0);                // param.F: ipbl=3
+    REQUIRE_FALSE(cfg.sfc_opt.dosfcflx);    // init_surface.F: ipbl=3
+    REQUIRE(cfg.pbl_opt.l_inf == 0.0);      // param.F: ipbl=3
+    const bool gfdl = gf.geti("sfcmodel", 0) == 4;
+    for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+           {"sfcmodel", "0"}, {"sfcmodel", "1"}, {"sfcmodel", "5"}, {"sfcmodel", "6"}, {"sfcmodel", "7"},
+           {"cm1setup", "1"}, {"cm1setup", "4"}, {"ipbl", "6"}, {"pertflx", "1"}, {"lu0", "34"},
+           {"tmn0", "50.0"}, {"oceanmodel", "2"}, {"set_flx", "1"}, {"imove", "1"}, {"terrain_flag", ".true."}}) {
+      auto y = gf;
+      y.set(k, v);
+      INFO(k << " = " << v);
+      REQUIRE_THROWS(DynConfig::from_namelist(y).check());
+    }
+    for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+           {"sfcmodel", "2"}, {"sfcmodel", "3"}, {"horizturb", "0"}, {"horizturb", "1"}, {"idiss", "1"},
+           {"season", "2"}}) {
+      auto y = gf;
+      y.set(k, v);
+      INFO(k << " = " << v);
+      REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());
+    }
+    if (gfdl) {
+      // GFDL over land (SF_GFDL reads smois out of bounds), with other PBL
+      // schemes
+      for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+             {"lu0", "3"}, {"lu0", "18"}, {"lu0", "0"}, {"ipbl", "1"}, {"ipbl", "2"}, {"ipbl", "4"},
+             {"ipbl", "5"}, {"set_ust", "1"}}) {
+        auto y = gf;
+        y.set(k, v);
+        INFO(k << " = " << v);
+        REQUIRE_THROWS(DynConfig::from_namelist(y).check());
+      }
+    } else {
+      for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+             {"ipbl", "1"}, {"ipbl", "2"}, {"lu0", "16"}, {"lu0", "18"}}) {
+        auto y = gf;
+        y.set(k, v);
+        INFO(k << " = " << v);
+        REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());
+      }
+      auto y = gf;
+      y.set("sfcmodel", "4");   // GFDL over land
+      REQUIRE_THROWS(DynConfig::from_namelist(y).check());
     }
   }
 }

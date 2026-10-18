@@ -45,7 +45,8 @@
 //     turb::calcdef; turbparam_horiz (horizturb=1); turbparam_vert
 //     (ipbl=2); turb::gettau (ipbl=2 or horizturb=1); then Dyncore::pbl,
 //     the dispatch hook: ipbl=2 -> br09, ipbl=1 -> pbl_ysu::ysu (+
-//     ysu_dissten for idiss=1), ipbl=4/5 -> pbl_mynn::pbl, followed by
+//     ysu_dissten for idiss=1), ipbl=3 -> pbl_gfs::gfsedmf, ipbl=4/5 ->
+//     pbl_mynn::pbl, followed by
 //     bcs(upten), bcs(vpten).
 //   Dyncore::solve2 (ipbl=4/5): the qke advection of every RK stage.
 //   Dyncore::solve1: turb::dissheat (idiss=1); add_theta_tendency;

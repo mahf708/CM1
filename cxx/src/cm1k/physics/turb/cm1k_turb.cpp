@@ -127,10 +127,10 @@ void Options::check() const {
   if (idiss != 0 && idiss != 1) fail("idiss must be 0 or 1");
   if (ramp_sgs < 0) fail("ramp_sgs must be >= 0");
   // surface layers: sfcmodel=1 (physics/sfc), and with a PBL scheme also the
-  // WRF/MM5 ones, sfcmodel=2,3 (physics/sfclay), and MYNN's, sfcmodel=6
-  // (physics/sfc_mynn)
-  if (!((sfcmodel >= 0 && sfcmodel <= 3) || sfcmodel == 6))
-    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0..3, 6)");
+  // WRF/MM5 ones, sfcmodel=2,3 (physics/sfclay), GFDL, sfcmodel=4
+  // (physics/sfc_gfdl), and MYNN's, sfcmodel=6 (physics/sfc_mynn)
+  if (!((sfcmodel >= 0 && sfcmodel <= 4) || sfcmodel == 6))
+    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0..4, 6)");
   if (les && sfcmodel > 1) fail("sfcmodel=" + std::to_string(sfcmodel) + " with the LES is not ported (only 0 and 1)");
   if (dosfcflx && sfcmodel < 1) fail("surface fluxes need a surface layer (sfcmodel>=1)");
   if (bbc != 1 && bbc != 3) fail("bbc=" + std::to_string(bbc) + " is not ported (only 1 free slip, 3 semi-slip)");

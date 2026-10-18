@@ -12,7 +12,7 @@ diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lat
 except the `*_openbc*` cases),
 free-slip top and bottom, a warm bubble (`iinit = 1`) with no random
 perturbations (`irandp = 0`), and the time-split compressible solver
-(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*`, `pbl2_*`, `ysu_*` and `mynn*` cases (see the table).
+(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*`, `pbl2_*`, `ysu_*`, `mynn*` and `gfs_*` cases (see the table).
 
 | Case | Grid (nx×ny×nz, dx, dz) | Length | Dumps | What it exercises |
 |---|---|---|---|---|
@@ -34,6 +34,9 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `mynn3_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_dry` with the MYNN-EDMF level-3 PBL (`ipbl = 5`: `tsq`, `qsq`, `cov` prognostic) and the MYNN surface layer (`sfcmodel = 6`, `isftcflx = 1`) over water (`xland0 = 2`, `lu0 = 16`), dry, no horizontal turbulence; dumps as `mynn25_kessler` |
 | `mynn25_land_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `mynn3_dry` with the level-2.5 PBL (`ipbl = 4`) over land (`lu0 = 3`, `xland0 = 1`, `tsk0 = 305 K`, `tmn0 = 297.28 K`) with the Chen-Zhang thermal roughness (`iz0tlnd = 1`): SLAB (5 soil layers) runs after the MYNN surface layer every step after the first and updates `tsk`, `tslb`, `hfx`, `qfx`; dumps as `mynn25_kessler` (incl. `tslb`) |
 | `mynn3_land_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `mynn25_kessler` with the level-3 PBL (`ipbl = 5`) over land (`lu0 = 7`, `xland0 = 1`, `iz0tlnd = 0`) with SLAB: moist land fluxes (SLAB's `qfx`, `lh` from the saturation mixing ratio at `tsk`), Kessler |
+| `gfs_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | GFS-EDMF PBL (`cm1setup = 2`, `ipbl = 3`: K profile, mass flux, stratocumulus mixing, its own dissipative heating, so `param.F` resets `idiss` to 0) with the GFDL surface layer (`sfcmodel = 4`, HWRF settings: `ntsflg = 1`, `icoef_sf = 6`) over water (`lu0 = 16`, `tsk0 = 305 K`; z0 from the 10-m wind, carried in `mznt`), horizontal Smagorinsky turbulence (`horizturb = 1`), Kessler; dumps the surface arrays, `mznt`, `mol`, `rmol`, `zol`, `br`, `gz1oz0`, `psim`, `psih`, `hpbl`, the PBL tendencies, `xkzh`, `xkzm` |
+| `gfs_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | GFS-EDMF (`ipbl = 3`) with the revised MM5 surface layer (`sfcmodel = 3`) and SLAB over land (`lu0 = 3`, `xland0 = 1`, `tsk0 = 305 K`), no horizontal turbulence, dry; dumps the surface arrays, `mol`, `tslb`, `hpbl`, the PBL tendencies, `xkzh`, `xkzm` |
+| `gfs_sfclay_land` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `gfs_dry` with the MM5 surface layer (`sfcmodel = 2`) and Kessler microphysics |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 

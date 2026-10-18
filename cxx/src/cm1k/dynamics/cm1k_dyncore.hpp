@@ -52,7 +52,8 @@ struct DynConfig {
   // boundary-layer schemes (param.F use_pbl: cm1setup=2,4 with ipbl>=1):
   // physics/pbl options; turb_opt is then filled too (boundary flags,
   // turbsz/turbuz/turbvz, horizturb=1). Ported: cm1setup=2 with ipbl=1
-  // (YSU, physics/pbl_ysu; sfcmodel=2,3) or ipbl=2 (sfcmodel=1,2,3).
+  // (YSU, physics/pbl_ysu; sfcmodel=2,3), ipbl=2 (sfcmodel=1,2,3) or ipbl=3
+  // (GFS-EDMF, physics/pbl_gfs; sfcmodel=2,3, or 4: physics/sfc_gfdl).
   bool pbl = false;
   pbl::Options pbl_opt;
   // MYNN (cm1setup=2, ipbl=4/5 with the MYNN surface layer sfcmodel=6):
