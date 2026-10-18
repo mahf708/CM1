@@ -112,72 +112,89 @@ def _pick(xp, col, idx, lo, hi, like):
     return out
 
 
+def _stk(xp, col, lo, hi):
+    """Column list entries K = lo..hi stacked along a new leading axis."""
+    return xp.stack(col[lo : hi + 1], axis=0)
+
+
+def _unstk(a, lo, n):
+    """A stacked array back to a column list (entries lo.. ; length n+1)."""
+    out = [None] * (n + 1)
+    for m in range(a.shape[0]):
+        out[lo + m] = a[m, ...]
+    return out
+
+
+def _levels(bk, lo, hi, like):
+    """Float level numbers K = lo..hi shaped to broadcast against a stacked
+    ``like`` (levels along axis 0)."""
+    k = bk.asarray([float(x) for x in range(lo, hi + 1)])
+    return bk.xp.reshape(k, (hi - lo + 1,) + (1,) * (like.ndim - 1))
+
+
 def mixlen(bk, *, lmh, u, v, t, the, q, cwm, q2, z, ct):
     """MIXLEN: the level 2.5 mixing length.  Column lists indexed by K
     (z: 1..lmh+1).  Returns gm, gh, el (K = 1..lmh-1), pblh, lpbl (float),
-    lmxl (float), ct (reset to 0), mixht."""
+    lmxl (float), ct (reset to 0), mixht.  The level-wise parts are computed
+    on all levels at once (stacked along K)."""
     xp = bk.xp
     sqrt = xp.sqrt
     like = z[lmh + 1]
+    m = lmh - 1  # levels K = 1..lmh-1
+    q2s = _stk(xp, q2, 1, m)
+    kk = _levels(bk, 1, m, q2s)
     # the height of the PBL (first K from LMH-1 upward with q2 <= epsq2*fh)
-    lpbl = xp.zeros_like(like) + 1.0
-    for k in range(1, lmh):
-        lpbl = xp.where(q2[k] <= epsq2 * fh, float(k), lpbl)
+    lpbl = xp.max(xp.where(q2s <= epsq2 * fh, kk, 1.0), axis=0)
     pblh = _pick(xp, z, lpbl + 1.0, 2, lmh, like) - z[lmh + 1]
 
-    dth = [None] * (lmh + 1)
-    for k in range(1, lmh):
-        dth[k] = the[k] - the[k + 1]
+    thes = _stk(xp, the, 1, lmh)
+    dth = thes[:-1] - thes[1:]  # K = 1..lmh-1
     # the countergradient term at the top of the lowest unstable layer
-    khit = xp.zeros_like(like)
-    for k in range(1, lmh - 1):
-        khit = xp.where((dth[k] > 0.0) & (dth[k + 1] <= 0.0), float(k), khit)
-    for k in range(1, lmh - 1):
-        dth[k] = xp.where(khit == float(k), dth[k] + ct, dth[k])
+    hit = (dth[:-1] > 0.0) & (dth[1:] <= 0.0)  # K = 1..lmh-2
+    khit = xp.max(xp.where(hit, kk[:-1], 0.0), axis=0)
+    dth = xp.where(kk == khit, dth + ct, dth)
     ct = xp.zeros_like(like)
 
-    gm = [None] * (lmh + 1)
-    gh = [None] * (lmh + 1)
-    for k in range(1, lmh):
-        rdz = 2.0 / (z[k] - z[k + 2])
-        du = u[k] - u[k + 1]
-        dv = v[k] - v[k + 1]
-        gml = (du * du + dv * dv) * rdz * rdz
-        gm[k] = _max(xp, gml, epsgm)
-        tem = (t[k] + t[k + 1]) * 0.5
-        thm = (the[k] + the[k + 1]) * 0.5
-        a = thm * p608
-        b = (elocp / tem - 1.0 - p608) * thm
-        ghl = (
-            dth[k] * ((q[k] + q[k + 1] + cwm[k] + cwm[k + 1]) * (0.5 * p608) + 1.0)
-            + (q[k] - q[k + 1] + cwm[k] - cwm[k + 1]) * a
-            + (cwm[k] - cwm[k + 1]) * b
-        ) * rdz
-        gh[k] = xp.where(xp.abs(ghl) <= epsgh, epsgh, ghl)
+    zs = _stk(xp, z, 1, lmh + 1)
+    us, vs, ts = _stk(xp, u, 1, lmh), _stk(xp, v, 1, lmh), _stk(xp, t, 1, lmh)
+    qs, cs = _stk(xp, q, 1, lmh), _stk(xp, cwm, 1, lmh)
+    rdz = 2.0 / (zs[:-2] - zs[2:])
+    du = us[:-1] - us[1:]
+    dv = vs[:-1] - vs[1:]
+    gml = (du * du + dv * dv) * rdz * rdz
+    gm = _max(xp, gml, epsgm)
+    tem = (ts[:-1] + ts[1:]) * 0.5
+    thm = (thes[:-1] + thes[1:]) * 0.5
+    a = thm * p608
+    b = (elocp / tem - 1.0 - p608) * thm
+    q0, q1_, c0, c1_ = qs[:-1], qs[1:], cs[:-1], cs[1:]
+    ghl = (
+        dth * ((q0 + q1_ + c0 + c1_) * (0.5 * p608) + 1.0)
+        + (q0 - q1_ + c0 - c1_) * a
+        + (c0 - c1_) * b
+    ) * rdz
+    gh = xp.where(xp.abs(ghl) <= epsgh, epsgh, ghl)
 
-    # maximum mixing lengths and the level of the PBL top
-    lmxl = xp.zeros_like(like) + float(lmh)
-    elm = [None] * (lmh + 1)
-    for k in range(1, lmh):
-        gml = gm[k]
-        ghl = gh[k]
-        stable = ghl >= epsgh
-        forb = stable & (gml / ghl <= requ)
-        # (the branch not taken gets a harmless argument: no NaN in its
-        # values or gradients)
-        aubr = (aubm * gml + aubh * ghl) * ghl
-        bubr = bubm * gml + bubh * ghl
-        dst = xp.where(stable, bubr * bubr * 0.25 - aubr * cubr, 1.0)
-        qol2st = (-0.5 * bubr + sqrt(dst)) * rcubr
-        aden = (adnm * gml + adnh * ghl) * ghl
-        bden = bdnm * gml + bdnh * ghl
-        dun = xp.where(stable, 1.0, bden * bden * 0.25 - aden)
-        qol2un = -0.5 * bden + sqrt(dun)
-        eloq2x = xp.where(stable, 1.0 / qol2st, 1.0 / (qol2un + epsru))
-        eloq2x = xp.where(forb, 1.0, eloq2x)
-        elm[k] = xp.where(forb, epsl, _max(xp, sqrt(eloq2x * q2[k]), epsl))
-        lmxl = xp.where(forb, float(k), lmxl)
-    lmxl = xp.where(elm[lmh - 1] == epsl, float(lmh), lmxl)
+    # maximum mixing lengths and the level of the PBL top (the branch not
+    # taken gets a harmless argument: no NaN in its values or gradients)
+    gml = gm
+    ghl = gh
+    stable = ghl >= epsgh
+    forb = stable & (gml / ghl <= requ)
+    aubr = (aubm * gml + aubh * ghl) * ghl
+    bubr = bubm * gml + bubh * ghl
+    dst = xp.where(stable, bubr * bubr * 0.25 - aubr * cubr, 1.0)
+    qol2st = (-0.5 * bubr + sqrt(dst)) * rcubr
+    aden = (adnm * gml + adnh * ghl) * ghl
+    bden = bdnm * gml + bdnh * ghl
+    dun = xp.where(stable, 1.0, bden * bden * 0.25 - aden)
+    qol2un = -0.5 * bden + sqrt(dun)
+    eloq2x = xp.where(stable, 1.0 / qol2st, 1.0 / (qol2un + epsru))
+    eloq2x = xp.where(forb, 1.0, eloq2x)
+    elm = xp.where(forb, epsl, _max(xp, sqrt(eloq2x * q2s), epsl))
+    lmxl = xp.max(xp.where(forb, kk, 0.0), axis=0)
+    lmxl = xp.where(lmxl == 0.0, float(lmh), lmxl)
+    lmxl = xp.where(elm[m - 1] == epsl, float(lmh), lmxl)
     # the height of the mixed layer
     mixht = _pick(xp, z, lmxl, 1, lmh, like) - z[lmh + 1]
     q1 = [None] * (lmh + 1)
@@ -192,22 +209,20 @@ def mixlen(bk, *, lmh, u, v, t, the, q, cwm, q2, z, ct):
     # asymptotic l in the Blackadar formula
     el0 = _min(xp, alph * szq * 0.5 / sq, el0max)
     el0 = _max(xp, el0, el0min)
-    el = [None] * (lmh + 1)
-    rel = [None] * (lmh + 1)
-    for k in range(1, lmh):
-        # inside the PBL (K >= LPBL) / above it (K <= max(LPBL-1, 1))
-        vkrmz = (z[k + 1] - z[lmh + 1]) * vkarman
-        e_in = _min(xp, vkrmz / (vkrmz / el0 + 1.0), elm[k])
-        e_up = _min(xp, (z[k] - z[k + 2]) * elfc, elm[k])
-        el[k] = xp.where(float(k) >= lpbl, e_in, e_up)
-        rel[k] = el[k] / elm[k]
-    for k in range(2, lmh - 1):
-        srel = _min(xp, ((rel[k - 1] + rel[k + 1]) * 0.5 + rel[k]) * 0.5, rel[k])
-        el[k] = xp.where(float(k) >= lpbl + 1.0, _max(xp, srel * elm[k], epsl), el[k])
+    # inside the PBL (K >= LPBL) / above it (K <= max(LPBL-1, 1))
+    vkrmz = (zs[1:-1] - zs[-1]) * vkarman
+    e_in = _min(xp, vkrmz / (vkrmz / el0 + 1.0), elm)
+    e_up = _min(xp, (zs[:-2] - zs[2:]) * elfc, elm)
+    el = xp.where(kk >= lpbl, e_in, e_up)
+    rel = el / elm
+    # smoothing, K = LPBL+1..LMH-2
+    srel = _min(xp, ((rel[:-2] + rel[2:]) * 0.5 + rel[1:-1]) * 0.5, rel[1:-1])
+    els = xp.where(kk[1:-1] >= lpbl + 1.0, _max(xp, srel * elm[1:-1], epsl), el[1:-1])
+    el = xp.concat([el[:1], els, el[-1:]], axis=0)
     return {
-        "gm": gm,
-        "gh": gh,
-        "el": el,
+        "gm": _unstk(gm, 1, lmh),
+        "gh": _unstk(gh, 1, lmh),
+        "el": _unstk(el, 1, lmh),
         "pblh": pblh,
         "lpbl": lpbl,
         "lmxl": lmxl,
@@ -217,97 +232,97 @@ def mixlen(bk, *, lmh, u, v, t, the, q, cwm, q2, z, ct):
 
 
 def prodq2(bk, *, lmh, dtturbl, ustar, gm, gh, el, q2):
-    """PRODQ2: level 2.5 q2 production/dissipation.  Returns el, q2 (new
-    lists)."""
+    """PRODQ2: level 2.5 q2 production/dissipation (all levels K =
+    1..lmh-1 at once).  Returns el, q2 (new lists)."""
     xp = bk.xp
     sqrt, exp = xp.sqrt, xp.exp
-    el = list(el)
-    q2 = list(q2)
-    for k in range(1, lmh):
-        gml = gm[k]
-        ghl = gh[k]
-        # coefficients of the equilibrium equation
-        aequ = (aeqm * gml + aeqh * ghl) * ghl
-        bequ = beqm * gml + beqh * ghl
-        # equilibrium solution for l/q
-        pre = (gml + ghl * ghl <= epstrb) | ((ghl >= epsgh) & (gml / ghl <= requ))
-        eqol2 = -0.5 * bequ + sqrt(xp.where(pre, 1.0, bequ * bequ * 0.25 - aequ))
-        # is there production/dissipation?
-        noturb = pre | (eqol2 <= eps2)
-        eqol2 = xp.where(noturb, 1.0, eqol2)
-        # turbulence: coefficients of the numerator, denominator
-        anum = (anmm * gml + anmh * ghl) * ghl
-        bnum = bnmm * gml + bnmh * ghl
-        aden = (adnm * gml + adnh * ghl) * ghl
-        bden = bdnm * gml + bdnh * ghl
-        cden = 1.0
-        # coefficients of the numerator of the linearized eq.
-        arhs = -(anum * bden - bnum * aden) * 2.0
-        brhs = -anum * 4.0
-        crhs = -bnum * 2.0
-        # initial value of l/q
-        dloq1 = el[k] / sqrt(q2[k])
-        # first iteration for l/q, rhs=0
-        eloq21 = 1.0 / eqol2
-        eloq11 = sqrt(eloq21)
-        eloq31 = eloq21 * eloq11
-        eloq41 = eloq21 * eloq21
-        eloq51 = eloq21 * eloq31
-        rden1 = 1.0 / (aden * eloq41 + bden * eloq21 + cden)
-        rhsp1 = (arhs * eloq51 + brhs * eloq31 + crhs * eloq11) * rden1 * rden1
-        # first-guess solution
-        eloq12 = eloq11 + (dloq1 - eloq11) * exp(rhsp1 * dtturbl)
-        eloq12 = _max(xp, eloq12, eps1)
-        # second iteration for l/q
-        eloq22 = eloq12 * eloq12
-        eloq32 = eloq22 * eloq12
-        eloq42 = eloq22 * eloq22
-        eloq52 = eloq22 * eloq32
-        rden2 = 1.0 / (aden * eloq42 + bden * eloq22 + cden)
-        rhs2 = -(anum * eloq42 + bnum * eloq22) * rden2 + rb1
-        rhsp2 = (arhs * eloq52 + brhs * eloq32 + crhs * eloq12) * rden2 * rden2
-        rhst2 = rhs2 / rhsp2
-        # corrected solution
-        eloq13 = eloq12 - rhst2 + (rhst2 + dloq1 - eloq12) * exp(rhsp2 * dtturbl)
-        eloq13 = _max(xp, eloq13, eps1)
-        eloqn = eloq13
-        q2t = _max(xp, el[k] * el[k] / (eloqn * eloqn), epsq2)
-        ok = eloqn > eps1
-        q2t = xp.where(ok, q2t, epsq2)
-        elt = xp.where(ok & (q2t != epsq2), el[k], epsl)
-        q2[k] = xp.where(noturb, epsq2, q2t)
-        el[k] = xp.where(noturb, epsl, elt)
+    m = lmh - 1
+    gml = _stk(xp, gm, 1, m)
+    ghl = _stk(xp, gh, 1, m)
+    els = _stk(xp, el, 1, m)
+    q2s = _stk(xp, q2, 1, m)
+    # coefficients of the equilibrium equation
+    aequ = (aeqm * gml + aeqh * ghl) * ghl
+    bequ = beqm * gml + beqh * ghl
+    # equilibrium solution for l/q
+    pre = (gml + ghl * ghl <= epstrb) | ((ghl >= epsgh) & (gml / ghl <= requ))
+    eqol2 = -0.5 * bequ + sqrt(xp.where(pre, 1.0, bequ * bequ * 0.25 - aequ))
+    # is there production/dissipation?
+    noturb = pre | (eqol2 <= eps2)
+    eqol2 = xp.where(noturb, 1.0, eqol2)
+    # turbulence: coefficients of the numerator, denominator
+    anum = (anmm * gml + anmh * ghl) * ghl
+    bnum = bnmm * gml + bnmh * ghl
+    aden = (adnm * gml + adnh * ghl) * ghl
+    bden = bdnm * gml + bdnh * ghl
+    cden = 1.0
+    # coefficients of the numerator of the linearized eq.
+    arhs = -(anum * bden - bnum * aden) * 2.0
+    brhs = -anum * 4.0
+    crhs = -bnum * 2.0
+    # initial value of l/q
+    dloq1 = els / sqrt(q2s)
+    # first iteration for l/q, rhs=0
+    eloq21 = 1.0 / eqol2
+    eloq11 = sqrt(eloq21)
+    eloq31 = eloq21 * eloq11
+    eloq41 = eloq21 * eloq21
+    eloq51 = eloq21 * eloq31
+    rden1 = 1.0 / (aden * eloq41 + bden * eloq21 + cden)
+    rhsp1 = (arhs * eloq51 + brhs * eloq31 + crhs * eloq11) * rden1 * rden1
+    # first-guess solution
+    eloq12 = eloq11 + (dloq1 - eloq11) * exp(rhsp1 * dtturbl)
+    eloq12 = _max(xp, eloq12, eps1)
+    # second iteration for l/q
+    eloq22 = eloq12 * eloq12
+    eloq32 = eloq22 * eloq12
+    eloq42 = eloq22 * eloq22
+    eloq52 = eloq22 * eloq32
+    rden2 = 1.0 / (aden * eloq42 + bden * eloq22 + cden)
+    rhs2 = -(anum * eloq42 + bnum * eloq22) * rden2 + rb1
+    rhsp2 = (arhs * eloq52 + brhs * eloq32 + crhs * eloq12) * rden2 * rden2
+    rhst2 = rhs2 / rhsp2
+    # corrected solution
+    eloq13 = eloq12 - rhst2 + (rhst2 + dloq1 - eloq12) * exp(rhsp2 * dtturbl)
+    eloq13 = _max(xp, eloq13, eps1)
+    # two iterations is enough in most cases ...
+    eloqn = eloq13
+    q2t = _max(xp, els * els / (eloqn * eloqn), epsq2)
+    ok = eloqn > eps1
+    q2t = xp.where(ok, q2t, epsq2)
+    elt = xp.where(ok & (q2t != epsq2), els, epsl)
+    q2n = _unstk(xp.where(noturb, epsq2, q2t), 1, lmh)
+    eln = _unstk(xp.where(noturb, epsl, elt), 1, lmh)
+    eln[lmh] = el[lmh]
     # lower boundary condition for q2
-    q2[lmh] = _max(xp, b1p23 * ustar * ustar, epsq2)
-    return {"el": el, "q2": q2}
+    q2n[lmh] = _max(xp, b1p23 * ustar * ustar, epsq2)
+    return {"el": eln, "q2": q2n}
 
 
 def difcof(bk, *, lmh, gm, gh, el, q2, z):
-    """DIFCOF: level 2.5 diffusion coefficients.  Returns akm, akh (K =
-    1..lmh-1)."""
+    """DIFCOF: level 2.5 diffusion coefficients (all levels K = 1..lmh-1 at
+    once).  Returns akm, akh lists."""
     xp = bk.xp
-    akm = [None] * (lmh + 1)
-    akh = [None] * (lmh + 1)
-    for k in range(1, lmh):
-        ell = el[k]
-        eloq2 = ell * ell / q2[k]
-        eloq4 = eloq2 * eloq2
-        gml = gm[k]
-        ghl = gh[k]
-        aden = (adnm * gml + adnh * ghl) * ghl
-        bden = bdnm * gml + bdnh * ghl
-        cden = 1.0
-        besm = bsmh * ghl
-        besh = bshm * gml + bshh * ghl
-        rden = 1.0 / (aden * eloq4 + bden * eloq2 + cden)
-        esm = (besm * eloq2 + cesm) * rden
-        esh = (besh * eloq2 + cesh) * rden
-        rdz = 2.0 / (z[k] - z[k + 2])
-        q1l = xp.sqrt(q2[k])
-        elqdz = ell * q1l * rdz
-        akm[k] = elqdz * esm
-        akh[k] = elqdz * esh
-    return {"akm": akm, "akh": akh}
+    m = lmh - 1
+    ell = _stk(xp, el, 1, m)
+    q2s = _stk(xp, q2, 1, m)
+    gml = _stk(xp, gm, 1, m)
+    ghl = _stk(xp, gh, 1, m)
+    zs = _stk(xp, z, 1, lmh + 1)
+    eloq2 = ell * ell / q2s
+    eloq4 = eloq2 * eloq2
+    aden = (adnm * gml + adnh * ghl) * ghl
+    bden = bdnm * gml + bdnh * ghl
+    cden = 1.0
+    besm = bsmh * ghl
+    besh = bshm * gml + bshh * ghl
+    rden = 1.0 / (aden * eloq4 + bden * eloq2 + cden)
+    esm = (besm * eloq2 + cesm) * rden
+    esh = (besh * eloq2 + cesh) * rden
+    rdz = 2.0 / (zs[:-2] - zs[2:])
+    q1l = xp.sqrt(q2s)
+    elqdz = ell * q1l * rdz
+    return {"akm": _unstk(elqdz * esm, 1, lmh), "akh": _unstk(elqdz * esh, 1, lmh)}
 
 
 def vdifq(bk, *, lmh, dtdif, q2, el, z):
@@ -661,3 +676,126 @@ def myjpbl(
         "rqcblten": st(rqc, axis=0),
         "rqiblten": st(rqi, axis=0),
     }
+
+
+# ---------------------------------------------------------------------------
+# CM1 glue (turb.F sfc_and_turb: the domyj block; cm1.F allocations)
+
+WRF_INPUTS = True
+DUMP_KEYS = ("xkzh", "xkzm", "tke_myj", "el_myj", "mixht")
+
+
+def _opt(cfg, name, default):
+    get = getattr(cfg, "get", None)
+    return get(name, default) if get else getattr(cfg, name, default)
+
+
+def check(cfg):
+    """param.F: ipbl=6 needs sfcmodel=7; only cm1setup=2 is ported."""
+    if int(_opt(cfg, "sfcmodel", 0)) != 7:
+        raise NotImplementedError("ipbl=6 requires sfcmodel=7 (param.F stops)")
+    if int(_opt(cfg, "cm1setup", 1)) != 2:
+        raise NotImplementedError("ipbl=6: only cm1setup=2 is ported")
+
+
+def init_state(ctx):
+    """cm1.F: tke_myj = 0.01 and el_myj = 0 on (ib:ie, jb:je, kb:ke+1),
+    xkzh = xkzm = 0, mixht = kpbl2d = 0 (and the MYJ surface arrays the PBL
+    reads, if the surface layer has not made them)."""
+    bk, g, s = ctx.bk, ctx.g, ctx.s
+    nz, ny, nx = g.s_shape
+    shp2 = (ny, nx)
+    out = {
+        "tke_myj": bk.zeros((nz + 1, ny, nx)) + 0.01,
+        "el_myj": bk.zeros((nz + 1, ny, nx)),
+        "xkzh": bk.zeros(g.s_shape),
+        "xkzm": bk.zeros(g.s_shape),
+        "mixht": bk.zeros(shp2),
+        "kpbl2d": bk.zeros(shp2),
+    }
+    for k in ("chklowq", "lh", "ct", "thz0", "qz0", "uz0", "vz0", "akhs", "akms"):
+        if k not in s:
+            out[k] = bk.zeros(shp2)
+    return out
+
+
+def pbl(ctx):
+    """sfc_and_turb's domyj block: MYJPBL (DT = dt, STEPBL = 1) on the
+    get_vars arrays (QCI = qi), ELFLX = lh, CHKLOWQ, SICE = SNOW = 0;
+    tke_myj, el_myj (k = 1..nk), xkzh(k+1) = EXCH_H(k), xkzm(k+1) =
+    EXCH_M(k) (0 at k = nk+1), the u/v/theta/qv/qc/qi tendencies, hpbl,
+    kpbl2d, mixht, ct, qsfc, thz0, qz0."""
+    bk, g, s = ctx.bk, ctx.g, ctx.s
+    n, z, nk = g.ngxy, g.ngz, g.nk
+    J, I = slice(n, n + g.nj), slice(n, n + g.ni)
+    K = slice(z, z + nk)
+    w = ctx.w
+
+    def i3(a):
+        return a[K, J, I]
+
+    def i2(name):
+        return s[name][J, I]
+
+    r = myjpbl(
+        bk,
+        dt=float(ctx.dt),
+        ht=bk.zeros(i2("tsk").shape),
+        dz=i3(w["dz8w"]),
+        pmid=i3(ctx.prs),
+        pint=w["p3di"][z : z + nk + 1, J, I],
+        th=i3(w["th"]),
+        t=i3(w["t"]),
+        exner=i3(w["pi"]),
+        qv=i3(w["qv"]),
+        qcw=i3(w["qc"]),
+        qci=i3(w["qi"]),
+        u=i3(w["u"]),
+        v=i3(w["v"]),
+        tsk=i2("tsk"),
+        qsfc=i2("qsfc"),
+        chklowq=i2("chklowq"),
+        thz0=i2("thz0"),
+        qz0=i2("qz0"),
+        uz0=i2("uz0"),
+        vz0=i2("vz0"),
+        xland=i2("xland"),
+        tke_myj=i3(s["tke_myj"]),
+        ustar=i2("ust"),
+        ct=i2("ct"),
+        akhs=i2("akhs"),
+        akms=i2("akms"),
+        elflx=i2("lh"),
+    )
+
+    def put3(name, val, k0=z):
+        return bk.set(s[name] + 0.0, (slice(k0, k0 + val.shape[0]), J, I), val)
+
+    def put2(name, val):
+        return bk.set(s[name] + 0.0, (J, I), val)
+
+    zero = bk.zeros((1, *r["pblh"].shape))
+    out = {
+        "tke_myj": put3("tke_myj", r["tke_myj"]),
+        "el_myj": put3("el_myj", r["el_myj"]),
+        # xkzh(k+1) = EXCH_H(k), k = 1..nk (EXCH_H(nk) is turb.F's zeroed tmp2d)
+        "xkzh": put3("xkzh", bk.xp.concat([r["exch_h"][: nk - 1], zero]), z + 1),
+        "xkzm": put3("xkzm", bk.xp.concat([r["exch_m"][: nk - 1], zero]), z + 1),
+        "upten": put3("upten", r["rublten"]),
+        "vpten": put3("vpten", r["rvblten"]),
+        "thpten": put3("thpten", r["rthblten"]),
+        "qvpten": put3("qvpten", r["rqvblten"]),
+        "qcpten": put3("qcpten", r["rqcblten"]),
+        "qipten": put3("qipten", r["rqiblten"]),
+    }
+    for k, m in (
+        ("hpbl", "pblh"),
+        ("kpbl2d", "kpbl"),
+        ("mixht", "mixht"),
+        ("ct", "ct"),
+        ("qsfc", "qsfc"),
+        ("thz0", "thz0"),
+        ("qz0", "qz0"),
+    ):
+        out[k] = put2(k, r[m])
+    return out

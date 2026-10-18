@@ -757,3 +757,251 @@ def myjsfc(
         "fhh": o["fhh"],
         "z0out": o["z0out"],
     }
+
+
+# ---------------------------------------------------------------------------
+# CM1 glue (turb.F sfc_and_turb, sfcmodel=7; init_physics.F, init_surface.F)
+
+# cm1.F (double precision)
+SMEPS = 1.0e-60
+RKARMAN = 1.0 / 0.4
+
+# MYJSFC's carried / output 2-D arrays (cm1.F names) the model state needs
+# besides the shared surface arrays (tsk, znt, ust, hpbl, u10, ...)
+CARRIED_2D = (
+    "zntmyj",
+    "z0base",
+    "thz0",
+    "qz0",
+    "uz0",
+    "vz0",
+    "akhs",
+    "akms",
+    "th10",
+    "q10",
+    "u10e",
+    "v10e",
+    "tshltr",
+    "qshltr",
+    "pshltr",
+    "chs",
+    "chs2",
+    "cqs2",
+    "cpmm",
+    "flhc",
+    "flqc",
+    "qgh",
+    "lh",
+    "ct",
+    "ustm",
+    "mol",
+    "rmol",
+    "psim",
+    "psih",
+    "fm",
+    "fh",
+    "t2",
+    "th2",
+    "q2",
+    "br",
+    "gz1oz0",
+    "chklowq",
+)
+
+DUMP_KEYS = (
+    "mol",
+    "rmol",
+    "tslb",
+    "thz0",
+    "qz0",
+    "uz0",
+    "vz0",
+    "akhs",
+    "akms",
+    "zntmyj",
+    "z0base",
+    "th10",
+    "q10",
+    "u10e",
+    "v10e",
+)
+
+
+def _opt(cfg, name, default):
+    get = getattr(cfg, "get", None)
+    return get(name, default) if get else getattr(cfg, name, default)
+
+
+def check(cfg):
+    """What is not ported: sfcmodel=7 without the MYJ PBL (usemyjpbl =
+    .false.), cm1setup other than 2, terrain."""
+    if int(_opt(cfg, "ipbl", 0)) != 6:
+        raise NotImplementedError(
+            "sfcmodel=7 is only ported with the MYJ PBL (ipbl=6); "
+            "usemyjpbl=.false. is not ported"
+        )
+    if int(_opt(cfg, "cm1setup", 1)) != 2:
+        raise NotImplementedError("sfcmodel=7: only cm1setup=2 is ported")
+    if bool(_opt(cfg, "terrain_flag", False)):
+        raise NotImplementedError("sfcmodel=7 with terrain is not ported")
+
+
+def init_state(ctx):
+    """cm1.F allocations (0) of the MYJ surface arrays the state does not
+    already hold, MYJSFCINIT's ust = 0.1 on 1..ni x 1..nj and
+    init_surface.F's z0base = znt on the whole plane."""
+    bk, g, s = ctx.bk, ctx.g, ctx.s
+    n = g.ngxy
+    J, I = slice(n, n + g.nj), slice(n, n + g.ni)
+    shp = g.s_shape[1:]
+    out = {k: bk.zeros(shp) for k in CARRIED_2D if k not in s}
+    out["zntmyj"] = bk.zeros(shp)
+    out["z0base"] = s["znt"] + 0.0
+    ust = s["ust"] if "ust" in s else bk.zeros(shp)
+    out["ust"] = bk.set(ust + 0.0, (J, I), 0.1)
+    return out
+
+
+def surface_layer(ctx):
+    """sfc_and_turb's sfcmodel=7 block: MYJSFC (ITIMESTEP = nstep, ZNT =
+    zntmyj, z0out = znt, rhosfc = rf(k=1)) on the WRF column inputs, br
+    clipped to [-10, 10], gz1oz0 = log(zh(k=1)/znt); SLAB (update_sfc and
+    testcase /= 11; the startup pass does nothing for sfcmodel=7); then ch
+    = chs2, cq = cqs2, s10, the sfcmodel=7 block (ustm, wspd, mol, cd) and
+    thflux / qvflux (dosfcflx or output_sfcflx)."""
+    bk, g, cfg, s, b = ctx.bk, ctx.g, ctx.cfg, ctx.s, ctx.b
+    xp = bk.xp
+    n, z, nk = g.ngxy, g.ngz, g.nk
+    J, I = slice(n, n + g.nj), slice(n, n + g.ni)
+    K = slice(z, z + nk)
+    w = ctx.w
+
+    def i3(a):
+        return a[K, J, I]
+
+    def i2(name):
+        return s[name][J, I]
+
+    r = myjsfc(
+        bk,
+        itimestep=int(ctx.nstep) if isinstance(ctx.nstep, int) else ctx.nstep,
+        ht=bk.zeros(i2("tsk").shape),
+        dz=i3(w["dz8w"]),
+        pmid=i3(ctx.prs),
+        pint=w["p3di"][z : z + nk + 1, J, I],
+        th=i3(w["th"]),
+        t=i3(w["t"]),
+        qv=i3(w["qv"]),
+        qc=i3(w["qc"]),
+        u=i3(w["u"]),
+        v=i3(w["v"]),
+        q2=i3(s["tke_myj"]),
+        tsk=i2("tsk"),
+        qsfc=i2("qsfc"),
+        thz0=i2("thz0"),
+        qz0=i2("qz0"),
+        uz0=i2("uz0"),
+        vz0=i2("vz0"),
+        xland=i2("xland"),
+        ustar=i2("ust"),
+        znt=i2("zntmyj"),
+        z0base=i2("z0base"),
+        pblh=i2("hpbl"),
+        mavail=i2("mavail"),
+        akhs=i2("akhs"),
+        akms=i2("akms"),
+        rhosfc=ctx.rf[z, J, I],
+        usemyjpbl=int(_opt(cfg, "ipbl", 0)) == 6,
+        isftcflx=int(_opt(cfg, "isftcflx", 0)),
+    )
+    names = {
+        "qsfc": "qsfc",
+        "thz0": "thz0",
+        "qz0": "qz0",
+        "uz0": "uz0",
+        "vz0": "vz0",
+        "ust": "ustar",
+        "zntmyj": "znt",
+        "hpbl": "pblh",
+        "akhs": "akhs",
+        "akms": "akms",
+        "rmol": "rmol",
+        "chs": "chs",
+        "chs2": "chs2",
+        "cqs2": "cqs2",
+        "hfx": "hfx",
+        "qfx": "qfx",
+        "lh": "flx_lh",
+        "flhc": "flhc",
+        "flqc": "flqc",
+        "qgh": "qgh",
+        "cpmm": "cpm",
+        "ct": "ct",
+        "u10": "u10",
+        "v10": "v10",
+        "t2": "t02",
+        "th2": "th02",
+        "tshltr": "tshltr",
+        "th10": "th10",
+        "q2": "q02",
+        "qshltr": "qshltr",
+        "q10": "q10",
+        "pshltr": "pshltr",
+        "u10e": "u10e",
+        "v10e": "v10e",
+        "psim": "psim",
+        "psih": "psih",
+        "fm": "fm",
+        "fh": "fhh",
+        "znt": "z0out",
+    }
+    v = {k: r[m] for k, m in names.items()}
+    br = _max(xp, -10.0, r["rib"])
+    v["br"] = xp.where(10.0 < br, 10.0, br)
+    v["gz1oz0"] = xp.log(b["zh"][z, J, I] / v["znt"])
+
+    # SLAB (land and water; ifsnow = 0, radiation on)
+    if ctx.update_sfc and int(_opt(cfg, "testcase", 0)) != 11:
+        from . import slab
+
+        upd = slab.slab_update(
+            ctx,
+            flhc=v["flhc"],
+            flqc=v["flqc"],
+            hfx=v["hfx"],
+            qfx=v["qfx"],
+            lh=v["lh"],
+            tsk=i2("tsk"),
+            qsfc=v["qsfc"],
+        )
+        v.update(upd)
+
+    # WRF parameters into CM1 arrays, the sfcmodel=7 block
+    u10, v10 = v["u10"], v["v10"]
+    s10 = xp.sqrt(u10 * u10 + v10 * v10)
+    v["ch"] = v["chs2"]
+    v["cq"] = v["cqs2"]
+    v["s10"] = s10
+    ust = v["ust"]
+    v["ustm"] = ust
+    u1, v1 = w["u"][z, J, I], w["v"][z, J, I]
+    wspd = _max(xp, xp.sqrt(u1 * u1 + v1 * v1), 0.001)
+    rmol = v["rmol"]
+    small = xp.abs(rmol) <= SMEPS
+    v["mol"] = xp.where(
+        small,
+        xp.copysign(xp.zeros_like(rmol) + 1.0e20, rmol),
+        1.0 / xp.where(small, 1.0, rmol),
+    )
+    tem = _max(xp, 0.1, ust * RKARMAN * v["fm"])
+    v["wspd"] = _max(xp, wspd, tem)
+    v["cd"] = ust * ust / _max(xp, 1.0e-20, s10 * s10)
+    if bool(_opt(cfg, "dosfcflx", False)) or int(_opt(cfg, "output_sfcflx", 0)) == 1:
+        rf1 = ctx.rf[z, J, I]
+        v["thflux"] = v["hfx"] / (v["cpmm"] * rf1)
+        v["qvflux"] = v["qfx"] / rf1
+    return {
+        k: bk.set(s[k] + 0.0 if k in s else bk.zeros(g.s_shape[1:]), (J, I), a)
+        for k, a in v.items()
+        if not k.startswith("_")
+    }
