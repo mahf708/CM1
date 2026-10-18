@@ -21,12 +21,18 @@
 //   * sfcmodel = 0 (no surface layer: bbc=1 free slip), or sfcmodel = 1 with
 //     bbc = 3 (param.F sets bbc=3 for sfcmodel>=1), isfcflx = 0 or 1,
 //     oceanmodel = 1, tbc = 1
+//   * sfcmodel = 2, 3 (the WRF/MM5 surface layers, physics/sfclay, with the
+//     SLAB land model, physics/slab) with a PBL scheme (cm1setup = 2,
+//     ipbl = 1 or 2): this file then provides the shared surface arrays,
+//     init_surface and the bbc=3 prelude of sfc_and_turb (sfc_prelude);
+//     param.F sets isfcflx = 1 and requires pertflx = 0; lu0 = 1..33,
+//     tmn0 >= 100 K
 //   * cecd = 1, 2, 3; set_znt = 0/1, set_ust = 0/1, set_flx = 0/1;
 //     pertflx = 0/1; cnstce, cnstcd, cnst_znt, cnst_ust, cnst_shflx, cnst_lhflx
 //   * initsfc = 1 (tsk0, lu0 -> LANDUSE.TBL), season = 1, 2
-//   * cm1setup = 1 with ipbl = 0 (LES), or cm1setup = 2 with ipbl = 2 (the
-//     simple PBL scheme, physics/pbl), which adds gethpbl2 (bulk-Ri
-//     boundary-layer depth hpbl, before getcecd)
+//   * sfcmodel = 1: cm1setup = 1 with ipbl = 0 (LES), or cm1setup = 2 with
+//     ipbl = 2 (the simple PBL scheme, physics/pbl), which adds gethpbl2
+//     (bulk-Ri boundary-layer depth hpbl, before getcecd)
 //   * testcase = 0 (so use_avg_sfc = .false.; without ipbl=2, hpbl stays at
 //     its initial 100 m), imove = 0, no terrain, axisymm = 0
 //   * imoist = 0, or imoist = 1 with qv = qa(:,:,:,1)
@@ -60,12 +66,17 @@ struct Options {
   bool terrain_flag = false;
   int imoist = 0, ptype = 0;
   int cm1setup = 1, ipbl = 0;
-  Real tsk0 = 299.28, xland0 = 2.0, cnstce = 0.0011, cnstcd = 0.0011;
+  Real tsk0 = 299.28, tmn0 = 297.28, xland0 = 2.0, cnstce = 0.0011, cnstcd = 0.0011;
   Real cnst_shflx = 0.24, cnst_lhflx = 5.2e-5, cnst_znt = 0.16, cnst_ust = 0.25;
   bool dosfcflx = false;   // init_surface.F
+  int output_sfcflx = 0;    // turb.F: thflux/qvflux from hfx/qfx also without dosfcflx
 
   // sfcmodel=1 (with bbc=3): the surface layer runs in sfc_and_turb
   bool active() const { return sfcmodel == 1; }
+  // the WRF/MM5 surface layers (sfcmodel=2,3: physics/sfclay + slab)
+  bool wrf() const { return sfcmodel == 2 || sfcmodel == 3; }
+  // any ported surface layer (the surface arrays exist and are dumped)
+  bool has_layer() const { return active() || wrf(); }
   static Options from_namelist(const Namelist& nl);
   void check() const;   // throws std::runtime_error for anything not ported
 };
@@ -91,7 +102,8 @@ void set_defaults(const SfcState& s);
 
 // init_surface.F for initsfc=1 (+ getlanduse, with the USGS table of
 // run/LANDUSE.TBL built in): tsk, xland, znt, mavail, dsxy. Needs the grid
-// (ruh, rvh).
+// (ruh, rvh). For sfcmodel=2,3 also see sfclay::init_wrf_surface (tmn,
+// emiss, thc, tslb).
 void init_surface(const Options& o, const Grid& g, const SfcState& s);
 
 // The part of init_surface that a reference dump does not carry: dsxy
@@ -99,16 +111,22 @@ void init_surface(const Options& o, const Grid& g, const SfcState& s);
 void set_dsxy(const Options& o, const Grid& g, const SfcState& s);
 
 // The bbc=3/sfcmodel=1 block of turb.F sfc_and_turb, on the new state:
-// psfc, u1/v1/s1/t1 at k=1 (ground-relative winds, pertflx), gethpbl2
-// (ipbl=2), getcecd,
-// sfcflux (isfcflx=1), sfcdiags. Interior points (1..ni,1..nj) only; the
-// halos of ust, u1, v1, s1, znt, wspd and zntmp are set by
-// turb::sfc_and_turb (CM1's "bc/comms" block).
+// sfc_prelude, then getcecd, sfcflux (isfcflx=1), sfcdiags. Interior
+// points (1..ni,1..nj) only; the halos of ust, u1, v1, s1, znt, wspd and
+// zntmp are set by turb::sfc_and_turb (CM1's "bc/comms" block).
 //   cgs1..3: param.F extrapolation coefficients to the surface
 void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
                Real cgs1, Real cgs2, Real cgs3, const FArray3& ua, const FArray3& va,
                const FArray3& tha, const FArray4& qa, const FArray3& prs, const FArray3& rf,
                const SfcState& s);
+
+// The part of turb.F sfc_and_turb's surface block every surface layer
+// shares (lines 290-332 and 532-597): psfc (cgs extrapolation), u1/v1/s1/t1
+// at k=1 (ground-relative winds, pertflx) and, for ipbl=2, gethpbl2.
+// Interior points only.
+void sfc_prelude(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
+                 Real cgs1, Real cgs2, Real cgs3, const FArray3& ua, const FArray3& va,
+                 const FArray3& tha, const FArray4& qa, const FArray3& prs, const SfcState& s);
 
 // sfcphys.F gethpbl2 (ipbl=2), as turb.F calls it: qsfc (rslf, or 0 when
 // imoist=0) and hpbl from the bulk Richardson number (bric = 0.125) with the
@@ -138,8 +156,12 @@ void sfcstress(const Bounds& b, const FArray3& rf, const SfcState& s,
 
 // USGS land-use table (run/LANDUSE.TBL): soil moisture availability (slmo)
 // and roughness length in cm (sfz0) for category 1..33 and season 1..2.
+// Also the emissivity (sfem) and thermal inertia (therin, in
+// cal/cm/K/s^0.5 times 100) that getlanduse reads for SLAB.
 Real landuse_slmo(int cat, int season);
 Real landuse_sfz0(int cat, int season);
+Real landuse_sfem(int cat, int season);
+Real landuse_therin(int cat, int season);
 
 } // namespace cm1k::sfc
 

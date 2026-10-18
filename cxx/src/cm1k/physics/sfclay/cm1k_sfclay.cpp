@@ -907,14 +907,16 @@ void sfclayrev(const Options& o, const WrfConst& c, const Tables& t, int ni, int
 //------------------------------------------------------------------------------
 
 void sfclay_post(int ni, int nj, bool set_fluxes, const FArray3& qv3d, const FArray3& rf,
-                 const SfcLayerState& s)
+                 const SfcLayerState& s, bool diag_qsfc)
 {
   const SfcLayerState S = s;
   Kokkos::parallel_for("cm1k::sfclay::sfclay_post", box2(1, ni, 1, nj), KOKKOS_LAMBDA(int i, int j) {
-    // dont update tsk, but diagnose qsfc:
-    const Real qx = qv3d(i, j, 1);
-    if (S.flqc(i, j, 1) != 0.) S.qsfc(i, j, 1) = qx + S.qfx(i, j, 1) / S.flqc(i, j, 1);
-    else S.qsfc(i, j, 1) = qx;
+    if (diag_qsfc) {
+      // dont update tsk, but diagnose qsfc:
+      const Real qx = qv3d(i, j, 1);
+      if (S.flqc(i, j, 1) != 0.) S.qsfc(i, j, 1) = qx + S.qfx(i, j, 1) / S.flqc(i, j, 1);
+      else S.qsfc(i, j, 1) = qx;
+    }
     // put WRF parameters into CM1 arrays:
     S.ch(i, j, 1) = S.chs2(i, j, 1);
     S.cq(i, j, 1) = S.cqs2(i, j, 1);

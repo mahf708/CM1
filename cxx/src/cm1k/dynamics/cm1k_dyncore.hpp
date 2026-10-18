@@ -6,6 +6,8 @@
 #include "dynamics/cm1k_openbc.hpp"
 #include "dynamics/cm1k_sound.hpp"
 #include "physics/pbl/cm1k_pbl.hpp"
+#include "physics/pbl_ysu/cm1k_pbl_ysu.hpp"
+#include "physics/sfclay/cm1k_sfclay_driver.hpp"
 #include "physics/turb/cm1k_turb.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
@@ -40,11 +42,14 @@ struct DynConfig {
   // subgrid turbulence (sgsmodel=1 with cm1setup=1): physics/turb options
   bool turb = false;
   turb::Options turb_opt;
-  // surface layer (sfcmodel=1, bbc=3): physics/sfc options
+  // surface layer (sfcmodel>=1, bbc=3): physics/sfc options; for the
+  // WRF/MM5 surface layers (sfcmodel=2,3) also physics/sfclay's
   sfc::Options sfc_opt;
+  sfclay::Options sfclay_opt;
   // boundary-layer schemes (param.F use_pbl: cm1setup=2,4 with ipbl>=1):
   // physics/pbl options; turb_opt is then filled too (boundary flags,
-  // turbsz/turbuz/turbvz, horizturb=1). Only cm1setup=2, ipbl=2 is ported.
+  // turbsz/turbuz/turbvz, horizturb=1). Ported: cm1setup=2 with ipbl=1
+  // (YSU, physics/pbl_ysu; sfcmodel=2,3) or ipbl=2 (sfcmodel=1,2,3).
   bool pbl = false;
   pbl::Options pbl_opt;
 
@@ -102,16 +107,22 @@ public:
   // every pass of the time loop (and in the startup pass, dosolve=.false.);
   // Model::step calls it at the start of each step, which is the same point
   // in the sequence (between mtime=mtime+dt and the next solve1).
+  //   update_sfc: cm1.F's update_sfc, .false. only in the startup pass
+  //   (nstep = 0): with sfcmodel=2,3 the SLAB land model then does not run.
   bool turb_enabled() const { return m_cfg.turb; }
-  void sfc_and_turb(double rtime);
+  void sfc_and_turb(double rtime, bool update_sfc = true);
   // cm1setup=2 (ipbl>=1) runs the mesoscale sequence of sfc_and_turb
-  // instead: surface layer (with gethpbl2 for ipbl=2), calcnm, calcdef,
-  // turbparam_horiz (horizturb=1), turbparam_vert (ipbl=2), gettau, then the
-  // PBL scheme through pbl() below.
+  // instead: surface layer (sfc::sfc_prelude with gethpbl2 for ipbl=2, then
+  // sfcmodel=1's getcecd/sfcflux/sfcdiags or sfclay::wrf_surface_layer),
+  // calcnm, calcdef, turbparam_horiz (horizturb=1), turbparam_vert (ipbl=2),
+  // gettau (ipbl=2 or horizturb=1), then the PBL scheme through pbl() below.
   bool pbl_enabled() const { return m_cfg.pbl; }
-  // The surface-layer arrays (sfcmodel=1), owned by the Model; sfc_and_turb
+  // The surface-layer arrays (sfcmodel>=1), owned by the Model; sfc_and_turb
   // updates them and solve1 reads them. Call after setup().
   void set_surface(const sfc::SfcState& s);
+  // sfcmodel=2,3: the WRF surface-layer state (its common arrays are the
+  // set_surface ones), owned by the Model. Call after setup().
+  void set_wrf_surface(const sfclay::WrfSurface& w);
   // The PBL tendencies (DynConfig::pbl), owned by the Model (they are in the
   // dumps); pbl() fills them and solve1 applies them. Call after setup().
   void set_pbl(const pbl::Tendencies& t);
@@ -124,8 +135,11 @@ public:
   // which solve1 adds to thten1/qten before and uten1/vten1 after the doturb
   // block; then pbl() applies bcs to upten and vpten (use_pbl). Dispatch on
   // m_cfg.pbl_opt.ipbl:
+  //   1: pbl_ysu::ysu (YSU, CM1's doysu: wrfphys::pbl_moist/pbl_prep
+  //      inputs, hpbl, u10, v10 from the scheme) and, for idiss=1,
+  //      pbl_ysu::ysu_dissten into ts.dissten
   //   2: pbl::br09 (simple Bryan-Rotunno/Louis scheme, CM1's dobr09)
-  //   1 (YSU), 4/5 (MYNN), ...: not ported yet. A new scheme adds its case
+  //   4/5 (MYNN), ...: not ported yet. A new scheme adds its case
   //     here (inputs: u3d/v3d/w3d/th3d/pp3d/q3d, s.prs, s.rho, rr, rf, the
   //     surface state m_sfc), any extra outputs or carried arrays to
   //     pbl::Tendencies (allocated from DynConfig::pbl_opt), its options to
@@ -136,6 +150,9 @@ public:
   // solve3.F/init3d.F: rf from rho on 0..ni+1, 0..nj+1 (public: it launches
   // device lambdas, which nvcc does not allow in private member functions)
   void compute_rf();
+  // turb.F: the WRF physics inputs (m_ww) from the current state (public:
+  // it launches device lambdas)
+  void wrf_inputs();
   // idiff=1, difforder=2: cm1.F's diff2def (stresses for diff2u/v/w), called
   // right after sfc_and_turb, at the same point of the time loop.
   void diff2_stress();
@@ -166,6 +183,16 @@ private:
   Diff2Work m_d2;   // idiff=1, difforder=2
   sfc::SfcState m_sfc;
   bool m_has_sfc = false;
+  sfclay::WrfSurface m_wsfc;
+  bool m_has_wsfc = false;
+  // the WRF physics inputs turb.F builds (wrfphys::pbl_prep: dum1..dum7;
+  // pbl_moist: divx = qv, ppten = qc, dum8 = qi; dum9 = rthraten = 0) and
+  // YSU's other outputs (xkzh, xkzm, kpbl2d, wstar, delta)
+  struct WrfWork {
+    FArray3 d1, d2, d3, d4, d5, d6, d7, qv, qc, qi, rth, xkzh, xkzm, kpbl2d, wstar, delta;
+    pbl_ysu::Workspace ysu;
+    wrfphys::WrfConst c{};
+  } m_ww;
   pbl::Tendencies m_pt;
   bool m_has_pbl = false;
   Real m_cgs1 = 0, m_cgs2 = 0, m_cgs3 = 0, m_cgt1 = 0, m_cgt2 = 0, m_cgt3 = 0;

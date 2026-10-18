@@ -39,7 +39,7 @@
 // 3D arrays are (ib:ie,jb:je,kb:ke) (kb <= 1, ke >= nk+1); 2D arrays are
 // FArray3 (ib:ie,jb:je,1:1) as in physics/sfc. Interior points 1..ni x 1..nj.
 //
-// Wiring into sfc_and_turb (for a later Dyncore hook):
+// Wiring into sfc_and_turb (Dyncore::sfc_and_turb / Dyncore::pbl, case 1):
 //   turb.F 1764-1826  qi -> dum8, qc -> ppten, dum9 = thraten or 0
 //                     -> wrfphys::pbl_moist (+ rthraten)
 //   turb.F 1828-1849  dum1..dum7                     -> wrfphys::pbl_prep

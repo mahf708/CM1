@@ -32,9 +32,11 @@ double run_case(const std::string& case_name, double tol, bool native_init = fal
 
   std::vector<std::string> fields = {"ua", "va", "wa", "ppi", "tha", "rho", "prs"};
   if (turb) for (const char* n : {"tkea", "kmh", "kmv", "khh", "khv"}) fields.push_back(n);
-  if (m.has_surface())   // sfcmodel=1: every dumped surface array (tsk, znt, ust, thflux, ...)
+  if (m.has_surface())   // sfcmodel>=1: every dumped surface array (tsk, znt, ust, thflux, ...)
     for (auto& [n, a] : m.surface().dumped()) fields.push_back(n);
-  for (auto& n : m.pbl_field_names()) fields.push_back(n);   // ipbl=2: hpbl, thpten, ..., vpten
+  if (m.has_wrf_surface())   // sfcmodel=2,3: mol, and the SLAB soil temperatures tslb
+    for (auto& [n, a] : m.wrf_surface().dumped()) fields.push_back(n);
+  for (auto& n : m.pbl_field_names()) fields.push_back(n);   // ipbl=1,2: hpbl, thpten, ..., vpten
   for (auto& n : m.field_names())
     if (n.rfind("qa_", 0) == 0) fields.push_back(n);
 
@@ -214,6 +216,41 @@ TEST_CASE("dyncore + simple PBL + Kessler: pbl2_kessler from Model::init (no dum
   run_case("pbl2_kessler", 0.0, true, true);
 }
 
+TEST_CASE("dyncore + YSU + revised MM5 surface layer + SLAB: ysu_dry vs Fortran", "[dyn][step][pbl][sfc][ysu]") {
+  // cm1setup=2, ipbl=1 (YSU), sfcmodel=3 (sf_sfclayrev) over land (lu0=3)
+  // with the SLAB soil model (tsk cools by its upward long-wave flux),
+  // horizturb=0 (no gettau), idiss=1 (ysudiss + the surface term), dry.
+  // Compares every dumped surface array, mol, tslb, hpbl and the YSU
+  // tendencies (dump N holds those of state N-1).
+  run_case("ysu_dry", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + YSU + revised MM5 surface layer + SLAB: ysu_dry from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][ysu]") {
+  // init_surface for sfcmodel=3: LANDUSE.TBL (znt, mavail, emiss, thc),
+  // tmn0, the soil layers and tslb; init_physics (sf_sfclayrev_init)
+  run_case("ysu_dry", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + YSU + MM5 surface layer + Kessler: ysu_kessler vs Fortran",
+          "[dyn][step][pbl][sfc][ysu][kessler]") {
+  // ipbl=1, sfcmodel=2 (SFCLAY) over water (SLAB keeps tsk), horizturb=1,
+  // idiss=1, Kessler (YSU's qc tendency)
+  run_case("ysu_kessler", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + YSU + MM5 surface layer + Kessler: ysu_kessler from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][ysu][kessler]") {
+  run_case("ysu_kessler", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + simple PBL + MM5 surface layer + SLAB + Kessler: pbl2_sfclay_land vs Fortran",
+          "[dyn][step][pbl][sfc][kessler]") {
+  // ipbl=2 (gethpbl2 before SFCLAY) with sfcmodel=2 over land: SLAB, and the
+  // surface fluxes thflux/qvflux from SFCLAY/SLAB's hfx, qfx (dosfcflx)
+  run_case("pbl2_sfclay_land", 0.0, false, true);
+}
+
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
   run_case("dry_bubble", 1e-12, true);
 }
@@ -293,7 +330,7 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   REQUIRE_FALSE(DynConfig::from_namelist(pb).turb);
   for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
          {"ipbl", "0"}, {"ipbl", "1"}, {"ipbl", "3"}, {"ipbl", "4"}, {"ipbl", "5"}, {"ipbl", "6"},
-         {"cm1setup", "4"}, {"sfcmodel", "0"}, {"sfcmodel", "2"}, {"horizturb", "2"},
+         {"cm1setup", "4"}, {"sfcmodel", "0"}, {"sfcmodel", "4"}, {"horizturb", "2"},
          {"terrain_flag", ".true."}, {"imove", "1"}}) {
     auto y = pb;
     y.set(k, v);
@@ -302,10 +339,42 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   }
   for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
          {"horizturb", "0"}, {"idiss", "0"}, {"doimpl", "0"}, {"isfcflx", "0"}, {"bcturbs", "2"},
-         {"pertflx", "1"}}) {
+         {"pertflx", "1"}, {"sfcmodel", "2"}, {"sfcmodel", "3"}}) {
     auto y = pb;
     y.set(k, v);
     INFO(k << " = " << v);
     REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());
+  }
+
+  // YSU: cm1setup=2, ipbl=1 with the WRF/MM5 surface layers (sfcmodel=2,3)
+  for (const char* c : {"ysu_dry", "ysu_kessler"}) {
+    auto ys = Namelist::from_file(cm1k::testing::case_namelist(c));
+    INFO(c);
+    REQUIRE_NOTHROW(DynConfig::from_namelist(ys).check());
+    const auto cfg = DynConfig::from_namelist(ys);
+    REQUIRE(cfg.pbl);
+    REQUIRE(cfg.bbc == 3);
+    REQUIRE(cfg.sfc_opt.isfcflx == 1);      // param.F: sfcmodel=2..7
+    REQUIRE_FALSE(cfg.sfc_opt.dosfcflx);    // init_surface.F: ipbl=1
+    REQUIRE(cfg.pbl_opt.l_inf == 0.0);      // param.F: ipbl=1
+    for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+           {"sfcmodel", "0"}, {"sfcmodel", "1"}, {"sfcmodel", "4"}, {"sfcmodel", "6"}, {"sfcmodel", "7"},
+           {"cm1setup", "1"}, {"cm1setup", "4"}, {"ipbl", "3"}, {"ipbl", "4"}, {"ipbl", "5"},
+           {"pertflx", "1"}, {"lu0", "0"}, {"lu0", "34"}, {"tmn0", "50.0"}, {"oceanmodel", "2"},
+           {"isftcflx", "3"}, {"iz0tlnd", "3"}, {"set_flx", "1"}, {"imove", "1"}, {"terrain_flag", ".true."}}) {
+      auto y = ys;
+      y.set(k, v);
+      INFO(k << " = " << v);
+      REQUIRE_THROWS(DynConfig::from_namelist(y).check());
+    }
+    for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+           {"sfcmodel", "2"}, {"sfcmodel", "3"}, {"ipbl", "2"}, {"horizturb", "0"}, {"horizturb", "1"},
+           {"idiss", "0"}, {"isftcflx", "1"}, {"iz0tlnd", "1"}, {"lu0", "16"}, {"lu0", "18"},
+           {"season", "2"}, {"set_znt", "1"}, {"isfcflx", "0"}}) {
+      auto y = ys;
+      y.set(k, v);
+      INFO(k << " = " << v);
+      REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());
+    }
   }
 }

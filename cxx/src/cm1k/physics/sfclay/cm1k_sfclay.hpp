@@ -15,7 +15,8 @@
 // with the Fortran's per-point operation order kept exactly (bit-for-bit
 // parity with the double-precision Fortran, see cxx/README.md).
 //
-// Wiring into sfc_and_turb (turb.F), for a later Dyncore hook:
+// Wiring into sfc_and_turb (turb.F; Dyncore::sfc_and_turb through
+// sfclay::wrf_surface_layer, cm1k_sfclay_driver.hpp):
 //
 //   turb.F ~292      psfc = cgs1*prs(1)+cgs2*prs(2)+cgs3*prs(3) (as for
 //                    sfcmodel=1, see physics/sfc)
@@ -32,10 +33,10 @@
 // (on the host, with the same libm calls as the Fortran, then copied to the
 // device).
 //
-// Not ported: the SLAB land model (turb.F 1019, called when update_sfc, i.e.
-// every step after the first, unless testcase=11); the routines here only
-// support the update_sfc = .false. branch of sfclay_post. Also not ported:
-// sfcmodel=4,6,7, shalwater_z0 (CM1 passes .false.), scm_force_flux
+// The SLAB land model (turb.F 1019, called when update_sfc, i.e. every step
+// after the first, unless testcase=11) is physics/slab; the whole sequence
+// for the time step is sfclay::wrf_surface_layer (cm1k_sfclay_driver.hpp).
+// Not ported: sfcmodel=4,6,7, shalwater_z0 (CM1 passes .false.), scm_force_flux
 // (.false.), oceanmodel=2.
 //
 // Known Fortran quirk (sfcmodel=2): SFCLAY1D writes its local scalars Z0T
@@ -102,15 +103,16 @@ void sfclayrev(const Options& o, const WrfConst& c, const Tables& t, int ni, int
                const FArray3& v3d, const FArray3& t3d, const FArray3& qv3d, const FArray3& p3d,
                const FArray3& dz8w, const SfcLayerState& s);
 
-// turb.F after the surface layer, sfcmodel=2/3 with update_sfc = .false. (the
-// SLAB call is not ported):
-//   1007-1018  qsfc = qv(k=1) + qfx/flqc (or qv where flqc=0)
+// turb.F after the surface layer, sfcmodel=2/3:
+//   1007-1018  update_sfc = .false.: qsfc = qv(k=1) + qfx/flqc (or qv where
+//              flqc=0); skipped with diag_qsfc = false (update_sfc: SLAB,
+//              physics/slab, has updated tsk, qsfc, hfx, qfx instead)
 //   1039-1048  ch = chs2, cq = cqs2, s10 = sqrt(u10**2+v10**2)
 //   1101-1110  if (dosfcflx .or. output_sfcflx.eq.1):
 //              thflux = hfx/(cpmm*rf(1)), qvflux = qfx/rf(1)
 // qv3d = divx.
 void sfclay_post(int ni, int nj, bool set_fluxes, const FArray3& qv3d, const FArray3& rf,
-                 const SfcLayerState& s);
+                 const SfcLayerState& s, bool diag_qsfc = true);
 
 } // namespace cm1k::sfclay
 

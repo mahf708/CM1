@@ -1,4 +1,5 @@
-// Port of CM1's original surface layer (sfcmodel=1). See cm1k_sfc.hpp.
+// Port of CM1's original surface layer (sfcmodel=1) and the surface
+// arrays/initialization shared with sfcmodel=2,3. See cm1k_sfc.hpp.
 //
 // Every expression keeps the Fortran's operation order (cxx/README.md):
 // x**2 is x*x, real**real is pow, alog is log, and Fortran's max/min of two
@@ -38,6 +39,17 @@ constexpr Real tbl_sfz0[2][33] = {
    40., 1., 10., 30., 15., 10., 0.1, 1., 15., 1., 80., 80., 80., 80., 80., 80.},
   {80., 5., 2., 5., 5., 20., 10., 1., 1., 15., 50., 50., 50., 50., 20., 0.01, 20.,
    40., 1., 10., 30., 15., 5., 0.1, 1., 15., 1., 80., 80., 80., 80., 80., 80.}};
+// sfem (emissivity) and therin (thermal inertia x 100)
+constexpr Real tbl_sfem[2][33] = {
+  {.88, .985, .985, .985, .98, .985, .96, .93, .95, .92, .93, .94, .95, .95, .97, .98, .95,
+   .95, .90, .92, .93, .92, .90, .95, .90, .95, .90, .88, .88, .88, .97, .97, .97},
+  {.88, .92, .93, .92, .92, .93, .92, .93, .93, .92, .93, .93, .95, .95, .93, .98, .95,
+   .95, .90, .92, .93, .92, .90, .95, .90, .95, .90, .88, .88, .88, .97, .97, .97}};
+constexpr Real tbl_therin[2][33] = {
+  {3., 4., 4., 4., 4., 4., 3., 3., 3., 3., 4., 4., 5., 4., 4., 6., 6.,
+   5., 2., 5., 5., 5., 2., 5., 5., 6., 5., 3., 3., 3., 3., 3., 3.},
+  {3., 4., 4., 4., 4., 4., 4., 4., 4., 3., 5., 5., 5., 5., 6., 6., 6.,
+   6., 2., 5., 5., 5., 5., 5., 5., 5., 5., 3., 3., 3., 3., 3., 3.}};
 
 void check_cat(int cat, int season) {
   if (cat < 1 || cat > 33 || season < 1 || season > 2)
@@ -49,6 +61,8 @@ void check_cat(int cat, int season) {
 
 Real landuse_slmo(int cat, int season) { check_cat(cat, season); return tbl_slmo[season - 1][cat - 1]; }
 Real landuse_sfz0(int cat, int season) { check_cat(cat, season); return tbl_sfz0[season - 1][cat - 1]; }
+Real landuse_sfem(int cat, int season) { check_cat(cat, season); return tbl_sfem[season - 1][cat - 1]; }
+Real landuse_therin(int cat, int season) { check_cat(cat, season); return tbl_therin[season - 1][cat - 1]; }
 
 //------------------------------------------------------------------------------
 // Options
@@ -78,6 +92,9 @@ Options Options::from_namelist(const Namelist& nl) {
   o.cm1setup = nl.geti("cm1setup", 1);
   o.ipbl = nl.geti("ipbl", 0);
   o.tsk0 = nl.getr("tsk0", 299.28);
+  o.tmn0 = nl.getr("tmn0", 297.28);
+  o.output_sfcflx = nl.geti("output_sfcflx", 0);
+  o.output_sfcflx = o.output_sfcflx < 0 ? 0 : (o.output_sfcflx > 1 ? 1 : o.output_sfcflx);
   o.xland0 = nl.getr("xland0", 2.0);
   o.cnstce = nl.getr("cnstce", 0.0011);
   o.cnstcd = nl.getr("cnstcd", 0.0011);
@@ -85,6 +102,8 @@ Options Options::from_namelist(const Namelist& nl) {
   o.cnst_lhflx = nl.getr("cnst_lhflx", 5.2e-5);
   o.cnst_znt = nl.getr("cnst_znt", 0.16);
   o.cnst_ust = nl.getr("cnst_ust", 0.25);
+  // param.F: sfcmodel = 2..7 requires isfcflx = 1
+  if (o.sfcmodel >= 2 && o.sfcmodel <= 7) o.isfcflx = 1;
   // param.F: sfcmodel >= 1 (or a PBL scheme, or the ocean model) needs bbc=3
   if (o.sfcmodel >= 1 || o.oceanmodel == 2 || o.ipbl >= 1) o.bbc = 3;
   // init_surface.F: dosfcflx
@@ -102,15 +121,15 @@ Options Options::from_namelist(const Namelist& nl) {
 void Options::check() const {
   auto fail = [](const std::string& m) { throw std::runtime_error("cm1k sfc: " + m); };
   auto is01 = [](int v) { return v == 0 || v == 1; };
-  if (sfcmodel != 0 && sfcmodel != 1)
-    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0 and 1)");
+  if (sfcmodel < 0 || sfcmodel > 3)
+    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0, 1, 2, 3)");
   if (sfcmodel == 0) {
     // param.F stops for these
     if (isfcflx != 0) fail("isfcflx=1 requires sfcmodel=1..7");
     if (bbc == 3) fail("bbc=3 requires sfcmodel>=1");
     return;
   }
-  if (bbc != 3) fail("sfcmodel=1 requires bbc=3");
+  if (bbc != 3) fail("sfcmodel>=1 requires bbc=3");
   if (oceanmodel != 1) fail("oceanmodel=" + std::to_string(oceanmodel) + " is not ported (only 1)");
   if (!is01(isfcflx)) fail("isfcflx must be 0 or 1");
   if (cecd < 1 || cecd > 3) fail("cecd=" + std::to_string(cecd) + " is not ported (1, 2, 3)");
@@ -124,11 +143,22 @@ void Options::check() const {
   if (imove != 0) fail("imove=1 (ground-relative winds with a moving domain) is not ported");
   if (axisymm != 0) fail("axisymm=1 is not ported");
   if (terrain_flag) fail("terrain is not ported");
-  // with the LES (cm1setup=1, ipbl=0) or with the simple PBL scheme
-  // (cm1setup=2, ipbl=2: gethpbl2)
-  if (!(cm1setup == 1 && ipbl == 0) && !(cm1setup == 2 && ipbl == 2))
-    fail("cm1setup=" + std::to_string(cm1setup) + " with ipbl=" + std::to_string(ipbl) +
-         " is not ported (only cm1setup=1 with ipbl=0, or cm1setup=2 with ipbl=2)");
+  if (sfcmodel == 1) {
+    // with the LES (cm1setup=1, ipbl=0) or with the simple PBL scheme
+    // (cm1setup=2, ipbl=2: gethpbl2)
+    if (!(cm1setup == 1 && ipbl == 0) && !(cm1setup == 2 && ipbl == 2))
+      fail("sfcmodel=1 with cm1setup=" + std::to_string(cm1setup) + " and ipbl=" + std::to_string(ipbl) +
+           " is not ported (only cm1setup=1 with ipbl=0, or cm1setup=2 with ipbl=2)");
+  } else {
+    // the WRF/MM5 surface layers with YSU (ipbl=1) or the simple PBL scheme
+    if (!(cm1setup == 2 && (ipbl == 1 || ipbl == 2)))
+      fail("sfcmodel=" + std::to_string(sfcmodel) + " with cm1setup=" + std::to_string(cm1setup) +
+           " and ipbl=" + std::to_string(ipbl) + " is not ported (only cm1setup=2 with ipbl=1 or 2)");
+    if (pertflx != 0) fail("pertflx=1 can only be used with sfcmodel=1");   // param.F stops
+    if (set_flx != 0 || set_ust != 0) fail("set_flx/set_ust are not ported with sfcmodel=2,3");
+    if (lu0 < 1 || lu0 > 33) fail("lu_index must be between 1 and 33 with sfcmodel=2,3");   // init_surface.F stops
+    if (tmn0 < 100.0) fail("tmn is less than 100 K");   // init_surface.F stops
+  }
   if (imoist == 1 && ptype != 0 && ptype != 1)
     fail("imoist=1 with ptype=" + std::to_string(ptype) + " is not ported");
   if (tsk0 < 100.0) fail("tsk is less than 100 K");   // init_surface.F stops
@@ -186,7 +216,7 @@ void set_dsxy(const Options& o, const Grid& g, const SfcState& s) {
 
 void init_surface(const Options& o, const Grid& g, const SfcState& s) {
   o.check();
-  if (!o.active()) return;
+  if (!o.has_layer()) return;
   const auto& b = g.b;
   // initsfc=1: tsk = tsk0, xland = xland0, lu_index = lu0; then getlanduse
   // (category 0 -> water) sets znt, mavail and xland from LANDUSE.TBL
@@ -481,12 +511,9 @@ void sfcdiags(const Options& o, const Constants& c, const Bounds& b, const FArra
 // turb.F
 //------------------------------------------------------------------------------
 
-void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
-               Real cgs1, Real cgs2, Real cgs3, const FArray3& ua, const FArray3& va,
-               const FArray3& tha, const FArray4& qa, const FArray3& prs, const FArray3& rf,
-               const SfcState& s) {
-  o.check();
-  if (!o.active()) return;
+void sfc_prelude(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
+                 Real cgs1, Real cgs2, Real cgs3, const FArray3& ua, const FArray3& va,
+                 const FArray3& tha, const FArray4& qa, const FArray3& prs, const SfcState& s) {
   const auto& b = g.b;
   const auto psfc = s.psfc, u1 = s.u1, v1 = s.v1, s1 = s.s1, t1 = s.t1;
   const auto u0 = base.u0, v0 = base.v0, th0 = base.th0;
@@ -505,6 +532,17 @@ void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseSt
   });
   // bulk-Ri boundary-layer depth (testcase=0), before getcecd
   if (o.ipbl == 2) gethpbl2(o, c, b, g.zh, th0, tha, qa, ua, va, u0, v0, s);
+}
+
+void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
+               Real cgs1, Real cgs2, Real cgs3, const FArray3& ua, const FArray3& va,
+               const FArray3& tha, const FArray4& qa, const FArray3& prs, const FArray3& rf,
+               const SfcState& s) {
+  o.check();
+  if (!o.active()) return;
+  const auto& b = g.b;
+  const auto th0 = base.th0;
+  sfc_prelude(o, c, g, base, cgs1, cgs2, cgs3, ua, va, tha, qa, prs, s);
   getcecd(o, b, g.zh, s);
   if (o.isfcflx == 1) sfcflux(o, c, b, th0, tha, qa, s);
   sfcdiags(o, c, b, g.zh, th0, tha, qa, rf, s);
