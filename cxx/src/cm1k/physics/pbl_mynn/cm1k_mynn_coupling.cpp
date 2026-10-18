@@ -15,6 +15,8 @@ Coupling Coupling::from_namelist(const Namelist& nl) {
   o.output_sfcflx = nl.geti("output_sfcflx", 0);
   o.lu0 = nl.geti("lu0", 16);
   o.initsfc = nl.geti("initsfc", 1);
+  o.tmn0 = nl.getr("tmn0", 297.28);
+  o.testcase = nl.geti("testcase", 0);
   // init_surface.F: dosfcflx (sfcmodel=6 sets it, ipbl=4,5 clear it again)
   const int cm1setup = nl.geti("cm1setup", 1), ipbl = nl.geti("ipbl", 0);
   const int isfcflx = 1;   // param.F: sfcmodel=2..7 require isfcflx=1 (and set it)
@@ -37,16 +39,15 @@ void Coupling::check() const {
   pbl.check();
   sfc.check();
   if (initsfc != 1) fail("initsfc=" + std::to_string(initsfc) + " is not ported (only 1)");
-  // init_surface.F (initsfc=1): lu_index = lu0 everywhere; getlanduse makes
-  // category 16 (or 0) water, anything else land. Over land CM1 runs the
-  // SLAB land-surface model after the surface layer: not ported here.
-  const int cat = (lu0 == 0) ? 16 : lu0;
-  if (cat != 16)
-    fail("lu0=" + std::to_string(lu0) +
-         " (land): sfcmodel=6 over land needs the SLAB land-surface model (src/slab.F), not ported here");
+  // init_surface.F (initsfc=1: lu_index = lu0 everywhere) stops for these
+  // with sfcmodel=6. Category 16 is water (SLAB then only diagnoses qsfc),
+  // anything else land (SLAB predicts tsk and tslb).
+  if (lu0 < 1 || lu0 > 33) fail("lu_index (lu0=" + std::to_string(lu0) + ") must be between 1 and 33 with sfcmodel=6");
+  if (tmn0 < 100.0) fail("tmn is less than 100 K");
 }
 
-void Carried::allocate(const Bounds& b, const sfc::SfcState& s, const pbl::Tendencies& pt) {
+void Carried::allocate(const Bounds& b, const sfc::SfcState& s, const pbl::Tendencies& pt,
+                       const sfc::Options& so) {
   sf.allocate(b);
   // turb.F passes CM1's arrays to SFCLAY_mynn: the shared ones are aliases
   sf.psfc = s.psfc; sf.hpbl = s.hpbl; sf.mavail = s.mavail; sf.xland = s.xland; sf.tsk = s.tsk;
@@ -61,10 +62,13 @@ void Carried::allocate(const Bounds& b, const sfc::SfcState& s, const pbl::Tende
   td.allocate(b);
   td.upten = pt.upten; td.vpten = pt.vpten; td.thpten = pt.thpten;
   td.qvpten = pt.qvpten; td.qcpten = pt.qcpten; td.qipten = pt.qipten;
+  land.setup(so, b);   // cm1.F: num_soil_layers = 5
 }
 
+void Carried::init_soil(const Bounds& b, const sfc::SfcState& s) const { land.init_soil(b, s.tsk); }
+
 std::vector<std::pair<std::string, FArray3>> Carried::dumped_sfc() const {
-  return {{"mol", sf.mol}, {"rmol", sf.rmol}, {"zol", sf.zol}, {"ustm", sf.ustm}};
+  return {{"mol", sf.mol}, {"rmol", sf.rmol}, {"zol", sf.zol}, {"ustm", sf.ustm}, {"tslb", land.tslb}};
 }
 
 std::vector<std::pair<std::string, FArray3>> Carried::dumped_pbl() const {
@@ -87,9 +91,10 @@ void Work::allocate(const Bounds& b) {
 }
 
 void surface_layer(const Coupling& o, const Constants& c, const Grid& g, const BaseState& base, Real cgs1,
-                   Real cgs2, Real cgs3, int nstep, const FArray3& ua, const FArray3& va, const FArray3& tha,
-                   const FArray3& ppi, const FArray4& qa, int nqv, const FArray3& prs, const FArray3& rho,
-                   const FArray3& rf, const sfc::SfcState& s, const Carried& cr, const Work& w) {
+                   Real cgs2, Real cgs3, int nstep, Real dt, bool update_sfc, const FArray3& ua,
+                   const FArray3& va, const FArray3& tha, const FArray3& ppi, const FArray4& qa, int nqv,
+                   const FArray3& prs, const FArray3& rho, const FArray3& rf, const sfc::SfcState& s,
+                   const Carried& cr, const Work& w) {
   const auto& b = g.b;
   const int ni = b.ni, nj = b.nj;
   // turb.F: psfc, then (bbc=3, kval=1) u1, v1, s1, t1 from the ground-
@@ -109,9 +114,19 @@ void surface_layer(const Coupling& o, const Constants& c, const Grid& g, const B
   sfc_mynn::prepare_inputs(o.sfc, g, ua, va, base.th0, tha, base.pi0, ppi, prs, rho, qa, nqv, w.sin);
   // SFCLAY_mynn (isfflx = 1, itimestep = nstep, DX = dx)
   sfc_mynn::sfclay(o.sfc, c, w.psi, ni, nj, g.dx, nstep, 1, w.sin, cr.sf);
-  // SLAB over water / no update: qsfc; then ch, cq, s10, thflux, qvflux
+  // turb.F 1019-1047: SLAB (land: tsk, tslb, hfx, qfx, lh; qsfc), or the
+  // qsfc diagnosis in the startup pass
+  slab::Land::Surface ls;
+  ls.flhc = cr.sf.flhc; ls.flqc = cr.sf.flqc; ls.psfc = cr.sf.psfc; ls.xland = cr.sf.xland;
+  ls.hfx = cr.sf.hfx; ls.qfx = cr.sf.qfx; ls.lh = cr.sf.lh; ls.tsk = cr.sf.tsk; ls.qsfc = cr.sf.qsfc;
+  ls.mavail = cr.sf.mavail;
+  if (update_sfc && o.testcase != 11)
+    cr.land.run(wrfphys::WrfConst::make(c), dt, ni, nj, w.sin.t3d, w.sin.qv3d, prs, ls);
+  else
+    cr.land.diag_qsfc(ni, nj, w.sin.qv3d, ls);
+  // ch, cq, s10, thflux, qvflux
   sfc_mynn::finish(ni, nj, o.dosfcflx || o.output_sfcflx == 1, w.sin, rf, cr.sf, s.cq, s.s10, s.thflux,
-                   s.qvflux);
+                   s.qvflux, false);
 }
 
 void pbl(const Coupling& o, const Grid& g, const BaseState& base, Real dt, int nstep, const FArray3& ua,

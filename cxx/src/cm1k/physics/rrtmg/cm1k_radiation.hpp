@@ -17,7 +17,8 @@
 // cal_cldfra1's qc-only branch, mp_physics = 1 as the cm1k fork patch of
 // radiation_driver.F sets), sfcmodel = 2 or 3 (gsw, glw, emiss are the
 // WRF surface layer's / SLAB's arrays; albd from LANDUSE.TBL), testcase = 0,
-// no MYNN (icloud_bl coupling), eqtset = 1 or 2. Anything else throws.
+// no MYNN (icloud_bl coupling) or MYJ (sfcmodel = 7), PBL ipbl = 0..3 (YSU and
+// GFS-EDMF get rthraten = thraten), eqtset = 1 or 2. Anything else throws.
 //
 // The RRTMG tables are read from RRTMG_LW_DATA / RRTMG_SW_DATA located by
 // rrtmg::find_data_file ($CM1K_RRTMG_DATA_DIR, the working directory, then

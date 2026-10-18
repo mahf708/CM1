@@ -67,7 +67,12 @@ void RadOptions::check() const {
   if (ptype != 1) unsupported("radopt=2 with ptype=" + std::to_string(ptype) + " (only Kessler, ptype=1)");
   if (sfcmodel != 2 && sfcmodel != 3)
     unsupported("radopt=2 with sfcmodel=" + std::to_string(sfcmodel) + " (only 2, 3: gsw/glw/emiss of SLAB)");
+  // (this also excludes the GFDL (4), MYNN (6) and MYJ (7) surface layers,
+  // hence MYJ, ipbl=6, which requires sfcmodel=7; YSU and GFS-EDMF, which
+  // read rthraten, work with 2 and 3)
   if (ipbl == 4 || ipbl == 5) unsupported("radopt=2 with the MYNN PBL (icloud_bl coupling)");
+  if (ipbl != 0 && ipbl != 1 && ipbl != 2 && ipbl != 3)
+    unsupported("radopt=2 with ipbl=" + std::to_string(ipbl) + " (only 0..3)");
   if (testcase != 0) unsupported("radopt=2 with testcase=" + std::to_string(testcase));
   if (month < 1 || month > 12) throw std::runtime_error("cm1k radiation: month must be 1..12");
 }

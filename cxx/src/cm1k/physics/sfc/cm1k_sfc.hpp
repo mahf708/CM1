@@ -27,6 +27,15 @@
 //     init_surface and the bbc=3 prelude of sfc_and_turb (sfc_prelude);
 //     param.F sets isfcflx = 1 and requires pertflx = 0; lu0 = 1..33,
 //     tmn0 >= 100 K
+//   * sfcmodel = 4 (the GFDL surface layer, physics/sfc_gfdl, with SLAB)
+//     with the GFS-EDMF PBL (cm1setup = 2, ipbl = 3), over water only
+//     (lu0 = 16: SF_GFDL reads the soil moisture out of bounds over land,
+//     see cm1k_sfc_gfdl.hpp); the 2, 3 layers also with ipbl = 3
+//   * sfcmodel = 6 (the MYNN surface layer, physics/sfc_mynn, with SLAB over
+//     land) with the MYNN PBL (cm1setup = 2, ipbl = 4, 5): lu0 = 1..33,
+//     tmn0 >= 100 K (checked in pbl_mynn::Coupling)
+//   * sfcmodel = 7 (the MYJ surface layer + SLAB, physics/myj) with the
+//     MYJ PBL (cm1setup = 2, ipbl = 6); lu0 = 1..33, tmn0 >= 100 K
 //   * cecd = 1, 2, 3; set_znt = 0/1, set_ust = 0/1, set_flx = 0/1;
 //     pertflx = 0/1; cnstce, cnstcd, cnst_znt, cnst_ust, cnst_shflx, cnst_lhflx
 //   * initsfc = 1 (tsk0, lu0 -> LANDUSE.TBL), season = 1, 2
@@ -78,8 +87,13 @@ struct Options {
   // the MYNN surface layer (sfcmodel=6: physics/sfc_mynn, run by
   // pbl_mynn::surface_layer; the arrays and init_surface are these)
   bool mynn() const { return sfcmodel == 6; }
+  // the GFDL surface layer (sfcmodel=4: physics/sfc_gfdl + slab)
+  bool gfdl() const { return sfcmodel == 4; }
+  // the MYJ surface layer (sfcmodel=7: physics/myj, run by
+  // myj::surface_layer; the arrays and init_surface are these)
+  bool myj() const { return sfcmodel == 7; }
   // any ported surface layer (the surface arrays exist and are dumped)
-  bool has_layer() const { return active() || wrf() || mynn(); }
+  bool has_layer() const { return active() || wrf() || mynn() || gfdl() || myj(); }
   static Options from_namelist(const Namelist& nl);
   void check() const;   // throws std::runtime_error for anything not ported
 };

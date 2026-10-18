@@ -555,8 +555,24 @@ TEST_CASE("pbl options: unsupported values throw", "[pbl]") {
   REQUIRE_NOTHROW(t.check());
   t.sfcmodel = 3; t.bbc = 3;
   REQUIRE_NOTHROW(t.check());
-  t.ipbl = 3;
+  t.ipbl = 3;   // GFS-EDMF
+  REQUIRE_NOTHROW(t.check());
+  t.sfcmodel = 4;   // with the GFDL surface layer
+  REQUIRE_NOTHROW(t.check());
+  t.sfcmodel = 3;
+  t.ipbl = 7;
   REQUIRE_THROWS(t.check());
+  // GFS-EDMF with sfcmodel=2,3,4 only
+  for (int sfcmodel : {2, 3, 4}) {
+    pbl::Options g = o;
+    g.ipbl = 3; g.sfcmodel = sfcmodel;
+    REQUIRE_NOTHROW(g.check());
+  }
+  for (int sfcmodel : {0, 1, 6, 7}) {
+    pbl::Options g = o;
+    g.ipbl = 3; g.sfcmodel = sfcmodel;
+    REQUIRE_THROWS(g.check());
+  }
   sfc::Options s;
   s.sfcmodel = 1; s.bbc = 3; s.cm1setup = 2; s.ipbl = 2;
   REQUIRE_NOTHROW(s.check());
