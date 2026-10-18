@@ -102,7 +102,7 @@ TEST_CASE("dyncore options: kessler_cor_diff6 from Model::init (no dump)",
 
 // Each option of the new cases must actually change the solution (so the
 // bitwise step tests above exercise it): switching it off gives a different
-// state after 30 steps.
+// state after 30 steps (fewer when CM1K_MAX_STEP bounds the run).
 TEST_CASE("dyncore options: every option of the new cases is active", "[dyn][cor][rdamp][diff]") {
   struct Off { const char* case_name; const char* key; const char* value; const char* field; };
   for (const auto& o : {Off{"kessler_cor_diff6", "icor", "0", "ua"}, Off{"kessler_cor_diff6", "irdamp", "0", "wa"},
@@ -110,6 +110,7 @@ TEST_CASE("dyncore options: every option of the new cases is active", "[dyn][cor
                         Off{"dry_cor_damp", "icor", "0", "va"}, Off{"dry_cor_damp", "irdamp", "0", "tha"},
                         Off{"dry_cor_damp", "hrdamp", "0", "wa"}, Off{"dry_diff2", "idiff", "0", "ua"},
                         Off{"dry_diff2", "irdamp", "0", "ua"}}) {
+    const int nsteps = std::min(30, cm1k::testing::max_step());
     const auto ref = cm1k::testing::case_ref(o.case_name);
     if (ref.empty()) return;
     auto nl = Namelist::from_file(cm1k::testing::case_namelist(o.case_name));
@@ -118,10 +119,11 @@ TEST_CASE("dyncore options: every option of the new cases is active", "[dyn][cor
     Model off(nl);
     on.init_from_dump(DumpReader::step_dir(ref, 0));
     off.init_from_dump(DumpReader::step_dir(ref, 0));
-    for (int n = 0; n < 30; ++n) { on.step(); off.step(); }
+    for (int n = 0; n < nsteps; ++n) { on.step(); off.step(); }
     const double d = field_diff(on, off, o.field);
     INFO(o.case_name << ": " << o.key << " = " << o.value << " changes " << o.field << " by " << d);
-    std::printf("%s: %s=%s changes %s by up to %.3e after 30 steps\n", o.case_name, o.key, o.value, o.field, d);
+    std::printf("%s: %s=%s changes %s by up to %.3e after %d steps\n", o.case_name, o.key, o.value, o.field, d,
+                nsteps);
     CHECK(d > 0.0);
   }
 }
