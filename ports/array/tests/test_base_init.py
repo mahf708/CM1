@@ -60,7 +60,9 @@ def test_namelist_reference(cfg):
     assert cfg.imove == 0 and cfg.umove == 0.0  # param.F: imove=0 -> umove=0
     assert cfg.ccn == 0.6e9 and cfg.alphahl == 0.5  # group with inline comments
     assert cfg.tsmall == 0.0001 and cfg.outunits == 1  # cm1.F defaults
-    assert cfg.not_a_variable == 0  # unset -> zero
+    assert cfg.isnd == 5 and cfg.convinit == 0  # unset module-input variable -> zero
+    with pytest.raises(AttributeError):
+        _ = cfg.not_a_variable  # not a CM1 variable: never reads as zero
     assert (cfg.numq, cfg.nqv, cfg.nqc, cfg.nqr) == (3, 1, 2, 3)
     assert "param2" in cfg.groups and cfg.groups["param2"]["isnd"] == 5
 
