@@ -222,7 +222,10 @@ def test_rrtmg_lw_chain(bk, chain_ref):
         **mc,
         trace=tr,
     )
-    n = lambda x: np_(bk, x)
+
+    def n(x):
+        return np_(bk, x)
+
     # inatm
     ia = tr["inatm"]
     _close(n(ia["coldry"]), ref["coldry"], name="coldry")
@@ -239,7 +242,10 @@ def test_rrtmg_lw_chain(bk, chain_ref):
     laytrop = ref["laytrop"].astype(int)
     np.testing.assert_array_equal(n(co["laytrop"]), laytrop)
     lower = np.arange(NL)[:, None] < laytrop[None, :]
-    every = lambda x: np.ones_like(x, dtype=bool)
+
+    def every(x):
+        return np.ones_like(x, dtype=bool)
+
     lay_names = [
         "colh2o", "colco2", "colo3", "coln2o", "colco", "colch4", "colo2", "colbrd",
         "fac00", "fac01", "fac10", "fac11",

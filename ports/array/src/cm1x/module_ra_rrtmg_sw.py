@@ -994,7 +994,10 @@ def spcvmc_sw(
     xp = bk.xp
     T = tables(bk) if T is None else T
     bidx = xp.asarray(_bandidx(T))
-    flip = lambda a: xp.flip(a, axis=0)
+
+    def flip(a):
+        return xp.flip(a, axis=0)
+
     mu = prmu0[None, :, None]
     ztaur, ztaug = flip(taumol["taur"]), flip(taumol["taug"])
     cldf = flip(pcldfmc)

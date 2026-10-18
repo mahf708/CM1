@@ -246,7 +246,10 @@ def _run_chain(bk, c):
 def test_rrtmg_sw_chain(bk, chain_ref):
     c, ref = chain_ref
     r, tr = _run_chain(bk, c)
-    n = lambda x: np_(bk, x)
+
+    def n(x):
+        return np_(bk, x)
+
     ia = tr["inatm"]
     _close(n(ia["coldry"]), ref["coldry"], name="coldry")
     _close(n(ia["pdp"]), ref["pdp"], name="pdp")
