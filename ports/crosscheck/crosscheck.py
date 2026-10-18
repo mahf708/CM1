@@ -51,11 +51,13 @@ LAGGED_K = ("kmh", "kmv", "khh", "khv")
 # cm1x agrees to round-off for the first steps, and from step ~5 the
 # differences of a few ulps in the moist physics grow to ~1e-8 (two Fortran
 # builds with different flags differ by as much; ports/array tests use the
-# same schedule).  A GPU build of cm1k is not bitwise either (device math
+# same schedule); past step 100 in deep moist convection (supercell_kessler,
+# 30 min) they reach ~3e-6 in the pressure perturbation under the rain shaft
+# and in the eddy viscosities.  A GPU build of cm1k is not bitwise either (device math
 # library), so it gets the cm1x schedule.
 TOLERANCES = {
     "bitwise": [(math.inf, 1e-12)],
-    "roundoff": [(4, 1e-10), (math.inf, 1e-6)],
+    "roundoff": [(4, 1e-10), (100, 1e-6), (math.inf, 1e-5)],
 }
 
 
