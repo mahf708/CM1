@@ -13,7 +13,7 @@ from __future__ import annotations
 from . import constants as c
 from .adv import advs, advu, advv, advw, getdivx
 from . import bc as _bc
-from .misc import NRKMAX, SMEPS, getdiv
+from .misc import NRKMAX, SMEPS, getdiv, level_sums, qp_sum
 
 
 def _opt(cfg, name, default):
@@ -148,6 +148,8 @@ def solve2(
     nql1 = int(_opt(cfg, "nql1", 2)) - 1
     nql2 = int(_opt(cfg, "nql2", 3)) - 1
     ptype = int(_opt(cfg, "ptype", 1))
+    # cm1.F smeps (1e-60 with -DDP, see namelist.DP_DEFAULTS)
+    smeps = float(_opt(cfg, "smeps", SMEPS))
     apmasscon = int(_opt(cfg, "apmasscon", 1))
     hs, vs = int(_opt(cfg, "hadvordrs", 5)), int(_opt(cfg, "vadvordrs", 5))
     hv, vv = int(_opt(cfg, "hadvordrv", 5)), int(_opt(cfg, "vadvordrv", 5))
@@ -160,6 +162,12 @@ def solve2(
     qmag = [1.0e-2] * numq
 
     from .sound import sound  # local import: keeps module import order free
+
+    # separately compiled routines (torch with jit=True; Backend.kernel)
+    advs_ = bk.kernel(advs, traced=("dt", "weps"))
+    advu_ = bk.kernel(advu, traced=("dt",))
+    advv_ = bk.kernel(advv, traced=("dt",))
+    advw_ = bk.kernel(advw, traced=("dt",))
 
     ibw, ibe, ibs, ibn = _bc.ib_flags(cfg)
     irbc = int(_opt(cfg, "irbc", 4))
@@ -207,6 +215,9 @@ def solve2(
 
     for nrk in range(1, NRKMAX + 1):
         dttmp = dt / float(NRKMAX + 1 - nrk)
+        # adv* use nrk only to test nrk == nrkmax: the same value for the
+        # first stages keeps one compiled variant for them (Backend.kernel)
+        nrk_a = nrk if nrk == NRKMAX else 1
 
         # ---- misc variables (moist, eqtset=2) -----------------------------
         ql = q3d[nql1][SI]
@@ -259,14 +270,14 @@ def solve2(
             * g.rdy
             * vh0
         ) + (rrw[nz + 1 : nz + nk + 1, J0, I0] - rrw[K, J0, I0]) * g.rdz * col(mh, K)
-        d = xp.where(xp.abs(d) < SMEPS, xp.zeros_like(d), d)
+        d = xp.where(xp.abs(d) < smeps, xp.zeros_like(d), d)
         divx = bk.set(divx, (K, J0, I0), d)
 
         # ---- advection of momentum -----------------------------------------
-        uten = advu(
+        uten = advu_(
             bk,
             g,
-            nrk=nrk,
+            nrk=nrk_a,
             rr0=rr0,
             mh=mh,
             uf=uf,
@@ -282,10 +293,10 @@ def solve2(
             dt=dttmp,
             cfg=cfg,
         )["uten"]
-        vten = advv(
+        vten = advv_(
             bk,
             g,
-            nrk=nrk,
+            nrk=nrk_a,
             rr0=rr0,
             mh=mh,
             uh=uh,
@@ -301,10 +312,10 @@ def solve2(
             dt=dttmp,
             cfg=cfg,
         )["vten"]
-        wten = advw(
+        wten = advw_(
             bk,
             g,
-            nrk=nrk,
+            nrk=nrk_a,
             rrf0=rrf0,
             mf=mf,
             uh=uh,
@@ -467,6 +478,7 @@ def solve2(
             v=rrv,
             w=rrw,
             div=t11,
+            smeps=smeps,
         )["div"]
         gd = getdivx(
             bk,
@@ -488,10 +500,10 @@ def solve2(
         thten = bk.zeros(S)
         thten = bk.set(thten, SI, thten1[SI] - t11[SI] * thterm[SI])
         sadv = bk.set(sadv, (K,), col(th0, K) - c.th0r + th3d[K])
-        thten = advs(
+        thten = advs_(
             bk,
             g,
-            nrk=nrk,
+            nrk=nrk_a,
             wflag=1,
             rho0=rho0,
             rr0=rr0,
@@ -516,7 +528,7 @@ def solve2(
             cfg=cfg,
         )["sten"]
         tn = tha[SI] + dttmp * thten[SI]
-        tn = xp.where(xp.abs(tn) < SMEPS, xp.zeros_like(tn), tn)
+        tn = xp.where(xp.abs(tn) < smeps, xp.zeros_like(tn), tn)
         th3d = bk.set(th3d, SI, tn)
 
         # ---- moisture --------------------------------------------------------
@@ -524,10 +536,10 @@ def solve2(
         for m in range(numq):
             sten = bk.zeros(S)
             sten = bk.set(sten, SI, qten[m][SI])
-            sten = advs(
+            sten = advs_(
                 bk,
                 g,
-                nrk=nrk,
+                nrk=nrk_a,
                 wflag=1,
                 rho0=rho0,
                 rr0=rr0,
@@ -552,7 +564,7 @@ def solve2(
                 cfg=cfg,
             )["sten"]
             qn = qa[m][SI] + dttmp * sten[SI]
-            qn = xp.where(xp.abs(qn) < SMEPS, xp.zeros_like(qn), qn)
+            qn = xp.where(xp.abs(qn) < smeps, xp.zeros_like(qn), qn)
             q3d[m] = bk.set(q3d[m], SI, qn)
 
         if hooks is not None:
@@ -585,13 +597,14 @@ def solve2(
         if nrk == NRKMAX:
             prs, rho = _prsrho(pp3d, prs, rho)
             if apmasscon == 1:
-                dumk3 = xp.sum(
+                # CM1's loop-order level sums, then quad-precision k sums
+                dumk3 = level_sums(
+                    bk,
                     rho[SI] * ruh[Ii][None, None, :] * rvh[Ji][None, :, None] * rmh[SI],
-                    axis=(1, 2),
                 )
-                dumk4 = xp.sum(pi0[SI] + pp3d[SI], axis=(1, 2))
-                mass2 = xp.sum(dumk3)
-                p2 = xp.sum(dumk4)
+                dumk4 = level_sums(bk, pi0[SI] + pp3d[SI])
+                mass2 = qp_sum(bk, dumk3)
+                p2 = qp_sum(bk, dumk4)
                 dopf = True
 
         # ---- bcs ------------------------------------------------------------------
@@ -610,10 +623,10 @@ def solve2(
 
             Kt = slice(nz + 1, nz + nk)  # k = 2..nk
             wten = bk.set(wten, (Kt, Ji, Ii), tketen[Kt, Ji, Ii])
-            wten = advw(
+            wten = advw_(
                 bk,
                 g,
-                nrk=nrk,
+                nrk=nrk_a,
                 rrf0=rrf0,
                 mf=mf,
                 uh=uh,

@@ -1102,7 +1102,12 @@ def turb_tendencies(
     xp = bk.xp
     nk = g.nk
     m = _moist(cfg)
-    uten1 = turbu(
+    # separately compiled routines (torch with jit=True; Backend.kernel)
+    turbu_ = bk.kernel(turbu, traced=("dt",))
+    turbv_ = bk.kernel(turbv, traced=("dt",))
+    turbw_ = bk.kernel(turbw, traced=("dt",))
+    turbs_ = bk.kernel(turbs, traced=("dt",))
+    uten1 = turbu_(
         bk,
         g,
         cfg,
@@ -1121,7 +1126,7 @@ def turb_tendencies(
         t13=t13,
         kmv=kmv,
     )["uten"]
-    vten1 = turbv(
+    vten1 = turbv_(
         bk,
         g,
         cfg,
@@ -1140,7 +1145,7 @@ def turb_tendencies(
         t23=t23,
         kmv=kmv,
     )["vten"]
-    wten1 = turbw(
+    wten1 = turbw_(
         bk,
         g,
         cfg,
@@ -1182,13 +1187,13 @@ def turb_tendencies(
         "dum7": dum7,
         "dum8": dum8,
     }
-    thten1 = turbs(bk, g, cfg, iflux=1, s=sadv, sten=thten1, **common)["sten"]
+    thten1 = turbs_(bk, g, cfg, iflux=1, s=sadv, sten=thten1, **common)["sten"]
     qout = None
     if m["imoist"] == 1:
         qout = []
         for nn in range(1, m["numq"] + 1):
             qout.append(
-                turbs(
+                turbs_(
                     bk,
                     g,
                     cfg,

@@ -182,7 +182,7 @@ def initial_state(m, tha, dqv=None):
 def rollout(m, state, nsteps):
     """Run ``nsteps`` steps of ``m`` from ``state`` on a private copy of ``m``
     (``m`` itself is not advanced).  Returns the final state dict."""
-    if getattr(m, "jit", False) and hasattr(m, "_compiled_step"):
+    if getattr(m, "jit", False) and getattr(m, "_whole_step", True):
         m._compiled_step()  # build it on m so that every copy shares it
     c = clone(m)
     c.state = {k: (list(v) if isinstance(v, list) else v) for k, v in state.items()}

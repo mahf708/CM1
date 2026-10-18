@@ -158,7 +158,8 @@ def mp_driver(
     )
     rain, prate, qr, vr, qb[5] = o["rain"], o["prate"], o["q3d"], o["vq"], o["train"]
 
-    o = kessler(
+    # a separately compiled routine with torch jit=True (Backend.kernel)
+    o = bk.kernel(kessler, traced=("dt",))(
         bk,
         g,
         cfg,

@@ -12,9 +12,13 @@ mode=jit: jax.jit / torch.compile), and the median of the following
 Results go to ``<out>.json`` and a Markdown table ``<out>.md`` with the CPU
 model, thread count and library versions.
 
-mode=jit means ``Model(..., jit=True)``: one compiled function per time step
-(``Backend.compile``: jax.jit on jax, torch.compile on torch); backends
-without a compiler are run eagerly only.
+mode=jit means ``Model(..., jit=True)``: on jax one ``jax.jit`` function
+per time step; on torch the hot routines (advection, acoustic small step,
+subgrid turbulence, Kessler) each go through ``torch.compile`` (inductor) and
+the rest of the step runs eagerly (``Backend.kernel``).  Backends without a
+compiler are run eagerly only.  Each torch run gets an empty inductor cache
+(``TORCHINDUCTOR_CACHE_DIR``), so its compile time is a cold start (unless
+``--warm-cache``).
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import platform
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -103,8 +108,10 @@ def _sync(m):
     # numpy / torch (CPU) are synchronous
 
 
-def _child_env(backend, threads):
+def _child_env(backend, threads, cache_dir=None):
     env = dict(os.environ)
+    if cache_dir:
+        env["TORCHINDUCTOR_CACHE_DIR"] = cache_dir
     if threads and backend == "jax":
         env["XLA_FLAGS"] = (
             env.get("XLA_FLAGS", "")
@@ -171,7 +178,9 @@ def to_markdown(results, info, cmd):
         "",
         (
             "`first step` includes compilation for jit; `compile` = first step - "
-            "steady step. `step` = median of the timed steps."
+            "steady step. `step` = median of the timed steps. jax jit = whole "
+            "step in one jax.jit; torch jit = torch.compile (inductor) of each "
+            "hot routine, cold inductor cache, rest of the step eager."
         ),
         "",
         (
@@ -228,6 +237,12 @@ def main(argv=None):
         default="",
         help="comma list of backend:mode[:grid] entries to leave out, e.g. torch:jit",
     )
+    ap.add_argument(
+        "--warm-cache",
+        action="store_true",
+        help="torch: keep the default (persistent) inductor cache instead of "
+        "a fresh one per run (cold compile)",
+    )
     ap.add_argument("--out", default=str(HERE / "results_cpu"))
     ap.add_argument("--child", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
@@ -267,6 +282,9 @@ def main(argv=None):
                     str(nt),
                 ]
                 t0 = time.time()
+                tmp = None
+                if b == "torch" and mode == "jit" and not a.warm_cache:
+                    tmp = tempfile.TemporaryDirectory(prefix="cm1x_inductor_")
                 try:
                     p = subprocess.run(
                         cmd,
@@ -274,7 +292,7 @@ def main(argv=None):
                         check=False,
                         text=True,
                         timeout=a.timeout,
-                        env=_child_env(b, nt),
+                        env=_child_env(b, nt, tmp and tmp.name),
                     )
                     line = [x for x in p.stdout.splitlines() if x.startswith("RESULT ")]
                     if line:
@@ -291,6 +309,8 @@ def main(argv=None):
                         "error": f"timeout after {a.timeout:.0f} s",
                         "threads": nt or None,
                     }
+                if tmp is not None:
+                    tmp.cleanup()
                 results.append(r)
                 msg = r.get("error") or (
                     f"first {r['first_step_s']:.2f}s step {r['step_s']:.4f}s"

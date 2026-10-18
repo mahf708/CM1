@@ -1,5 +1,6 @@
-"""The compiled time step (``Model(..., jit=True)``: jax.jit / torch.compile
-of the whole step) reproduces the eager step to round-off.
+"""The compiled time step (``Model(..., jit=True)``: jax.jit of the whole
+step; torch.compile of the hot routines, Backend.kernel) reproduces the
+eager step to round-off.
 
 Runs a few steps of both reference cases on a small grid (nx=ny=12, nz=16)
 eagerly and compiled on the same backend and compares every output field.
@@ -24,7 +25,8 @@ CASES = ("kessler_periodic", "supercell_kessler")
 SMALL = {"nx": 12, "ny": 12, "nz": 16}
 NSTEPS = 3
 RTOL = 1.0e-10
-# torch.compile of the whole step takes minutes; opt in with CM1X_TEST_TORCH_COMPILE=1
+# torch.compile of the hot routines takes ~3 min per case with a cold inductor
+# cache (~30 s warm); opt in with CM1X_TEST_TORCH_COMPILE=1
 TORCH_COMPILE = os.environ.get("CM1X_TEST_TORCH_COMPILE", "0") == "1"
 
 

@@ -54,8 +54,15 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin "$KOKKOS_REF_SHA"
           git worktree add ../kokkos-ref FETCH_HEAD
-          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic
-          rm -f ref/dumps/kessler_periodic/cm1out*.nc
+          # supercell_kessler (open radiative boundaries): 10 steps, dumped
+          # at steps 0, 5 and 10 to keep the artifact small
+          sc=../kokkos-ref/cxx/cases/supercell_kessler
+          mkdir -p "$sc"
+          sed -e 's/^ *timax *=.*/ timax  =  60.0,/' -e 's/^ *tapfrq *=.*/ tapfrq =  60.0,/' \
+            ports/reference/supercell_kessler/namelist.input > "$sc/namelist.input"
+          echo 5 > "$sc/every"
+          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler
+          rm -f ref/dumps/*/cm1out*.nc
       - uses: actions/upload-artifact@v4
         with:
           name: cm1-ref
@@ -108,6 +115,7 @@ jobs:
           CM1X_REF_DIR_R4: ${{ github.workspace }}/ref/kessler_periodic_r4
           CM1X_REF_DIR_LONG: ${{ github.workspace }}/ref/kessler_periodic_long_r8
           CM1X_DUMP_DIR: ${{ github.workspace }}/ref/dumps/kessler_periodic
+          CM1X_DUMP_DIR_SC: ${{ github.workspace }}/ref/dumps/supercell_kessler
           CM1X_REF_DIR_SC: ${{ github.workspace }}/ref/supercell_kessler_r8
           CM1X_REF_DIR_SC_LONG: ${{ github.workspace }}/ref/supercell_kessler_long_r8
         run: python -m pytest ports/array -v -rs --durations=15
@@ -126,12 +134,13 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install jax
           pip install -e ports/array
-      # torch.compile of the whole step takes > 25 min (see bench/results_cpu.md)
-      - name: Sweep (supercell_kessler, 20^3 and 40^3, eager and jax.jit)
+      # torch jit = torch.compile of the hot routines (cold inductor cache,
+      # ~3-4 min compile per grid on 4 CPUs; see bench/results_cpu.md)
+      - name: Sweep (supercell_kessler, 20^3 and 40^3, eager, jax.jit, torch.compile)
         run: |
           python ports/array/bench/sweep.py --backends numpy,jax,torch \
             --modes eager,jit --grids 20,40 --steps 3 --skip-eager-jax \
-            --skip torch:jit --timeout 1500 --out bench_out/results_ci
+            --timeout 1500 --out bench_out/results_ci
           cat bench_out/results_ci.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()

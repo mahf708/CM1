@@ -11,8 +11,9 @@ import math
 
 from . import constants as c
 
-# CM1 sets these in cm1.F (single-precision values; CM1 only switches them
-# with -DDP, which neither the r4 nor the r8 reference build uses).
+# CM1 sets these in cm1.F: the single-precision defaults below, or 1e-60 /
+# 1e-12 / 1e-24 with -DDP. Callers read the runtime values from the config
+# (namelist.DP_DEFAULTS with fortran_dp=True) and fall back to these.
 SMEPS = 1.0e-30
 TSMALL = 0.0001
 QSMALL = 1.0e-14
@@ -79,7 +80,7 @@ def dtsmall(
     return {"nsound": nsound, "dt": dt, "dbldt": dbldt}
 
 
-def getdiv(bk, g, *, uh, vh, mh, u, v, w, div=None):
+def getdiv(bk, g, *, uh, vh, mh, u, v, w, div=None, smeps=SMEPS):
     """misclibs.F getdiv (Cartesian, no terrain): 3-D divergence of (u,v,w)
     at interior scalar points.  Returns {'div': div}."""
     xp = bk.xp
@@ -96,7 +97,7 @@ def getdiv(bk, g, *, uh, vh, mh, u, v, w, div=None):
         * mh[K, n : n + 1, n : n + 1]
     )
     d = (du + dv) + dw
-    d = xp.where(xp.abs(d) < SMEPS, xp.zeros_like(d), d)
+    d = xp.where(xp.abs(d) < smeps, xp.zeros_like(d), d)
     div = bk.set(div, (K, J, I), d)
     return {"div": div}
 
@@ -147,13 +148,43 @@ def prsrho(bk, g, *, pi0, th0, pp3d, th3d, qv=None, prs=None, rho=None):
     return {"prs": prs, "rho": rho}
 
 
+def level_sums(bk, x):
+    """Per-level sums ``dumk(k) = sum_j sum_i x(i,j,k)`` of ``x[k, j, i]``
+    accumulated in CM1's loop order (i fastest, then j), as init3d.F getset
+    and solve2.F apmasscon do. ``xp.sum`` sums pairwise, which differs in the
+    last bits; the domain-mass correction built from these sums is added to
+    every pp3d point, and with open radiative boundaries (irbc=4) such
+    last-bit differences grow by orders of magnitude within a few steps."""
+    xp = bk.xp
+    x = xp.reshape(x, (x.shape[0], -1))
+    if bk.name == "jax":  # jnp.cumsum is not a sequential sum
+        import jax
+
+        acc, _ = jax.lax.scan(lambda a, v: (a + v, None), x[:, 0], x[:, 1:].T)
+        return acc
+    return xp.cumsum(x, axis=1)[:, -1]  # sequential on numpy / torch (CPU)
+
+
+def qp_sum(bk, v):
+    """sum_k v(k) of a 1-D float64 array accumulated in quad precision and
+    rounded once to double (CM1's ``real(kind=qp) :: temq`` sums), emulated
+    with an error-free (TwoSum) running compensation."""
+    s, e = v[0], v[0] * 0.0
+    for k in range(1, v.shape[0]):
+        x = v[k]
+        t = s + x
+        bp = t - s
+        e = e + ((s - (t - bp)) + (x - bp))
+        s = t
+    return s + e
+
+
 def drymass(bk, g, *, rho, ruh, rvh, rmh):
     """Total dry-air mass sum_k sum_ij rho*ruh*rvh*rmh (init3d.F getset /
     solve2.F apmasscon); returns a 0-d array (summed level by level like CM1)."""
-    xp = bk.xp
     K, J, I = g.K, g.J, g.I
     m = rho[K, J, I] * ruh[:, :, I] * rvh[:, J, :] * rmh[K, J, I]
-    return xp.sum(xp.sum(m, axis=(1, 2)))
+    return qp_sum(bk, level_sums(bk, m))
 
 
 def rhoextra(bk, g, *, rho, c1, c2, rr=None, rf=None):

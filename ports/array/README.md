@@ -52,9 +52,22 @@ pytest ports/array                    # every test runs on each installed backen
 
 `Model(nml, backend="jax", jit=True)` compiles the whole time step into one
 `jax.jit` function (state -> state); results equal the eager step to round-off
-(`tests/test_jit.py`). On 4 CPUs, supercell_kessler at 40^3 runs 0.12 s/step
-with jax.jit (~22 s compile) vs 0.58 s numpy and 0.36 s torch eager (4
-threads); 6.6x numpy at 80^3. `Model(..., overrides={"nfall_max": 4})` gives
+(`tests/test_jit.py`). On 4 CPUs, supercell_kessler at 40^3 runs 0.14 s/step
+with jax.jit (~25 s compile) vs 0.57 s numpy and 0.36 s torch eager (4
+threads); 5.5x numpy at 80^3. `Model(..., overrides={"nfall_max": 4})` gives
 the sedimentation loop a static trip count so reverse-mode `jax.grad` works
-through the jitted step. Sweep and notes (torch.compile, dask,
-array-api-strict): `bench/sweep.py`, `bench/results_cpu.md`.
+through the jitted step.
+
+`Model(nml, backend="torch", jit=True)` instead `torch.compile`s the hot
+routines one by one (`Backend.kernel`: advection, the acoustic small step,
+subgrid turbulence, Kessler; inductor with `dynamic=False`,
+`fullgraph=True`) and runs the rest of the step eagerly: 0.20 s/step at 40^3
+(1.8x torch eager) and 0.89 s at 80^3 (2.0x torch eager, 6.1x numpy, ahead
+of jax.jit). Compiling takes ~2.5-3.5 min with a cold inductor cache, ~30 s
+warm (inductor's on-disk cache); `jit_options` update the torch.compile
+settings (`cm1x.backend.TORCH_KERNEL_DEFAULTS`), and
+`jit_options={"whole_step": True}` compiles the whole step (impractically
+slow to compile). Torch autograd works through the compiled routines (same
+gradient as eager) but compiles a second set of graphs (~5 min cold).
+Sweep and notes (dask, array-api-strict): `bench/sweep.py`,
+`bench/results_cpu.md`.
