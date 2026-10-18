@@ -64,6 +64,10 @@ CMakeLists.txt.
   `x*x`, `x**0.5` is `std::pow(x,0.5)` unless the Fortran says `sqrt`; real
   literals are doubles; FMA contraction is off (`-ffp-contract=off`, also in
   the Fortran reference build). Do not "simplify" expressions.
+- **Same math library paths.** glibc chooses libm/libmvec code paths (FMA,
+  AVX2, ...) from the CPU at run time, and those can differ in the last bit.
+  When references and tests run on different machines, run both with
+  `GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX512F,-AVX2,-FMA,-FMA4` (CI does).
 - **Options:** read namelist options with `Namelist::geti/getr/getb`, using
   param.F's default. Unsupported option values must throw (`fail loudly`),
   never silently run something different.

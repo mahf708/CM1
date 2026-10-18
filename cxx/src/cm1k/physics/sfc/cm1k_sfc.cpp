@@ -137,7 +137,8 @@ void Options::check() const {
     if (pertflx != 0) fail("pertflx=1 requires sfcmodel=1 (param.F stops)");
     if (initsfc != 1) fail("initsfc=" + std::to_string(initsfc) + " is not ported (only 1)");
     if (season != 1 && season != 2) fail("season must be 1 or 2");
-    if (lu0 < 0 || lu0 > 33) fail("lu0 must be 0..33 (LANDUSE.TBL)");
+    if (lu0 < 1 || lu0 > 33) fail("lu_index must be between 1 and 33 with sfcmodel=6");   // init_surface.F stops
+    if (tmn0 < 100.0) fail("tmn is less than 100 K");   // init_surface.F stops
     if (tbc != 1) fail("tbc=" + std::to_string(tbc) + " is not ported with the surface layer (only 1)");
     if (testcase != 0) fail("testcase=" + std::to_string(testcase) + " is not ported (only 0)");
     if (imove != 0) fail("imove=1 (ground-relative winds with a moving domain) is not ported");

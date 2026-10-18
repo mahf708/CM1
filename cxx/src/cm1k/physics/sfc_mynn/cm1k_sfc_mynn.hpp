@@ -106,13 +106,15 @@ void prepare_inputs(const Options& o, const Grid& g, const FArray3& ugr, const F
 void sfclay(const Options& o, const Constants& c, const PsiTables& t, int ni, int nj, Real dx,
             int itimestep, int isfflx, const Inputs& in, const Fields& f);
 
-// turb.F after the call (update_sfc = .false.): qsfc = qv(k=1) + qfx/flqc
-// (qv(k=1) where flqc = 0), ch = chs2 then ck (f.ch is CM1's ch: SFCLAY_mynn
+// turb.F after the call: with diag_qsfc (update_sfc = .false., else SLAB
+// does it, see slab::Land) qsfc = qv(k=1) + qfx/flqc (qv(k=1) where
+// flqc = 0); then ch = chs2 then ck (f.ch is CM1's ch: SFCLAY_mynn
 // is passed the same array), cq = cqs2 then ck, s10 = |(u10,v10)|; with
 // dosfcflx (or output_sfcflx=1) thflux = hfx/(cpmm*rf(:,:,1)) and
 // qvflux = qfx/rf(:,:,1). cq, s10, thflux, qvflux: CM1's (ib:ie,jb:je,1:1).
 void finish(int ni, int nj, bool dosfcflx, const Inputs& in, const FArray3& rf, const Fields& f,
-            const FArray3& cq, const FArray3& s10, const FArray3& thflux, const FArray3& qvflux);
+            const FArray3& cq, const FArray3& s10, const FArray3& thflux, const FArray3& qvflux,
+            bool diag_qsfc = true);
 
 } // namespace cm1k::sfc_mynn
 
