@@ -294,6 +294,23 @@ def bcw(bk, g, w, flag, cfg=None):
     return w
 
 
+def bcwsfc(bk, g, *, gz, dzdx, dzdy, u, v, w):
+    """bc.F ``bcwsfc`` (terrain): kinematic lower boundary condition,
+    w(i,j,1) = 0.5*((u(i)+u(i+1))*dzdx + (v(j)+v(j+1))*dzdy)*gz for
+    i, j = 0..ni+1, 0..nj+1.  ``gz``, ``dzdx``, ``dzdy`` are 2-D ``[j, i]``."""
+    J0, I0 = _fs(0, g.nj + 1), _fs(0, g.ni + 1)
+    J1, I1 = _fs(1, g.nj + 2), _fs(1, g.ni + 2)
+    ws = (
+        0.5
+        * (
+            (u[1, J0, I0] + u[1, J0, I1]) * dzdx[J0, I0]
+            + (v[1, J0, I0] + v[1, J1, I0]) * dzdy[J0, I0]
+        )
+        * gz[J0, I0]
+    )
+    return bk.set(w, (1, J0, I0), ws)
+
+
 # ---------------------------------------------------------------------------
 # radiative open boundaries (irbc=4)
 
@@ -359,14 +376,99 @@ def radbcns4(bk, g, cfg=None, *, rvf, radbcs, radbcn, v1, v2, dt):
     return {"radbcs": radbcs, "radbcn": radbcn}
 
 
-def _no_terrain(cfg, who):
-    if _opt(cfg, "terrain_flag"):
-        raise NotImplementedError(f"{who}: terrain not ported")
+def _terrain_on(cfg):
+    return bool(_opt(cfg, "terrain_flag"))
 
 
-def ssopenbcw(bk, g, cfg=None, *, uh, radbcw, u3d, uten, dts):
-    """bc.F ``ssopenbcw`` (no terrain): small-step update of u(1, 1:nj, 1:nk)."""
-    _no_terrain(cfg, "ssopenbcw")
+def _at_w(bk, a, nk, tm):
+    """bc.F ssopenbc* (terrain): ``a`` (u or v, k axis first, Python index ==
+    Fortran k) at w levels k = 1..nk+1 (returned index 0 == k=1): cgs/cgt
+    extrapolation at k=1 and nk+1, r1*a(k-1)+r2*a(k) inside with
+    r2 = (sigmaf(k)-sigma(k-1))*rds(k)."""
+    xp = bk.xp
+    S = bk.asarray
+    cg = {k: S(float(tm[k])) for k in ("cgs1", "cgs2", "cgs3", "cgt1", "cgt2", "cgt3")}
+    lo = cg["cgs1"] * a[1] + cg["cgs2"] * a[2] + cg["cgs3"] * a[3]
+    hi = cg["cgt1"] * a[nk] + cg["cgt2"] * a[nk - 1] + cg["cgt3"] * a[nk - 2]
+    sh = (nk - 1,) + (1,) * (a.ndim - 1)
+    r2 = xp.reshape(
+        (tm["sigmaf"][2 : nk + 1] - tm["sigma"][1:nk]) * tm["rds"][2 : nk + 1], sh
+    )
+    r1 = S(1.0) - r2
+    mid = r1 * a[1:nk] + r2 * a[2 : nk + 1]
+    return xp.concat([lo[None], mid, hi[None]], axis=0)
+
+
+def _need_tm(who, tm, keys):
+    if tm is None or any(tm.get(k) is None for k in keys):
+        raise ValueError(
+            f"{who}: terrain_flag=.true. needs terrain={{{', '.join(keys)}}}"
+        )
+
+
+_TM_U = ("rds", "sigma", "rdsf", "sigmaf", "gz", "rgzu", "gx", "cgs1", "cgt1")
+_TM_V = ("rds", "sigma", "rdsf", "sigmaf", "gz", "rgzv", "gy", "cgs1", "cgt1")
+
+
+def _ssopen_x(bk, g, tm, u3d, uten, rad, dts, uh, east):
+    """Terrain branch of ssopenbcw (east=False) / ssopenbce (east=True)."""
+    nk = g.nk
+    K, J = _k(1, nk), _fs(1, g.nj)
+    b = (g.ni + 1 + 2) if east else (1 + 2)
+    i0, i1 = (b - 1, b) if east else (b, b + 1)  # the two u columns used
+    ic = b - 1 if east else b  # scalar column (gz, gx, uh): ni or 1
+    d = _at_w(bk, u3d[:, J, i0 : i1 + 1], nk, tm)  # [k=1..nk+1, j, 2]
+    dsum = d[..., 1] + d[..., 0]  # dum1(i0+1) + dum1(i0)
+    gxc = tm["gx"][1 : nk + 2, J, ic]
+    gz, rgzu = tm["gz"], tm["rgzu"]
+    hx = (
+        gz[J, ic][None]
+        * (u3d[K, J, i1] * rgzu[J, i1][None] - u3d[K, J, i0] * rgzu[J, i0][None])
+        * g.rdx
+        * uh[ic]
+    )
+    vz = (
+        0.5
+        * (gxc[1:] * dsum[1:] - gxc[:-1] * dsum[:-1])
+        * tm["rdsf"][1 : nk + 1][:, None]
+    )
+    new = u3d[K, J, b] + dts * (-rad[K, J] * (hx + vz) + uten[K, J, b])
+    return bk.set(u3d, (K, J, b), new)
+
+
+def _ssopen_y(bk, g, tm, v3d, vten, rad, dts, vh, north):
+    """Terrain branch of ssopenbcs (north=False) / ssopenbcn (north=True)."""
+    nk = g.nk
+    K, I = _k(1, nk), _fs(1, g.ni)
+    b = (g.nj + 1 + 2) if north else (1 + 2)
+    j0, j1 = (b - 1, b) if north else (b, b + 1)
+    jc = b - 1 if north else b
+    d = _at_w(bk, v3d[:, j0 : j1 + 1, I], nk, tm)  # [k=1..nk+1, 2, i]
+    dsum = d[:, 1] + d[:, 0]
+    gyc = tm["gy"][1 : nk + 2, jc, I]
+    gz, rgzv = tm["gz"], tm["rgzv"]
+    hy = (
+        gz[jc, I][None]
+        * (v3d[K, j1, I] * rgzv[j1, I][None] - v3d[K, j0, I] * rgzv[j0, I][None])
+        * g.rdy
+        * vh[jc]
+    )
+    vz = (
+        0.5
+        * (gyc[1:] * dsum[1:] - gyc[:-1] * dsum[:-1])
+        * tm["rdsf"][1 : nk + 1][:, None]
+    )
+    new = v3d[K, b, I] + dts * (-rad[K, I] * (hy + vz) + vten[K, b, I])
+    return bk.set(v3d, (K, b, I), new)
+
+
+def ssopenbcw(bk, g, cfg=None, *, uh, radbcw, u3d, uten, dts, terrain=None):
+    """bc.F ``ssopenbcw``: small-step update of u(1, 1:nj, 1:nk).  With
+    terrain_flag, ``terrain`` is a dict with rds, sigma, rdsf, sigmaf, gz,
+    rgzu, gx and the extrapolation coefficients cgs1..3, cgt1..3."""
+    if _terrain_on(cfg):
+        _need_tm("ssopenbcw", terrain, _TM_U)
+        return _ssopen_x(bk, g, terrain, u3d, uten, radbcw, dts, uh, east=False)
     K, J, b = _k(1, g.nk), _fs(1, g.nj), 1 + 2
     new = u3d[K, J, b] + dts * (
         -radbcw[K, J] * (u3d[K, J, b + 1] - u3d[K, J, b]) * g.rdx * uh[b]
@@ -375,9 +477,12 @@ def ssopenbcw(bk, g, cfg=None, *, uh, radbcw, u3d, uten, dts):
     return bk.set(u3d, (K, J, b), new)
 
 
-def ssopenbce(bk, g, cfg=None, *, uh, radbce, u3d, uten, dts):
-    """bc.F ``ssopenbce`` (no terrain): small-step update of u(ni+1, :, :)."""
-    _no_terrain(cfg, "ssopenbce")
+def ssopenbce(bk, g, cfg=None, *, uh, radbce, u3d, uten, dts, terrain=None):
+    """bc.F ``ssopenbce``: small-step update of u(ni+1, :, :) (``terrain`` as
+    in ssopenbcw)."""
+    if _terrain_on(cfg):
+        _need_tm("ssopenbce", terrain, _TM_U)
+        return _ssopen_x(bk, g, terrain, u3d, uten, radbce, dts, uh, east=True)
     K, J, b = _k(1, g.nk), _fs(1, g.nj), g.ni + 1 + 2
     new = u3d[K, J, b] + dts * (
         -radbce[K, J] * (u3d[K, J, b] - u3d[K, J, b - 1]) * g.rdx * uh[b - 1]
@@ -386,9 +491,13 @@ def ssopenbce(bk, g, cfg=None, *, uh, radbce, u3d, uten, dts):
     return bk.set(u3d, (K, J, b), new)
 
 
-def ssopenbcs(bk, g, cfg=None, *, vh, radbcs, v3d, vten, dts):
-    """bc.F ``ssopenbcs`` (no terrain): small-step update of v(1:ni, 1, 1:nk)."""
-    _no_terrain(cfg, "ssopenbcs")
+def ssopenbcs(bk, g, cfg=None, *, vh, radbcs, v3d, vten, dts, terrain=None):
+    """bc.F ``ssopenbcs``: small-step update of v(1:ni, 1, 1:nk).  With
+    terrain_flag, ``terrain`` holds rds, sigma, rdsf, sigmaf, gz, rgzv, gy and
+    cgs1..3, cgt1..3."""
+    if _terrain_on(cfg):
+        _need_tm("ssopenbcs", terrain, _TM_V)
+        return _ssopen_y(bk, g, terrain, v3d, vten, radbcs, dts, vh, north=False)
     K, I, b = _k(1, g.nk), _fs(1, g.ni), 1 + 2
     new = v3d[K, b, I] + dts * (
         -radbcs[K, I] * (v3d[K, b + 1, I] - v3d[K, b, I]) * g.rdy * vh[b]
@@ -397,9 +506,12 @@ def ssopenbcs(bk, g, cfg=None, *, vh, radbcs, v3d, vten, dts):
     return bk.set(v3d, (K, b, I), new)
 
 
-def ssopenbcn(bk, g, cfg=None, *, vh, radbcn, v3d, vten, dts):
-    """bc.F ``ssopenbcn`` (no terrain): small-step update of v(:, nj+1, :)."""
-    _no_terrain(cfg, "ssopenbcn")
+def ssopenbcn(bk, g, cfg=None, *, vh, radbcn, v3d, vten, dts, terrain=None):
+    """bc.F ``ssopenbcn``: small-step update of v(:, nj+1, :) (``terrain`` as
+    in ssopenbcs)."""
+    if _terrain_on(cfg):
+        _need_tm("ssopenbcn", terrain, _TM_V)
+        return _ssopen_y(bk, g, terrain, v3d, vten, radbcn, dts, vh, north=True)
     K, I, b = _k(1, g.nk), _fs(1, g.ni), g.nj + 1 + 2
     new = v3d[K, b, I] + dts * (
         -radbcn[K, I] * (v3d[K, b, I] - v3d[K, b - 1, I]) * g.rdy * vh[b - 1]

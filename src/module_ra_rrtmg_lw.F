@@ -1,6 +1,7 @@
 !MODULE module_ra_rrtmg_lw
 
       module parkind
+      use iso_fortran_env, only : real32   ! cm1k fork: kind_rf
 !     implicit none
       save
 
@@ -37,6 +38,10 @@
 !#endif
 !#if (RWORDSIZE == 4)
       integer, parameter :: kind_rb = selected_real_kind(6)  ! 4 byte real
+! cm1k fork: the k-distribution data read from RRTMG_LW_DATA/RRTMG_SW_DATA
+! are 4-byte reals; with USE_DOUBLE they are read into 4-byte arrays and
+! promoted to kind_rb wherever they are used (same values as before).
+      integer, parameter :: kind_rf = real32                 ! 4 byte real
 !#endif
 !#else
 !       integer, parameter :: kind_rb = kind(1.0)              ! native real
@@ -235,7 +240,7 @@
 
       module rrlw_kg01
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -263,11 +268,11 @@
 
       integer(kind=im), parameter :: no1  = 16
 
-      real(kind=rb) :: fracrefao(no1)  , fracrefbo(no1)
-      real(kind=rb) :: kao(5,13,no1)
-      real(kind=rb) :: kbo(5,13:59,no1)
-      real(kind=rb) :: kao_mn2(19,no1) , kbo_mn2(19,no1)
-      real(kind=rb) :: selfrefo(10,no1), forrefo(4,no1)
+      real(kind=rf) :: fracrefao(no1), fracrefbo(no1)
+      real(kind=rf) :: kao(5,13,no1)
+      real(kind=rf) :: kbo(5,13:59,no1)
+      real(kind=rf) :: kao_mn2(19,no1), kbo_mn2(19,no1)
+      real(kind=rf) :: selfrefo(10,no1), forrefo(4,no1)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 1
@@ -306,7 +311,7 @@
 
       module rrlw_kg02
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -332,10 +337,10 @@
 
       integer(kind=im), parameter :: no2  = 16
 
-      real(kind=rb) :: fracrefao(no2)   , fracrefbo(no2)
-      real(kind=rb) :: kao(5,13,no2)
-      real(kind=rb) :: kbo(5,13:59,no2)
-      real(kind=rb) :: selfrefo(10,no2) , forrefo(4,no2)
+      real(kind=rf) :: fracrefao(no2), fracrefbo(no2)
+      real(kind=rf) :: kao(5,13,no2)
+      real(kind=rf) :: kbo(5,13:59,no2)
+      real(kind=rf) :: selfrefo(10,no2), forrefo(4,no2)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 2
@@ -375,7 +380,7 @@
 
       module rrlw_kg03
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -403,12 +408,12 @@
 
       integer(kind=im), parameter :: no3  = 16
 
-      real(kind=rb) :: fracrefao(no3,9) ,fracrefbo(no3,5)
-      real(kind=rb) :: kao(9,5,13,no3)
-      real(kind=rb) :: kbo(5,5,13:59,no3)
-      real(kind=rb) :: kao_mn2o(9,19,no3), kbo_mn2o(5,19,no3)
-      real(kind=rb) :: selfrefo(10,no3)
-      real(kind=rb) :: forrefo(4,no3)
+      real(kind=rf) :: fracrefao(no3,9), fracrefbo(no3,5)
+      real(kind=rf) :: kao(9,5,13,no3)
+      real(kind=rf) :: kbo(5,5,13:59,no3)
+      real(kind=rf) :: kao_mn2o(9,19,no3), kbo_mn2o(5,19,no3)
+      real(kind=rf) :: selfrefo(10,no3)
+      real(kind=rf) :: forrefo(4,no3)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 3
@@ -449,7 +454,7 @@
 
       module rrlw_kg04
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -475,10 +480,10 @@
 
       integer(kind=im), parameter :: no4  = 16
 
-      real(kind=rb) :: fracrefao(no4,9)  ,fracrefbo(no4,5)
-      real(kind=rb) :: kao(9,5,13,no4)
-      real(kind=rb) :: kbo(5,5,13:59,no4)
-      real(kind=rb) :: selfrefo(10,no4)  ,forrefo(4,no4)
+      real(kind=rf) :: fracrefao(no4,9), fracrefbo(no4,5)
+      real(kind=rf) :: kao(9,5,13,no4)
+      real(kind=rf) :: kbo(5,5,13:59,no4)
+      real(kind=rf) :: selfrefo(10,no4), forrefo(4,no4)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 4
@@ -514,7 +519,7 @@
 
       module rrlw_kg05
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -542,13 +547,13 @@
 
       integer(kind=im), parameter :: no5  = 16
 
-      real(kind=rb) :: fracrefao(no5,9) ,fracrefbo(no5,5)
-      real(kind=rb) :: kao(9,5,13,no5)
-      real(kind=rb) :: kbo(5,5,13:59,no5)
-      real(kind=rb) :: kao_mo3(9,19,no5)
-      real(kind=rb) :: selfrefo(10,no5)
-      real(kind=rb) :: forrefo(4,no5)
-      real(kind=rb) :: ccl4o(no5)
+      real(kind=rf) :: fracrefao(no5,9), fracrefbo(no5,5)
+      real(kind=rf) :: kao(9,5,13,no5)
+      real(kind=rf) :: kbo(5,5,13:59,no5)
+      real(kind=rf) :: kao_mo3(9,19,no5)
+      real(kind=rf) :: selfrefo(10,no5)
+      real(kind=rf) :: forrefo(4,no5)
+      real(kind=rf) :: ccl4o(no5)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 5
@@ -590,7 +595,7 @@
 
       module rrlw_kg06
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -617,14 +622,14 @@
 
       integer(kind=im), parameter :: no6  = 16
 
-      real(kind=rb) , dimension(no6) :: fracrefao
-      real(kind=rb) :: kao(5,13,no6)
-      real(kind=rb) :: kao_mco2(19,no6)
-      real(kind=rb) :: selfrefo(10,no6)
-      real(kind=rb) :: forrefo(4,no6)
+      real(kind=rf) , dimension(no6) :: fracrefao
+      real(kind=rf) :: kao(5,13,no6)
+      real(kind=rf) :: kao_mco2(19,no6)
+      real(kind=rf) :: selfrefo(10,no6)
+      real(kind=rf) :: forrefo(4,no6)
 
-      real(kind=rb) , dimension(no6) :: cfc11adjo
-      real(kind=rb) , dimension(no6) :: cfc12o
+      real(kind=rf) , dimension(no6) :: cfc11adjo
+      real(kind=rf) , dimension(no6) :: cfc12o
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 6
@@ -665,7 +670,7 @@
 
       module rrlw_kg07
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -693,14 +698,14 @@
 
       integer(kind=im), parameter :: no7  = 16
 
-      real(kind=rb) , dimension(no7) :: fracrefbo
-      real(kind=rb) :: fracrefao(no7,9)
-      real(kind=rb) :: kao(9,5,13,no7)
-      real(kind=rb) :: kbo(5,13:59,no7)
-      real(kind=rb) :: kao_mco2(9,19,no7)
-      real(kind=rb) :: kbo_mco2(19,no7)
-      real(kind=rb) :: selfrefo(10,no7)
-      real(kind=rb) :: forrefo(4,no7)
+      real(kind=rf) , dimension(no7) :: fracrefbo
+      real(kind=rf) :: fracrefao(no7,9)
+      real(kind=rf) :: kao(9,5,13,no7)
+      real(kind=rf) :: kbo(5,13:59,no7)
+      real(kind=rf) :: kao_mco2(9,19,no7)
+      real(kind=rf) :: kbo_mco2(19,no7)
+      real(kind=rf) :: selfrefo(10,no7)
+      real(kind=rf) :: forrefo(4,no7)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 7
@@ -742,7 +747,7 @@
 
       module rrlw_kg08
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -775,20 +780,20 @@
 
       integer(kind=im), parameter :: no8  = 16
 
-      real(kind=rb) , dimension(no8) :: fracrefao
-      real(kind=rb) , dimension(no8) :: fracrefbo
-      real(kind=rb) , dimension(no8) :: cfc12o
-      real(kind=rb) , dimension(no8) :: cfc22adjo
+      real(kind=rf) , dimension(no8) :: fracrefao
+      real(kind=rf) , dimension(no8) :: fracrefbo
+      real(kind=rf) , dimension(no8) :: cfc12o
+      real(kind=rf) , dimension(no8) :: cfc22adjo
 
-      real(kind=rb) :: kao(5,13,no8)
-      real(kind=rb) :: kao_mco2(19,no8)
-      real(kind=rb) :: kao_mn2o(19,no8)
-      real(kind=rb) :: kao_mo3(19,no8)
-      real(kind=rb) :: kbo(5,13:59,no8)
-      real(kind=rb) :: kbo_mco2(19,no8)
-      real(kind=rb) :: kbo_mn2o(19,no8)
-      real(kind=rb) :: selfrefo(10,no8)
-      real(kind=rb) :: forrefo(4,no8)
+      real(kind=rf) :: kao(5,13,no8)
+      real(kind=rf) :: kao_mco2(19,no8)
+      real(kind=rf) :: kao_mn2o(19,no8)
+      real(kind=rf) :: kao_mo3(19,no8)
+      real(kind=rf) :: kbo(5,13:59,no8)
+      real(kind=rf) :: kbo_mco2(19,no8)
+      real(kind=rf) :: kbo_mn2o(19,no8)
+      real(kind=rf) :: selfrefo(10,no8)
+      real(kind=rf) :: forrefo(4,no8)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 8
@@ -842,7 +847,7 @@
 
       module rrlw_kg09
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -870,15 +875,15 @@
 
       integer(kind=im), parameter :: no9  = 16
 
-      real(kind=rb) , dimension(no9) :: fracrefbo
+      real(kind=rf) , dimension(no9) :: fracrefbo
 
-      real(kind=rb) :: fracrefao(no9,9)
-      real(kind=rb) :: kao(9,5,13,no9)
-      real(kind=rb) :: kbo(5,13:59,no9)
-      real(kind=rb) :: kao_mn2o(9,19,no9)
-      real(kind=rb) :: kbo_mn2o(19,no9)
-      real(kind=rb) :: selfrefo(10,no9)
-      real(kind=rb) :: forrefo(4,no9)
+      real(kind=rf) :: fracrefao(no9,9)
+      real(kind=rf) :: kao(9,5,13,no9)
+      real(kind=rf) :: kbo(5,13:59,no9)
+      real(kind=rf) :: kao_mn2o(9,19,no9)
+      real(kind=rf) :: kbo_mn2o(19,no9)
+      real(kind=rf) :: selfrefo(10,no9)
+      real(kind=rf) :: forrefo(4,no9)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 9
@@ -921,7 +926,7 @@
 
       module rrlw_kg10
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -947,13 +952,13 @@
 
       integer(kind=im), parameter :: no10 = 16
 
-      real(kind=rb) , dimension(no10) :: fracrefao
-      real(kind=rb) , dimension(no10) :: fracrefbo
+      real(kind=rf) , dimension(no10) :: fracrefao
+      real(kind=rf) , dimension(no10) :: fracrefbo
 
-      real(kind=rb) :: kao(5,13,no10)
-      real(kind=rb) :: kbo(5,13:59,no10)
-      real(kind=rb) :: selfrefo(10,no10)
-      real(kind=rb) :: forrefo(4,no10)
+      real(kind=rf) :: kao(5,13,no10)
+      real(kind=rf) :: kbo(5,13:59,no10)
+      real(kind=rf) :: selfrefo(10,no10)
+      real(kind=rf) :: forrefo(4,no10)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 10
@@ -993,7 +998,7 @@
 
       module rrlw_kg11
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -1021,15 +1026,15 @@
 
       integer(kind=im), parameter :: no11 = 16
 
-      real(kind=rb) , dimension(no11) :: fracrefao
-      real(kind=rb) , dimension(no11) :: fracrefbo
+      real(kind=rf) , dimension(no11) :: fracrefao
+      real(kind=rf) , dimension(no11) :: fracrefbo
 
-      real(kind=rb) :: kao(5,13,no11)
-      real(kind=rb) :: kbo(5,13:59,no11)
-      real(kind=rb) :: kao_mo2(19,no11)
-      real(kind=rb) :: kbo_mo2(19,no11)
-      real(kind=rb) :: selfrefo(10,no11)
-      real(kind=rb) :: forrefo(4,no11)
+      real(kind=rf) :: kao(5,13,no11)
+      real(kind=rf) :: kbo(5,13:59,no11)
+      real(kind=rf) :: kao_mo2(19,no11)
+      real(kind=rf) :: kbo_mo2(19,no11)
+      real(kind=rf) :: selfrefo(10,no11)
+      real(kind=rf) :: forrefo(4,no11)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 11
@@ -1073,7 +1078,7 @@
 
       module rrlw_kg12
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -1097,10 +1102,10 @@
 
       integer(kind=im), parameter :: no12 = 16
 
-      real(kind=rb) :: fracrefao(no12,9)
-      real(kind=rb) :: kao(9,5,13,no12)
-      real(kind=rb) :: selfrefo(10,no12)
-      real(kind=rb) :: forrefo(4,no12)
+      real(kind=rf) :: fracrefao(no12,9)
+      real(kind=rf) :: kao(9,5,13,no12)
+      real(kind=rf) :: selfrefo(10,no12)
+      real(kind=rf) :: forrefo(4,no12)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 12
@@ -1134,7 +1139,7 @@
 
       module rrlw_kg13
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -1161,15 +1166,15 @@
 
       integer(kind=im), parameter :: no13 = 16
 
-      real(kind=rb) , dimension(no13) :: fracrefbo
+      real(kind=rf) , dimension(no13) :: fracrefbo
 
-      real(kind=rb) :: fracrefao(no13,9)
-      real(kind=rb) :: kao(9,5,13,no13)
-      real(kind=rb) :: kao_mco2(9,19,no13)
-      real(kind=rb) :: kao_mco(9,19,no13)
-      real(kind=rb) :: kbo_mo3(19,no13)
-      real(kind=rb) :: selfrefo(10,no13)
-      real(kind=rb) :: forrefo(4,no13)
+      real(kind=rf) :: fracrefao(no13,9)
+      real(kind=rf) :: kao(9,5,13,no13)
+      real(kind=rf) :: kao_mco2(9,19,no13)
+      real(kind=rf) :: kao_mco(9,19,no13)
+      real(kind=rf) :: kbo_mo3(19,no13)
+      real(kind=rf) :: selfrefo(10,no13)
+      real(kind=rf) :: forrefo(4,no13)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 13
@@ -1211,7 +1216,7 @@
 
       module rrlw_kg14
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -1237,13 +1242,13 @@
 
       integer(kind=im), parameter :: no14 = 16
 
-      real(kind=rb) , dimension(no14) :: fracrefao
-      real(kind=rb) , dimension(no14) :: fracrefbo
+      real(kind=rf) , dimension(no14) :: fracrefao
+      real(kind=rf) , dimension(no14) :: fracrefbo
 
-      real(kind=rb) :: kao(5,13,no14)
-      real(kind=rb) :: kbo(5,13:59,no14)
-      real(kind=rb) :: selfrefo(10,no14)
-      real(kind=rb) :: forrefo(4,no14)
+      real(kind=rf) :: kao(5,13,no14)
+      real(kind=rf) :: kbo(5,13:59,no14)
+      real(kind=rf) :: selfrefo(10,no14)
+      real(kind=rf) :: forrefo(4,no14)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 14
@@ -1283,7 +1288,7 @@
 
       module rrlw_kg15
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -1308,11 +1313,11 @@
 
       integer(kind=im), parameter :: no15 = 16
 
-      real(kind=rb) :: fracrefao(no15,9)
-      real(kind=rb) :: kao(9,5,13,no15)
-      real(kind=rb) :: kao_mn2(9,19,no15)
-      real(kind=rb) :: selfrefo(10,no15)
-      real(kind=rb) :: forrefo(4,no15)
+      real(kind=rf) :: fracrefao(no15,9)
+      real(kind=rf) :: kao(9,5,13,no15)
+      real(kind=rf) :: kao_mn2(9,19,no15)
+      real(kind=rf) :: selfrefo(10,no15)
+      real(kind=rf) :: forrefo(4,no15)
 
 
 !-----------------------------------------------------------------
@@ -1349,7 +1354,7 @@
 
       module rrlw_kg16
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
 
 !     implicit none
       save
@@ -1374,13 +1379,13 @@
 
       integer(kind=im), parameter :: no16 = 16
 
-      real(kind=rb) , dimension(no16) :: fracrefbo
+      real(kind=rf) , dimension(no16) :: fracrefbo
 
-      real(kind=rb) :: fracrefao(no16,9)
-      real(kind=rb) :: kao(9,5,13,no16)
-      real(kind=rb) :: kbo(5,13:59,no16)
-      real(kind=rb) :: selfrefo(10,no16)
-      real(kind=rb) :: forrefo(4,no16)
+      real(kind=rf) :: fracrefao(no16,9)
+      real(kind=rf) :: kao(9,5,13,no16)
+      real(kind=rf) :: kbo(5,13:59,no16)
+      real(kind=rf) :: selfrefo(10,no16)
+      real(kind=rf) :: forrefo(4,no16)
 
 !-----------------------------------------------------------------
 ! rrtmg_lw COMBINED abs. coefficients for interval 16

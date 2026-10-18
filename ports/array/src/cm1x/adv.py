@@ -77,9 +77,31 @@ def _opt(cfg, name):
     return get(name, DEFAULTS[name]) if get else getattr(cfg, name, DEFAULTS[name])
 
 
+def _terrain(cfg):
+    return bool(_opt(cfg, "terrain_flag"))
+
+
+def _need(who, **kw):
+    miss = [k for k, v in kw.items() if v is None]
+    if miss:
+        raise ValueError(f"{who}: terrain_flag=.true. needs {', '.join(miss)}")
+
+
+def g2(a2, j, i, dj=0, di=0):
+    """2-D ``a2(i1+di:i2+di, j1+dj:j2+dj)`` (terrain metrics ``[j, i]``),
+    broadcastable on ``[k, j, i]``."""
+    return a2[
+        None, fi(j[0]) + dj : fi(j[1]) + dj + 1, fi(i[0]) + di : fi(i[1]) + di + 1
+    ]
+
+
+def kv(a1, k, dk=0):
+    """1-D vertical array (rds, rdsf; Python index == Fortran k) on range k,
+    shaped (nk', 1, 1)."""
+    return a1[fk(k[0]) + dk : fk(k[1]) + dk + 1][:, None, None]
+
+
 def _check_common(cfg, who):
-    if _opt(cfg, "terrain_flag"):
-        raise NotImplementedError(f"{who}: terrain_flag=.true. not ported")
     if _opt(cfg, "axisymm") != 0:
         raise NotImplementedError(f"{who}: axisymm=1 not ported")
     for a, b in (("wbc", "ebc"), ("sbc", "nbc")):
@@ -113,20 +135,27 @@ def _check_diff(cfg, who):
         raise NotImplementedError(f"{who}: 6th-order artificial diffusion not ported")
 
 
-def _vflux_to_tend(bk, g, dumz, K, J, I, mh):
+def _vflux_to_tend(bk, g, dumz, K, J, I, mh, rdsf=None):
     """advz(k) = -(dumz(k+1)-dumz(k))*rdz*mh(1,1,k), with the CM1 end cases
-    advz(1) = -dumz(2)*.., advz(nk) = +dumz(nk)*.. (no terrain)."""
+    advz(1) = -dumz(2)*.., advz(nk) = +dumz(nk)*..; with terrain (``rdsf``
+    given) the factor is rdsf(k) instead of rdz*mh(1,1,k)."""
     xp = bk.xp
     nk = g.nk
     rdz = g.rdz
+
+    def mul(x, k):
+        if rdsf is not None:
+            return x * kv(rdsf, k)
+        return x * rdz * col(mh, k)
+
     top = sub3(dumz, (2, nk), J, I)
     zero = bk.zeros(top[:1].shape)
     up = xp.concat([top, zero], axis=0)  # dumz(k+1), k=1..nk; 0 at k=nk
     dn = xp.concat([zero, top], axis=0)  # dumz(k), k=1..nk; 0 at k=1
     # k=1: -(dumz(2)-0) == -dumz(2); k=nk: -(0-dumz(nk)) == +dumz(nk)  (exact)
-    first = -up[:1] * rdz * col(mh, (1, 1))
-    last = (dn[-1:]) * rdz * col(mh, (nk, nk))
-    mid = -(up[1:-1] - dn[1:-1]) * rdz * col(mh, (2, nk - 1))
+    first = mul(-up[:1], (1, 1))
+    last = mul(dn[-1:], (nk, nk))
+    mid = mul(-(up[1:-1] - dn[1:-1]), (2, nk - 1))
     return xp.concat([first, mid, last], axis=0)
 
 
@@ -237,19 +266,21 @@ def _pd_mass_flag(bk, d, axis, smeps):
     return mass, flag
 
 
-def pdefx1(bk, g, *, uh, rho0, rru, advx, s0, s, dt, cfg=None):
-    """Port of ``pdefx1`` (no terrain, Cartesian; periodic or open). Returns
-    {'dum'} with the halo filled (``call bcs(dum)``)."""
+def pdefx1(bk, g, *, uh, rho0, rru, advx, s0, s, dt, cfg=None, gz=None, **unused):
+    """Port of ``pdefx1`` (Cartesian; periodic or open; with terrain the
+    3-D rho0 and ``gz`` enter). Returns {'dum'} with the halo filled
+    (``call bcs(dum)``)."""
     K, J, I = (1, g.nk), (1, g.nj), (1, g.ni)
     rdx = g.rdx
     a = sub3(advx, K, J, I)
-    v = col(rho0, K) * sub3(s0, K, J, I) + dt * (
-        a
-        + sub3(s, K, J, I)
-        * (sub3(rru, K, J, I, di=1) - sub3(rru, K, J, I))
-        * rdx
-        * xrow(uh, I)
-    )
+    inner = a + sub3(s, K, J, I) * (
+        sub3(rru, K, J, I, di=1) - sub3(rru, K, J, I)
+    ) * rdx * xrow(uh, I)
+    if _terrain(cfg):
+        _need("pdefx1", gz=gz)
+        v = sub3(rho0, K, J, I) * sub3(s0, K, J, I) + dt * inner * g2(gz, J, I)
+    else:
+        v = col(rho0, K) * sub3(s0, K, J, I) + dt * inner
     dum = put3(bk, bk.zeros(g.s_shape), K, J, I, v)
     ibw, ibe, _, _ = ibflags(cfg)
     if ibw:
@@ -277,9 +308,9 @@ def pdefx1(bk, g, *, uh, rho0, rru, advx, s0, s, dt, cfg=None):
     return {"dum": _bcs(bk, g, dum, cfg)}
 
 
-def pdefx2(bk, g, *, uh, rho0, rru, advx, dum, s0, s, dt, cfg=None):
-    """Port of ``pdefx2`` (no terrain, Cartesian). ``dum`` must have its
-    periodic halo filled. Returns {'advx'}."""
+def pdefx2(bk, g, *, uh, rho0, rru, advx, dum, s0, s, dt, cfg=None, rgz=None, **unused):
+    """Port of ``pdefx2`` (Cartesian; terrain: 3-D rho0 and ``rgz``). ``dum``
+    must have its halo filled. Returns {'advx'}."""
     xp = bk.xp
     smeps = _opt(cfg, "smeps")
     K, J, I = (1, g.nk), (1, g.nj), (1, g.ni)
@@ -287,25 +318,33 @@ def pdefx2(bk, g, *, uh, rho0, rru, advx, dum, s0, s, dt, cfg=None):
     mass, flag = _pd_mass_flag(bk, d, 2, smeps)
     rdt = 1.0 / dt
     rdx = g.rdx
-    new = ((sub3(dum, K, J, I) + mass) - col(rho0, K) * sub3(s0, K, J, I)) * rdt - sub3(
-        s, K, J, I
-    ) * (sub3(rru, K, J, I, di=1) - sub3(rru, K, J, I)) * rdx * xrow(uh, I)
+    div = sub3(s, K, J, I) * (sub3(rru, K, J, I, di=1) - sub3(rru, K, J, I))
+    div = div * rdx * xrow(uh, I)
+    if _terrain(cfg):
+        _need("pdefx2", rgz=rgz)
+        r0 = sub3(rho0, K, J, I)
+        new = ((sub3(dum, K, J, I) + mass) - r0 * sub3(s0, K, J, I)) * rdt
+        new = new * g2(rgz, J, I) - div
+    else:
+        r0 = col(rho0, K)
+        new = ((sub3(dum, K, J, I) + mass) - r0 * sub3(s0, K, J, I)) * rdt - div
     v = xp.where(flag, new, sub3(advx, K, J, I))
     return {"advx": put3(bk, bk.copy(advx), K, J, I, v)}
 
 
-def pdefy1(bk, g, *, vh, rho0, rrv, advy, s0, s, dt, cfg=None):
-    """Port of ``pdefy1`` (no terrain; periodic or open). Returns {'dum'}
-    (halo filled)."""
+def pdefy1(bk, g, *, vh, rho0, rrv, advy, s0, s, dt, cfg=None, gz=None, **unused):
+    """Port of ``pdefy1`` (periodic or open; terrain: 3-D rho0 and ``gz``).
+    Returns {'dum'} (halo filled)."""
     K, J, I = (1, g.nk), (1, g.nj), (1, g.ni)
     rdy = g.rdy
-    v = col(rho0, K) * sub3(s0, K, J, I) + dt * (
-        sub3(advy, K, J, I)
-        + sub3(s, K, J, I)
-        * (sub3(rrv, K, J, I, dj=1) - sub3(rrv, K, J, I))
-        * rdy
-        * yrow(vh, J)
-    )
+    inner = sub3(advy, K, J, I) + sub3(s, K, J, I) * (
+        sub3(rrv, K, J, I, dj=1) - sub3(rrv, K, J, I)
+    ) * rdy * yrow(vh, J)
+    if _terrain(cfg):
+        _need("pdefy1", gz=gz)
+        v = sub3(rho0, K, J, I) * sub3(s0, K, J, I) + dt * inner * g2(gz, J, I)
+    else:
+        v = col(rho0, K) * sub3(s0, K, J, I) + dt * inner
     dum = put3(bk, bk.zeros(g.s_shape), K, J, I, v)
     _, _, ibs, ibn = ibflags(cfg)
     if ibs:
@@ -333,8 +372,8 @@ def pdefy1(bk, g, *, vh, rho0, rrv, advy, s0, s, dt, cfg=None):
     return {"dum": _bcs(bk, g, dum, cfg)}
 
 
-def pdefy2(bk, g, *, vh, rho0, rrv, advy, dum, s0, s, dt, cfg=None):
-    """Port of ``pdefy2`` (no terrain). Returns {'advy'}."""
+def pdefy2(bk, g, *, vh, rho0, rrv, advy, dum, s0, s, dt, cfg=None, rgz=None, **unused):
+    """Port of ``pdefy2`` (terrain: 3-D rho0 and ``rgz``). Returns {'advy'}."""
     xp = bk.xp
     smeps = _opt(cfg, "smeps")
     K, J, I = (1, g.nk), (1, g.nj), (1, g.ni)
@@ -342,36 +381,66 @@ def pdefy2(bk, g, *, vh, rho0, rrv, advy, dum, s0, s, dt, cfg=None):
     mass, flag = _pd_mass_flag(bk, d, 1, smeps)
     rdt = 1.0 / dt
     rdy = g.rdy
-    new = ((sub3(dum, K, J, I) + mass) - col(rho0, K) * sub3(s0, K, J, I)) * rdt - sub3(
-        s, K, J, I
-    ) * (sub3(rrv, K, J, I, dj=1) - sub3(rrv, K, J, I)) * rdy * yrow(vh, J)
+    div = sub3(s, K, J, I) * (sub3(rrv, K, J, I, dj=1) - sub3(rrv, K, J, I))
+    div = div * rdy * yrow(vh, J)
+    if _terrain(cfg):
+        _need("pdefy2", rgz=rgz)
+        r0 = sub3(rho0, K, J, I)
+        new = ((sub3(dum, K, J, I) + mass) - r0 * sub3(s0, K, J, I)) * rdt
+        new = new * g2(rgz, J, I) - div
+    else:
+        r0 = col(rho0, K)
+        new = ((sub3(dum, K, J, I) + mass) - r0 * sub3(s0, K, J, I)) * rdt - div
     v = xp.where(flag, new, sub3(advy, K, J, I))
     return {"advy": put3(bk, bk.copy(advy), K, J, I, v)}
 
 
-def pdefz(bk, g, *, mh, rho0, rrw, advz, s0, s, dt, cfg=None):
-    """Port of ``pdefz`` (no terrain). Returns {'advz'}."""
+def pdefz(
+    bk,
+    g,
+    *,
+    mh,
+    rho0,
+    rrw,
+    advz,
+    s0,
+    s,
+    dt,
+    cfg=None,
+    gz=None,
+    rgz=None,
+    rdsf=None,
+    **unused,
+):
+    """Port of ``pdefz`` (terrain: 3-D rho0, ``gz``, ``rgz``, ``rdsf``).
+    Returns {'advz'}."""
     xp = bk.xp
     smeps = _opt(cfg, "smeps")
     nk = g.nk
     K, J, I = (1, nk), (1, g.nj), (1, g.ni)
     rdz = g.rdz
+    terr = _terrain(cfg)
+    if terr:
+        _need("pdefz", gz=gz, rgz=rgz, rdsf=rdsf)
     a = sub3(advz, K, J, I)
-    dk = col(rho0, K) * sub3(s0, K, J, I) + dt * (
-        a
-        + sub3(s, K, J, I)
-        * (sub3(rrw, K, J, I, dk=1) - sub3(rrw, K, J, I))
-        * rdz
-        * col(mh, K)
-    )
+    dw = sub3(s, K, J, I) * (sub3(rrw, K, J, I, dk=1) - sub3(rrw, K, J, I))
+    if terr:
+        r0 = sub3(rho0, K, J, I)
+        dw = dw * kv(rdsf, K)
+        dk = r0 * sub3(s0, K, J, I) + dt * (a + dw) * g2(gz, J, I)
+    else:
+        r0 = col(rho0, K)
+        dw = dw * rdz * col(mh, K)
+        dk = r0 * sub3(s0, K, J, I) + dt * (a + dw)
     zero = 0.0 * dk[:1]
     # dum(0)=dum(nk+1)=0; pad one more zero on each side for neighbour access
     d = xp.concat([zero, zero, dk, zero, zero], axis=0)
     mass, flag = _pd_mass_flag(bk, d, 0, smeps)
     rdt = 1.0 / dt
-    new = ((dk + mass) - col(rho0, K) * sub3(s0, K, J, I)) * rdt - sub3(s, K, J, I) * (
-        sub3(rrw, K, J, I, dk=1) - sub3(rrw, K, J, I)
-    ) * rdz * col(mh, K)
+    new = ((dk + mass) - r0 * sub3(s0, K, J, I)) * rdt
+    if terr:
+        new = new * g2(rgz, J, I)
+    new = new - dw
     v = xp.where(flag, new, a)
     return {"advz": put3(bk, bk.copy(advz), K, J, I, v)}
 
@@ -415,8 +484,13 @@ def advs(
     rvh=None,
     rmh=None,
     cfg=None,
+    gz=None,
+    rgz=None,
+    rdsf=None,
 ):
     """Port of ``advs``: adds the advective tendency of scalar ``s`` to ``sten``.
+    With ``terrain_flag`` the metrics ``gz``, ``rgz`` (2-D) and ``rdsf`` are
+    required (vertical flux divergence with rdsf, tendency times rr0*gz).
 
     ``s0`` is the scalar at the start of the RK step (used by the pdef
     correction, active when ``pdef=1``). WENO (weno_order=5) is used when
@@ -443,6 +517,10 @@ def advs(
     K, J, I = (1, g.nk), (1, nj), (1, ni)
     rdx, rdy = g.rdx, g.rdy
     ibw, ibe, ibs, ibn = ibflags(cfg)
+    terr = _terrain(cfg)
+    if terr:
+        _need("advs", gz=gz, rgz=rgz, rdsf=rdsf)
+    tk = dict(gz=gz, rgz=rgz, rdsf=rdsf)
 
     if doweno:
         fl = hadv_weno5(
@@ -551,10 +629,30 @@ def advs(
     dopd = _opt(cfg, "pdscheme") == 1 and pdef == 1
     if dopd:
         dumx = pdefx1(
-            bk, g, uh=uh, rho0=rho0, rru=rru, advx=advx, s0=s0, s=s, dt=dt, cfg=cfg
+            bk,
+            g,
+            uh=uh,
+            rho0=rho0,
+            rru=rru,
+            advx=advx,
+            s0=s0,
+            s=s,
+            dt=dt,
+            cfg=cfg,
+            **tk,
         )["dum"]
         dumy = pdefy1(
-            bk, g, vh=vh, rho0=rho0, rrv=rrv, advy=advy, s0=s0, s=s, dt=dt, cfg=cfg
+            bk,
+            g,
+            vh=vh,
+            rho0=rho0,
+            rrv=rrv,
+            advy=advy,
+            s0=s0,
+            s=s,
+            dt=dt,
+            cfg=cfg,
+            **tk,
         )["dum"]
 
     if doweno:
@@ -574,12 +672,27 @@ def advs(
     else:
         dumz = vadv_flx5(bk, g, stag=1, c1=c1, c2=c2, rrw=rrw, a=s, cfg=cfg)["dumz"]
     advz = put3(
-        bk, bk.zeros(g.s_shape), K, J, I, _vflux_to_tend(bk, g, dumz, K, J, I, mh)
+        bk,
+        bk.zeros(g.s_shape),
+        K,
+        J,
+        I,
+        _vflux_to_tend(bk, g, dumz, K, J, I, mh, rdsf if terr else None),
     )
 
     if dopd:
         advz = pdefz(
-            bk, g, mh=mh, rho0=rho0, rrw=rrw, advz=advz, s0=s0, s=s, dt=dt, cfg=cfg
+            bk,
+            g,
+            mh=mh,
+            rho0=rho0,
+            rrw=rrw,
+            advz=advz,
+            s0=s0,
+            s=s,
+            dt=dt,
+            cfg=cfg,
+            **tk,
         )["advz"]
         advx = pdefx2(
             bk,
@@ -593,6 +706,7 @@ def advs(
             s=s,
             dt=dt,
             cfg=cfg,
+            **tk,
         )["advx"]
         advy = pdefy2(
             bk,
@@ -606,13 +720,18 @@ def advs(
             s=s,
             dt=dt,
             cfg=cfg,
+            **tk,
         )["advy"]
 
     tend = (
         (sub3(advx, K, J, I) + sub3(advy, K, J, I))
         + sub3(advz, K, J, I)
         + sub3(s, K, J, I) * sub3(divx, K, J, I)
-    ) * col(rr0, K)
+    )
+    if terr:
+        tend = tend * sub3(rr0, K, J, I) * g2(gz, J, I)
+    else:
+        tend = tend * col(rr0, K)
     sten = put3(bk, bk.copy(sten), K, J, I, sub3(sten, K, J, I) + tend)
     if out_bsq is not None:
         return {"sten": sten, "bsq": out_bsq}
@@ -639,9 +758,13 @@ def advu(
     dt=None,
     doubud=False,
     cfg=None,
+    rho0=None,
+    gzu=None,
+    rdsf=None,
     **unused,
 ):
-    """Port of ``advu`` (Cartesian, no terrain, periodic). Returns {'uten'}.
+    """Port of ``advu`` (Cartesian; periodic or open). Returns {'uten'}.
+    With ``terrain_flag`` needs ``rho0``, ``gzu`` and ``rdsf``.
 
     Order options come from cfg (hadvordrv, vadvordrv, advwenov, weno_order).
     """
@@ -693,14 +816,22 @@ def advu(
     if ibn:
         advy = _cy(advy, nj, nj + 1, False)
 
+    terr = _terrain(cfg)
+    if terr:
+        _need("advu", rho0=rho0, gzu=gzu, rdsf=rdsf)
     dumz = vadv_flx5(bk, g, stag=2, c1=c1, c2=c2, rrw=rrw, a=u3d, cfg=cfg)["dumz"]
-    advz = _vflux_to_tend(bk, g, dumz, K, J, I, mh)
+    advz = _vflux_to_tend(bk, g, dumz, K, J, I, mh, rdsf if terr else None)
 
     tend = (
         (advx + advy)
         + advz
         + sub3(u3d, K, J, I) * 0.5 * (sub3(divx, K, J, I) + sub3(divx, K, J, I, di=-1))
-    ) * col(rr0, K)
+    )
+    if terr:
+        rb = 0.5 * (sub3(rho0, K, J, I, di=-1) + sub3(rho0, K, J, I))
+        tend = tend * g2(gzu, J, I) / rb
+    else:
+        tend = tend * col(rr0, K)
     uten = put3(bk, bk.copy(uten), K, J, I, sub3(uten, K, J, I) + tend)
     return {"uten": uten}
 
@@ -725,9 +856,13 @@ def advv(
     dt=None,
     dovbud=False,
     cfg=None,
+    rho0=None,
+    gzv=None,
+    rdsf=None,
     **unused,
 ):
-    """Port of ``advv`` (Cartesian, no terrain, periodic). Returns {'vten'}."""
+    """Port of ``advv`` (Cartesian; periodic or open). Returns {'vten'}.
+    With ``terrain_flag`` needs ``rho0``, ``gzv`` and ``rdsf``."""
     _check_common(cfg, "advv")
     _check_diff(cfg, "advv")
     nrkmax = _opt(cfg, "nrkmax")
@@ -775,14 +910,22 @@ def advv(
     if ibe:
         advx = _cx(advx, ni, ni + 1, False)
 
+    terr = _terrain(cfg)
+    if terr:
+        _need("advv", rho0=rho0, gzv=gzv, rdsf=rdsf)
     dumz = vadv_flx5(bk, g, stag=3, c1=c1, c2=c2, rrw=rrw, a=v3d, cfg=cfg)["dumz"]
-    advz = _vflux_to_tend(bk, g, dumz, K, J, I, mh)
+    advz = _vflux_to_tend(bk, g, dumz, K, J, I, mh, rdsf if terr else None)
 
     tend = (
         (advx + advy)
         + advz
         + sub3(v3d, K, J, I) * 0.5 * (sub3(divx, K, J, I) + sub3(divx, K, J, I, dj=-1))
-    ) * col(rr0, K)
+    )
+    if terr:
+        rb = 0.5 * (sub3(rho0, K, J, I, dj=-1) + sub3(rho0, K, J, I))
+        tend = tend * g2(gzv, J, I) / rb
+    else:
+        tend = tend * col(rr0, K)
     vten = put3(bk, bk.copy(vten), K, J, I, sub3(vten, K, J, I) + tend)
     return {"vten": vten}
 
@@ -811,10 +954,13 @@ def advw(
     dowbud=False,
     iamw=True,
     cfg=None,
+    gz=None,
+    rds=None,
     **unused,
 ):
-    """Port of ``advw`` (Cartesian, no terrain, periodic). Updates wten at
-    k=2..nk. Returns {'wten'}."""
+    """Port of ``advw`` (Cartesian; periodic or open). Updates wten at
+    k=2..nk. Returns {'wten'}.  With ``terrain_flag`` needs ``gz`` and
+    ``rds``."""
     _check_common(cfg, "advw")
     _check_diff(cfg, "advw")
     nrkmax = _opt(cfg, "nrkmax")
@@ -934,14 +1080,30 @@ def advw(
         )["dumz"]
     else:
         dumz = vadv_flx5(bk, g, stag=4, c1=c1, c2=c2, rrw=rrw, a=w3d, cfg=cfg)["dumz"]
-    advz = -(sub3(dumz, K, J, I) - sub3(dumz, K, J, I, dk=-1)) * rdz * col(mf, K)
-
-    tend = (
-        (advx + advy)
-        + advz
-        + sub3(w3d, K, J, I)
-        * (col(c2, K) * sub3(divx, K, J, I) + col(c1, K) * sub3(divx, K, J, I, dk=-1))
-    ) * col(rrf0, K)
+    if _terrain(cfg):
+        _need("advw", gz=gz, rds=rds)
+        advz = -(sub3(dumz, K, J, I) - sub3(dumz, K, J, I, dk=-1)) * kv(rds, K)
+        tend = (
+            (advx + advy)
+            + advz
+            + sub3(w3d, K, J, I)
+            * (
+                sub3(c2, K, J, I) * sub3(divx, K, J, I)
+                + sub3(c1, K, J, I) * sub3(divx, K, J, I, dk=-1)
+            )
+        )
+        tend = tend * sub3(rrf0, K, J, I) * g2(gz, J, I)
+    else:
+        advz = -(sub3(dumz, K, J, I) - sub3(dumz, K, J, I, dk=-1)) * rdz * col(mf, K)
+        tend = (
+            (advx + advy)
+            + advz
+            + sub3(w3d, K, J, I)
+            * (
+                col(c2, K) * sub3(divx, K, J, I)
+                + col(c1, K) * sub3(divx, K, J, I, dk=-1)
+            )
+        ) * col(rrf0, K)
     wten = put3(bk, bk.copy(wten), K, J, I, sub3(wten, K, J, I) + tend)
     return {"wten": wten}
 
@@ -951,15 +1113,131 @@ def advw(
 # ===========================================================================
 
 
-def getdivx(bk, g, *, uh, vh, mh, rho0, rf0, rru, rrv, rrw, divx, cfg=None, **unused):
-    """Port of ``getdivx`` (no terrain, Cartesian): converts the (averaged)
-    velocities in rru/rrv/rrw to mass fluxes in the interior and recomputes
-    divx in the interior. Returns {'rru', 'rrv', 'rrw', 'divx'}."""
+def sigdot(bk, w0, u, v, K, J, I, *, rds, sigma, sigmaf, gz, dzdx, dzdy, zt):
+    """Terrain-following vertical mass flux on w levels K (k >= 2), the
+    expression shared by solve2 (rrw), getdivx and getdiv:
+
+        w0 + ( (r2*(u(i)+u(i+1))(k) + r1*(u(i)+u(i+1))(k-1))*dzdx
+             + (r2*(v(j)+v(j+1))(k) + r1*(v(j)+v(j+1))(k-1))*dzdy
+             )*(sigmaf(k)-zt)*gz*rzt
+
+    with r2 = 0.5*(sigmaf(k)-sigma(k-1))*rds(k), r1 = 0.5*(1-...).  ``w0``
+    is the (already weighted) w term on (K, J, I)."""
+    S = bk.asarray
+    r2 = (kv(sigmaf, K) - kv(sigma, K, dk=-1)) * kv(rds, K)
+    r1 = S(1.0) - r2
+    r1 = 0.5 * r1
+    r2 = 0.5 * r2
+    zts = S(float(zt))
+    rzt = S(1.0 / float(zt))
+    ux = r2 * (sub3(u, K, J, I) + sub3(u, K, J, I, di=1)) + r1 * (
+        sub3(u, K, J, I, dk=-1) + sub3(u, K, J, I, dk=-1, di=1)
+    )
+    vy = r2 * (sub3(v, K, J, I) + sub3(v, K, J, I, dj=1)) + r1 * (
+        sub3(v, K, J, I, dk=-1) + sub3(v, K, J, I, dk=-1, dj=1)
+    )
+    return (
+        w0
+        + (ux * g2(dzdx, J, I) + vy * g2(dzdy, J, I))
+        * (kv(sigmaf, K) - zts)
+        * g2(gz, J, I)
+        * rzt
+    )
+
+
+def getdivx(
+    bk,
+    g,
+    *,
+    uh,
+    vh,
+    mh,
+    rho0,
+    rf0,
+    rru,
+    rrv,
+    rrw,
+    divx,
+    cfg=None,
+    rds=None,
+    rdsf=None,
+    sigma=None,
+    sigmaf=None,
+    gz=None,
+    rgzu=None,
+    rgzv=None,
+    dzdx=None,
+    dzdy=None,
+    zt=None,
+    **unused,
+):
+    """Port of ``getdivx`` (Cartesian): converts the (averaged) velocities in
+    rru/rrv/rrw to mass fluxes in the interior and recomputes divx in the
+    interior. With ``terrain_flag`` the metric arguments (rds, rdsf, sigma,
+    sigmaf, gz, rgzu, rgzv, dzdx, dzdy and the Python float zt) are needed.
+    Returns {'rru', 'rrv', 'rrw', 'divx'}."""
     _check_common(cfg, "getdivx")
     xp = bk.xp
     smeps = _opt(cfg, "smeps")
     nk = g.nk
     K, J, I = (1, nk), (1, g.nj), (1, g.ni)
+    if _terrain(cfg):
+        _need(
+            "getdivx",
+            rds=rds,
+            rdsf=rdsf,
+            sigma=sigma,
+            sigmaf=sigmaf,
+            gz=gz,
+            rgzu=rgzu,
+            rgzv=rgzv,
+            dzdx=dzdx,
+            dzdy=dzdy,
+            zt=zt,
+        )
+        Iu, Jv = (1, g.ni + 1), (1, g.nj + 1)
+        ru = 0.5 * (sub3(rho0, K, J, Iu, di=-1) + sub3(rho0, K, J, Iu))
+        ru = ru * sub3(rru, K, J, Iu) * g2(rgzu, J, Iu)
+        rru = put3(bk, bk.copy(rru), K, J, Iu, ru)
+        rv = 0.5 * (sub3(rho0, K, Jv, I, dj=-1) + sub3(rho0, K, Jv, I))
+        rv = rv * sub3(rrv, K, Jv, I) * g2(rgzv, Jv, I)
+        rrv = put3(bk, bk.copy(rrv), K, Jv, I, rv)
+        rrw = bk.copy(rrw)
+        z = bk.zeros(sub3(rrw, (1, 1), J, I).shape)
+        rrw = put3(bk, rrw, (1, 1), J, I, z)
+        rrw = put3(bk, rrw, (nk + 1, nk + 1), J, I, z)
+        if nk >= 2:
+            Kw = (2, nk)
+            rrw = put3(
+                bk,
+                rrw,
+                Kw,
+                J,
+                I,
+                sigdot(
+                    bk,
+                    sub3(rf0, Kw, J, I) * sub3(rrw, Kw, J, I),
+                    rru,
+                    rrv,
+                    Kw,
+                    J,
+                    I,
+                    rds=rds,
+                    sigma=sigma,
+                    sigmaf=sigmaf,
+                    gz=gz,
+                    dzdx=dzdx,
+                    dzdy=dzdy,
+                    zt=zt,
+                ),
+            )
+        d = (
+            (sub3(rru, K, J, I, di=1) - sub3(rru, K, J, I)) * g.rdx * xrow(uh, I)
+            + (sub3(rrv, K, J, I, dj=1) - sub3(rrv, K, J, I)) * g.rdy * yrow(vh, J)
+        ) + (sub3(rrw, K, J, I, dk=1) - sub3(rrw, K, J, I)) * kv(rdsf, K)
+        d = xp.where(xp.abs(d) < smeps, 0.0 * d, d)
+        divx = put3(bk, bk.copy(divx), K, J, I, d)
+        return {"rru": rru, "rrv": rrv, "rrw": rrw, "divx": divx}
     r0 = col(rho0, K)
     rru = put3(
         bk, bk.copy(rru), K, J, (1, g.ni + 1), sub3(rru, K, J, (1, g.ni + 1)) * r0
@@ -993,5 +1271,6 @@ __all__ = [
     "pdefy2",
     "pdefz",
     "getdivx",
+    "sigdot",
     "DEFAULTS",
 ]

@@ -1,7 +1,7 @@
 """Initial conditions (port of src/init3d.F: ``init3d`` and ``getset``).
 
 Scope: ``iinit = 0`` (no perturbation) or ``1`` (warm bubble), ``irandp = 0``,
-``ibalance = 0`` or ``1``, ``psolver <= 3``, no terrain, any lateral boundary
+``ibalance = 0`` or ``1``, ``psolver <= 3``, with or without terrain, any lateral boundary
 type of cm1x.bc (periodic / open / walls), Kessler moisture (qv, qc, qr) or
 dry, and the prognostic TKE of sgsmodel=1 (cm1setup=1; zero initial TKE).
 
@@ -38,8 +38,6 @@ def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, c
 
     if cfg.irandp == 1:
         raise NotImplementedError("irandp=1 (random perturbations) not ported")
-    if cfg.terrain_flag:
-        raise NotImplementedError("terrain not ported")
 
     ua = bk.copy(u0)
     va = bk.copy(v0)
@@ -139,6 +137,9 @@ def getset(
     rvh,
     cg: dict,
     g=None,
+    gz=None,
+    dzdx=None,
+    dzdy=None,
 ) -> dict:
     """Port of the non-restart path of ``getset`` (psolver <= 3, no terrain/LES).
 
@@ -149,7 +150,8 @@ def getset(
     3/4/5/9/11) with bcw and tkea(k=1)=tkea(k=2).  Returns ua, va, wa, ppi,
     tha, qa, u3d, v3d, w3d, pp3d, th3d, q3d, rho, prs, rr, rf, ppx, rth0,
     mass1 (+ tkea, tke3d when TKE is prognostic).  ``g`` is the cm1x Grid
-    (built from the array shapes when omitted).
+    (built from the array shapes when omitted).  With ``terrain_flag`` the
+    terrain metrics ``gz``, ``dzdx``, ``dzdy`` give w(k=1) via ``bcwsfc``.
     """
     xp = bk.xp
     S = bk.asarray
@@ -177,6 +179,9 @@ def getset(
         qa = xp.stack([_bc.bcs(bk, g, qa[n], cfg) for n in range(qa.shape[0])])
     # bcu(u0)/bcv(v0)/bcs(th0): base-state fields are horizontally homogeneous
     # and already filled on every halo point, so these leave them unchanged.
+    if cfg.get("terrain_flag", False):
+        wa = _bc.bcwsfc(bk, g, gz=gz, dzdx=dzdx, dzdy=dzdy, u=ua, v=va, w=wa)
+        wa = bk.set(wa, (1,), _bc.bc2d(bk, g, wa[1], cfg))
     tke = None
     if int(cfg.get("cm1setup", 0)) in (1, 4) and int(cfg.get("sgsmodel", 0)) == 1:
         # tkea = 0 (init3d.F); bcw(tkea,1); tkea(k=1)=tkea(k=2); bc2d(tkea(k=1))

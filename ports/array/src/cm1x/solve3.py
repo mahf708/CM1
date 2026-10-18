@@ -58,6 +58,9 @@ def solve3(
     qa=None,
     tke3d=None,
     tkea=None,
+    gz=None,
+    dzdx=None,
+    dzdy=None,
     **unused,
 ):
     """solve3.F ``solve3`` (active path).  ``q3d`` is a sequence of numq
@@ -65,7 +68,8 @@ def solve3(
     on solve3.F's equate ranges (omitted: full copies of the new level).
     Returns pp3d, th3d, q3d, ppx, rho, rr, rf, qpten, qtten, qvten, qcten,
     the equated arrays ua, va, wa, ppi, tha, qa and, when tke3d is given,
-    tkea."""
+    tkea.  With terrain_flag, ``gz``, ``dzdx``, ``dzdy`` set w3d(k=1)
+    (bcwsfc) before the equate; w3d is then also returned."""
     if int(_opt(cfg, "iprcl", 0)) != 0:
         raise NotImplementedError("solve3: iprcl not ported")
     nz = g.ngz
@@ -85,7 +89,7 @@ def solve3(
     rho = _bc.bcp(bk, g, bk.copy(rho), cfg)
 
     qpten, qtten, qvten, qcten = (bk.copy(a) for a in (qpten, qtten, qvten, qcten))
-    if ptype >= 1:
+    if int(_opt(cfg, "imoist", 1)) == 1 and ptype >= 1:
         rdt = 1.0 / dt
         qpten = bk.set(qpten, SI, (pp3d[SI] - qpten[SI]) * rdt)
         qtten = bk.set(qtten, SI, (th3d[SI] - qtten[SI]) * rdt)
@@ -98,6 +102,10 @@ def solve3(
     K = slice(nz, nz + nk)
     J2, I2 = slice(n - 1, n + g.nj + 2), slice(n - 1, n + g.ni + 2)
     J1, I1 = slice(n - 1, n + g.nj + 1), slice(n - 1, n + g.ni + 1)
+
+    if _opt(cfg, "terrain_flag", False):
+        w3d = _bc.bcwsfc(bk, g, gz=gz, dzdx=dzdx, dzdy=dzdy, u=u3d, v=v3d, w=w3d)
+        w3d = bk.set(w3d, (1,), _bc.bc2d(bk, g, w3d[1], cfg))
 
     def eq(old, new, J, I):
         if old is None:
@@ -134,5 +142,6 @@ def solve3(
         "ppi": ppi,
         "tha": tha,
         "qa": qa,
+        "w3d": w3d,
         **out_tke,
     }

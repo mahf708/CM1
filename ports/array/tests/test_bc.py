@@ -10,7 +10,14 @@ from fortran import requires_gfortran, run_driver
 
 NI, NJ, NK = 7, 6, 5
 DT, DTS = 2.0, 0.5
-CASES = [(1, 1, 1, 1), (2, 2, 2, 2), (3, 4, 3, 4), (2, 1, 4, 2), (1, 3, 2, 1)]
+CASES = [
+    (1, 1, 1, 1),
+    (2, 2, 2, 2),
+    (3, 4, 3, 4),
+    (2, 1, 4, 2),
+    (1, 3, 2, 1),
+    (2, 2, 1, 1),
+]
 
 
 @pytest.fixture(scope="module")

@@ -75,11 +75,17 @@ def build_driver(name: str, prec: str = "r8") -> Path:
     return exe
 
 
-def run_driver(name: str, inputs: dict, outputs: dict, prec: str = "r8") -> dict:
-    """inputs: name -> numpy array (Python [k,j,i] order); outputs: name -> shape."""
+def run_driver(
+    name: str, inputs: dict, outputs: dict, prec: str = "r8", files=()
+) -> dict:
+    """inputs: name -> numpy array (Python [k,j,i] order); outputs: name -> shape.
+    ``files``: paths copied into the driver's working directory (e.g. the
+    RRTMG data files the Fortran opens by name)."""
     exe = build_driver(name, prec)
     dt = DTYPES[prec]
     with tempfile.TemporaryDirectory() as wd:
+        for f in files:
+            shutil.copy(f, wd)
         for k, v in inputs.items():
             # C order of a [k, j, i] array == Fortran order of a(i, j, k)
             np.ascontiguousarray(v, dtype=dt).tofile(os.path.join(wd, k + ".bin"))

@@ -5,19 +5,23 @@ turb.F
   ``sfc_and_turb`` (the LES path only: ramp of the "constants" for
   ramp_sgs>=1, dissten=0, calcnm, calcdef, tkekm, tkebc, the tke3d boundary
   copy, gettau), ``calcnm``, ``calcdef``, ``tkekm``, ``tkebc``, ``gettau``
-  (with ``sfcstress`` for bbc=1);
+  (with ``sfcstress`` for bbc=1); for sgsmodel=0 with the semi-slip lower
+  boundary (bbc=3, sfcmodel=1, isfcflx=0): ``sfcstress`` (bbc=3),
+  ``sfc_and_turb_nosgs`` (the surface-layer part of sfc_and_turb) and
+  ``sfc_drag_tendencies`` (turbu/turbv at zero eddy viscosity);
 init3d.F
   ``turb_constants`` (cm0 = c_m and cme/ce1/ce2/csm, cm1setup=1);
 solve1.F (inline code, no subroutine of its own in CM1)
   ``tke_source`` (shear/buoyancy production - dissipation), ``dissheat``
-  (dissipative heating, idiss=1, with cvm), ``vimpl_coefs`` (dum7/dum8 for
-  implicit turbs), ``turb_tendencies`` (the ``doturb`` block: turbu, turbv,
-  turbw, vimpl arrays, turbs on theta-th0r and on every moisture species);
+  (dissipative heating, idiss=1, with cvm; bbc=3 surface-layer term),
+  ``vimpl_coefs`` (dum7/dum8 for implicit turbs), ``turb_tendencies`` (the
+  ``doturb`` block: turbu, turbv, turbw, vimpl arrays, turbs on theta-th0r
+  and on every moisture species);
 solve2.F / solve3.F
   ``tke_rk_update`` (tke3d = tkea + dt*tten, floor at 1e-10, bcw) and
   ``tke_copy`` (tkea = tke3d after the RK loop);
 bc.F (non-MPI branches, as the turbulence code calls them)
-  ``bcw`` and ``bc2d_level``.
+  ``bcw``, ``bc2d_level`` and ``bc2d``.
 
 Supported: cm1setup=1, sgsmodel=1, ipbl=0, horizturb=0, tconfig=1/2,
 bcturbs=1/2, doimpl=0/1, idiss=0/1, ramp_sgs>=0, bbc=1, tbc=1, lateral BCs
@@ -37,7 +41,17 @@ t11..t33`` are ``g.s_shape``; ``cm0`` is ``s_shape[1:]``; ``uh, ruh`` /
 from __future__ import annotations
 
 from . import constants as C
-from .turbtend import Reg, _bcflags, _opt, turbs, turbu, turbv, turbw
+from .turbtend import (
+    Reg,
+    _atw,
+    _bcflags,
+    _opt,
+    _terrain,
+    turbs,
+    turbu,
+    turbv,
+    turbw,
+)
 
 c_m = 0.10
 c_l = 0.8165
@@ -75,7 +89,7 @@ def _check(cfg, who):
         v = int(_opt(cfg, n, 1))
         if v not in (1, 2, 3, 4):
             bad.append(f"{n}={v}")
-    for n in ("terrain_flag", "do_ib", "dosfcflx"):
+    for n in ("do_ib", "dosfcflx"):
         if _opt(cfg, n, False):
             bad.append(f"{n}=T")
     if bad:
@@ -387,14 +401,17 @@ def calcdef(
     s33=None,
     defv=None,
     defh=None,
+    terrain=None,
     **unused,
 ):
-    """turb.F ``calcdef`` (Cartesian, no terrain): rho*S_ij into s11..s33
+    """turb.F ``calcdef`` (Cartesian): rho*S_ij into s11..s33
     (``g.s_shape``) and the deformation terms defv, defh (w levels,
-    k=2..nk).  Returns dict s11, s12, s13, s22, s23, s33, defv, defh."""
+    k=2..nk).  With terrain_flag, ``terrain`` holds the metrics (see
+    ``turbtend._terrain``).  Returns dict s11, s12, s13, s22, s23, s33,
+    defv, defh."""
     ni, nj, nk = g.ni, g.nj, g.nk
     b = _bcflags(cfg)
-    rdx, rdy, rdz = g.rdx, g.rdy, g.rdz
+    tm = _terrain(cfg, terrain, "calcdef")
     s11 = _copy_or_zeros(bk, s11, g.s_shape)
     s12 = _copy_or_zeros(bk, s12, g.s_shape)
     s13 = _copy_or_zeros(bk, s13, g.s_shape)
@@ -403,6 +420,124 @@ def calcdef(
     s33 = _copy_or_zeros(bk, s33, g.s_shape)
     defv = _copy_or_zeros(bk, defv, g.w_shape)
     defh = _copy_or_zeros(bk, defh, g.w_shape)
+
+    def cp(a, dst, src):
+        return bk.set(a, Reg(g, *dst).idx, Reg(g, *src)(a))
+
+    if tm is not None:
+        s11, s12, s13, s22, s23, s33 = _calcdef_terrain(
+            bk, g, tm, uh, uf, vh, vf, rho, rf, ua, va, wa, s11, s12, s13, s22, s23, s33
+        )
+    else:
+        s11, s12, s13, s22, s23, s33 = _calcdef_flat(
+            bk,
+            g,
+            b,
+            uh,
+            uf,
+            vh,
+            vf,
+            mh,
+            mf,
+            rho,
+            rf,
+            ua,
+            va,
+            wa,
+            s11,
+            s12,
+            s13,
+            s22,
+            s23,
+            s33,
+        )
+    K = (1, nk)
+    Kw = (2, nk)
+
+    if any(b[n] == 2 for n in ("wbc", "ebc", "sbc", "nbc")):
+        w2 = b["wbc"] == 2 and b["ibw"] == 1
+        e2 = b["ebc"] == 2 and b["ibe"] == 1
+        s2 = b["sbc"] == 2 and b["ibs"] == 1
+        n2 = b["nbc"] == 2 and b["ibn"] == 1
+        if w2:
+            s11 = cp(s11, (K, (0, nj + 1), (0, 0)), (K, (0, nj + 1), (1, 1)))
+        if e2:
+            s11 = cp(
+                s11, (K, (0, nj + 1), (ni + 1, ni + 1)), (K, (0, nj + 1), (ni, ni))
+            )
+        if s2:
+            s22 = cp(s22, (K, (0, 0), (0, ni + 1)), (K, (1, 1), (0, ni + 1)))
+        if n2:
+            s22 = cp(
+                s22, (K, (nj + 1, nj + 1), (0, ni + 1)), (K, (nj, nj), (0, ni + 1))
+            )
+        if w2:
+            s12 = cp(s12, (K, (1, nj + 1), (1, 1)), (K, (1, nj + 1), (2, 2)))
+        if e2:
+            s12 = cp(
+                s12, (K, (1, nj + 1), (ni + 1, ni + 1)), (K, (1, nj + 1), (ni, ni))
+            )
+        if s2:
+            s12 = cp(s12, (K, (1, 1), (1, ni + 1)), (K, (2, 2), (1, ni + 1)))
+        if n2:
+            s12 = cp(
+                s12, (K, (nj + 1, nj + 1), (1, ni + 1)), (K, (nj, nj), (1, ni + 1))
+            )
+        if s2 and w2:
+            s12 = cp(s12, (K, (1, 1), (1, 1)), (K, (2, 2), (2, 2)))
+        if s2 and e2:
+            s12 = cp(s12, (K, (1, 1), (ni + 1, ni + 1)), (K, (2, 2), (ni, ni)))
+        if n2 and w2:
+            s12 = cp(s12, (K, (nj + 1, nj + 1), (1, 1)), (K, (nj, nj), (2, 2)))
+        if n2 and e2:
+            s12 = cp(
+                s12, (K, (nj + 1, nj + 1), (ni + 1, ni + 1)), (K, (nj, nj), (ni, ni))
+            )
+
+    D = Reg(g, Kw, (1, nj), (1, ni))
+    cc1, cc2 = D(c1), D(c2)
+
+    def sq(x):
+        return x * x
+
+    tmp11 = cc1 * sq(D(s11, dk=-1)) + cc2 * sq(D(s11))
+    tmp22 = cc1 * sq(D(s22, dk=-1)) + cc2 * sq(D(s22))
+    tmp33 = cc1 * sq(D(s33, dk=-1)) + cc2 * sq(D(s33))
+    tmp12 = 0.25 * (
+        cc1
+        * (
+            (sq(D(s12, dk=-1)) + sq(D(s12, dk=-1, dj=1, di=1)))
+            + (sq(D(s12, dk=-1, dj=1)) + sq(D(s12, dk=-1, di=1)))
+        )
+        + cc2
+        * (
+            (sq(D(s12)) + sq(D(s12, dj=1, di=1)))
+            + (sq(D(s12, dj=1)) + sq(D(s12, di=1)))
+        )
+    )
+    tmp13 = 0.5 * (sq(D(s13)) + sq(D(s13, di=1)))
+    tmp23 = 0.5 * (sq(D(s23)) + sq(D(s23, dj=1)))
+    rrf = 1.0 / sq(D(rf))
+    defv = bk.set(defv, D.idx, 4.0 * (tmp13 + tmp23) * rrf)
+    defh = bk.set(defh, D.idx, (2.0 * ((tmp11 + tmp22) + tmp33) + 4.0 * tmp12) * rrf)
+    return {
+        "s11": s11,
+        "s12": s12,
+        "s13": s13,
+        "s22": s22,
+        "s23": s23,
+        "s33": s33,
+        "defv": defv,
+        "defh": defh,
+    }
+
+
+def _calcdef_flat(
+    bk, g, b, uh, uf, vh, vf, mh, mf, rho, rf, ua, va, wa, s11, s12, s13, s22, s23, s33
+):
+    """calcdef's Cartesian no-terrain rho*S_ij (with the wall BCs)."""
+    ni, nj, nk = g.ni, g.nj, g.nk
+    rdx, rdy, rdz = g.rdx, g.rdy, g.rdz
 
     def cp(a, dst, src):
         return bk.set(a, Reg(g, *dst).idx, Reg(g, *src)(a))
@@ -496,82 +631,152 @@ def calcdef(
         r = Reg(g, Kw, (nj + 1, nj + 1), (1, ni))
         s23 = bk.set(s23, r.idx, -2.0 * r(wa, dj=-1) * rdy * r.y(vf))
 
-    if any(b[n] == 2 for n in ("wbc", "ebc", "sbc", "nbc")):
-        w2 = b["wbc"] == 2 and b["ibw"] == 1
-        e2 = b["ebc"] == 2 and b["ibe"] == 1
-        s2 = b["sbc"] == 2 and b["ibs"] == 1
-        n2 = b["nbc"] == 2 and b["ibn"] == 1
-        if w2:
-            s11 = cp(s11, (K, (0, nj + 1), (0, 0)), (K, (0, nj + 1), (1, 1)))
-        if e2:
-            s11 = cp(
-                s11, (K, (0, nj + 1), (ni + 1, ni + 1)), (K, (0, nj + 1), (ni, ni))
-            )
-        if s2:
-            s22 = cp(s22, (K, (0, 0), (0, ni + 1)), (K, (1, 1), (0, ni + 1)))
-        if n2:
-            s22 = cp(
-                s22, (K, (nj + 1, nj + 1), (0, ni + 1)), (K, (nj, nj), (0, ni + 1))
-            )
-        if w2:
-            s12 = cp(s12, (K, (1, nj + 1), (1, 1)), (K, (1, nj + 1), (2, 2)))
-        if e2:
-            s12 = cp(
-                s12, (K, (1, nj + 1), (ni + 1, ni + 1)), (K, (1, nj + 1), (ni, ni))
-            )
-        if s2:
-            s12 = cp(s12, (K, (1, 1), (1, ni + 1)), (K, (2, 2), (1, ni + 1)))
-        if n2:
-            s12 = cp(
-                s12, (K, (nj + 1, nj + 1), (1, ni + 1)), (K, (nj, nj), (1, ni + 1))
-            )
-        if s2 and w2:
-            s12 = cp(s12, (K, (1, 1), (1, 1)), (K, (2, 2), (2, 2)))
-        if s2 and e2:
-            s12 = cp(s12, (K, (1, 1), (ni + 1, ni + 1)), (K, (2, 2), (ni, ni)))
-        if n2 and w2:
-            s12 = cp(s12, (K, (nj + 1, nj + 1), (1, 1)), (K, (nj, nj), (2, 2)))
-        if n2 and e2:
-            s12 = cp(
-                s12, (K, (nj + 1, nj + 1), (ni + 1, ni + 1)), (K, (nj, nj), (ni, ni))
-            )
+    return s11, s12, s13, s22, s23, s33
 
-    D = Reg(g, Kw, (1, nj), (1, ni))
-    cc1, cc2 = D(c1), D(c2)
 
-    def sq(x):
-        return x * x
-
-    tmp11 = cc1 * sq(D(s11, dk=-1)) + cc2 * sq(D(s11))
-    tmp22 = cc1 * sq(D(s22, dk=-1)) + cc2 * sq(D(s22))
-    tmp33 = cc1 * sq(D(s33, dk=-1)) + cc2 * sq(D(s33))
-    tmp12 = 0.25 * (
-        cc1
-        * (
-            (sq(D(s12, dk=-1)) + sq(D(s12, dk=-1, dj=1, di=1)))
-            + (sq(D(s12, dk=-1, dj=1)) + sq(D(s12, dk=-1, di=1)))
+def _calcdef_terrain(
+    bk, g, tm, uh, uf, vh, vf, rho, rf, ua, va, wa, s11, s12, s13, s22, s23, s33
+):
+    """calcdef's "Cartesian with terrain" rho*S_ij (no wall BCs there)."""
+    ni, nj, nk = g.ni, g.nj, g.nk
+    rdx, rdy = g.rdx, g.rdy
+    zt = float(tm["zt"])
+    gz, rgz, rgzu, rgzv = tm["gz"], tm["rgz"], tm["rgzu"], tm["rgzv"]
+    gx, gy = tm["gx"], tm["gy"]
+    rds, sig, rdsf, sigf = tm["rds"], tm["sigma"], tm["rdsf"], tm["sigmaf"]
+    # dum1 / dum2: u / v at w points
+    d1 = _atw(bk, g, tm, ua, (0, nj + 2), (0, ni + 2))
+    d2 = _atw(bk, g, tm, va, (0, nj + 2), (0, ni + 2))
+    R = Reg(g, (1, nk), (0, nj + 1), (0, ni + 1))
+    rz = R.z(rdsf)
+    s11 = bk.set(
+        s11,
+        R.idx,
+        (
+            R.m2(gz)
+            * (R(ua, di=1) * R.m2(rgzu, di=1) - R(ua) * R.m2(rgzu))
+            * rdx
+            * R.x(uh)
+            + (
+                R(gx, dk=1) * (R(d1, dk=1) + R(d1, dk=1, di=1))
+                - R(gx) * (R(d1) + R(d1, di=1))
+            )
+            * 0.5
+            * rz
         )
-        + cc2
-        * (
-            (sq(D(s12)) + sq(D(s12, dj=1, di=1)))
-            + (sq(D(s12, dj=1)) + sq(D(s12, di=1)))
-        )
+        * R(rho),
     )
-    tmp13 = 0.5 * (sq(D(s13)) + sq(D(s13, di=1)))
-    tmp23 = 0.5 * (sq(D(s23)) + sq(D(s23, dj=1)))
-    rrf = 1.0 / sq(D(rf))
-    defv = bk.set(defv, D.idx, 4.0 * (tmp13 + tmp23) * rrf)
-    defh = bk.set(defh, D.idx, (2.0 * ((tmp11 + tmp22) + tmp33) + 4.0 * tmp12) * rrf)
-    return {
-        "s11": s11,
-        "s12": s12,
-        "s13": s13,
-        "s22": s22,
-        "s23": s23,
-        "s33": s33,
-        "defv": defv,
-        "defh": defh,
-    }
+    s22 = bk.set(
+        s22,
+        R.idx,
+        (
+            R.m2(gz)
+            * (R(va, dj=1) * R.m2(rgzv, dj=1) - R(va) * R.m2(rgzv))
+            * rdy
+            * R.y(vh)
+            + (
+                R(gy, dk=1) * (R(d2, dk=1) + R(d2, dk=1, dj=1))
+                - R(gy) * (R(d2) + R(d2, dj=1))
+            )
+            * 0.5
+            * rz
+        )
+        * R(rho),
+    )
+    s33 = bk.set(s33, R.idx, (R(wa, dk=1) - R(wa)) * rz * R.m2(gz) * R(rho))
+    P = Reg(g, (1, nk), (1, nj + 1), (1, ni + 1))
+
+    def rg(dj, di):
+        return P(rho, dj=dj, di=di) * P.m2(gz, dj=dj, di=di)
+
+    r1 = 0.25 * ((rg(-1, -1) + rg(0, 0)) + (rg(0, -1) + rg(-1, 0)))
+    pz = P.z(rdsf)
+    ztf1, ztf0 = zt - P.z(sigf, dk=1), zt - P.z(sigf)
+    s12 = bk.set(
+        s12,
+        P.idx,
+        0.5
+        * (
+            (
+                r1
+                * (P(ua) * P.m2(rgzu) - P(ua, dj=-1) * P.m2(rgzu, dj=-1))
+                * rdy
+                * P.y(vf)
+                + 0.5
+                * (
+                    ztf1 * (P(d1, dj=-1, dk=1) + P(d1, dk=1))
+                    - ztf0 * (P(d1, dj=-1) + P(d1))
+                )
+                * pz
+                * r1
+                * (P.m2(rgzu) - P.m2(rgzu, dj=-1))
+                * rdy
+                * P.y(vf)
+            )
+            + (
+                r1
+                * (P(va) * P.m2(rgzv) - P(va, di=-1) * P.m2(rgzv, di=-1))
+                * rdx
+                * P.x(uf)
+                + 0.5
+                * (
+                    ztf1 * (P(d2, di=-1, dk=1) + P(d2, dk=1))
+                    - ztf0 * (P(d2, di=-1) + P(d2))
+                )
+                * pz
+                * r1
+                * (P.m2(rgzv) - P.m2(rgzv, di=-1))
+                * rdx
+                * P.x(uf)
+            )
+        ),
+    )
+    # dum1: w at scalar points
+    W = Reg(g, (1, nk), (0, nj + 1), (0, ni + 1))
+    ws = bk.set(bk.zeros(g.s_shape), W.idx, 0.5 * (W(wa) + W(wa, dk=1)))
+    X = Reg(g, (2, nk), (1, nj), (1, ni + 1))
+    s13 = bk.set(
+        s13,
+        X.idx,
+        0.5
+        * (
+            (X(ua) - X(ua, dk=-1)) * X.z(rds)
+            + (X(wa) * X.m2(rgz) - X(wa, di=-1) * X.m2(rgz, di=-1)) * rdx * X.x(uf)
+            + 0.5
+            * X.z(rds)
+            * (
+                (zt - X.z(sig)) * (X(ws) + X(ws, di=-1))
+                - (zt - X.z(sig, dk=-1)) * (X(ws, dk=-1) + X(ws, dk=-1, di=-1))
+            )
+            * (X.m2(rgz) - X.m2(rgz, di=-1))
+            * rdx
+            * X.x(uf)
+        )
+        * 0.5
+        * (X.m2(gz, di=-1) * X(rf, di=-1) + X.m2(gz) * X(rf)),
+    )
+    Y = Reg(g, (2, nk), (1, nj + 1), (1, ni))
+    s23 = bk.set(
+        s23,
+        Y.idx,
+        0.5
+        * (
+            (Y(va) - Y(va, dk=-1)) * Y.z(rds)
+            + (Y(wa) * Y.m2(rgz) - Y(wa, dj=-1) * Y.m2(rgz, dj=-1)) * rdy * Y.y(vf)
+            + 0.5
+            * Y.z(rds)
+            * (
+                (zt - Y.z(sig)) * (Y(ws) + Y(ws, dj=-1))
+                - (zt - Y.z(sig, dk=-1)) * (Y(ws, dk=-1) + Y(ws, dk=-1, dj=-1))
+            )
+            * (Y.m2(rgz) - Y.m2(rgz, dj=-1))
+            * rdy
+            * Y.y(vf)
+        )
+        * 0.5
+        * (Y.m2(gz, dj=-1) * Y(rf, dj=-1) + Y.m2(gz) * Y(rf)),
+    )
+    return s11, s12, s13, s22, s23, s33
 
 
 # ---------------------------------------------------------------------------
@@ -794,6 +999,133 @@ def gettau(bk, g, cfg=None, *, kmh, kmv, t11, t12, t13, t22, t23, t33, **unused)
 
 
 # ---------------------------------------------------------------------------
+# semi-slip lower boundary (bbc=3) without a subgrid model (sgsmodel=0)
+
+
+def sfcstress(bk, g, cfg=None, *, ust, u1, v1, s1, rf, t13, t23, **unused):
+    """turb.F ``sfcstress`` for bbc=3 (Cartesian, no use_avg_sfc, testcase
+    /= 7): the surface stress t13, t23 at k=1 on i=1..ni+1, j=1..nj+1 from
+    u* and the lowest-level wind direction (2-D ``ust, u1, v1, s1`` [j, i]
+    with halos).  Returns {"t13", "t23"}."""
+    if int(_opt(cfg, "bbc", 1)) != 3 or int(_opt(cfg, "testcase", 0)) == 7:
+        raise NotImplementedError("sfcstress: only bbc=3 (testcase /= 7) here")
+    xp = bk.xp
+    ni, nj, n = g.ni, g.nj, g.ngxy
+    J = slice(n, n + nj + 1)
+    I = slice(n, n + ni + 1)
+    Jm = slice(n - 1, n + nj)
+    Im = slice(n - 1, n + ni)
+    k1 = g.ngz  # Fortran k = 1
+
+    def f(a, J, I):
+        return (ust[J, I] ** 2) * (a[J, I] / xp.clip(s1[J, I], 0.01, None))
+
+    tx = 0.25 * (f(u1, J, Im) + f(u1, J, I)) * (rf[k1, J, Im] + rf[k1, J, I])
+    ty = 0.25 * (f(v1, Jm, I) + f(v1, J, I)) * (rf[k1, Jm, I] + rf[k1, J, I])
+    return {
+        "t13": bk.set(bk.copy(t13), (k1, J, I), tx),
+        "t23": bk.set(bk.copy(t23), (k1, J, I), ty),
+    }
+
+
+def bc2d(bk, g, cfg, a):
+    """bc.F ``bc2d`` on a 2-D [j, i] array."""
+    return bc2d_level(bk, g, cfg, a[None], 1 - g.ngz)[0]
+
+
+def sfc_and_turb_nosgs(
+    bk, g, cfg=None, *, ua, va, u0=None, v0=None, rf, zh, xland, znt, **unused
+):
+    """turb.F ``sfc_and_turb`` for cm1setup=1 with sgsmodel=0 (implicit
+    LES), bbc=3 (forced by sfcmodel>=1), sfcmodel=1, isfcflx=0, ipbl=0: the
+    lowest-level ground-relative winds u1, v1, s1 at scalar points,
+    ``sfcphys.getcecd`` (u*, z0), the bc2d of ust, u1, v1, s1, znt and, from
+    gettau, zero stresses except the surface stress of ``sfcstress``.
+
+    ``znt`` (2-D, roughness length of the previous call) and ``xland`` are
+    [j, i] with halos, ``zh`` the 3-D height of the scalar levels.  Returns
+    ust, znt, u1, v1, s1 (2-D with halos) and t13, t23 (``g.s_shape``,
+    zero except at k=1)."""
+    from .sfcphys import getcecd
+
+    if int(_opt(cfg, "sfcmodel", 0)) != 1 or int(_opt(cfg, "isfcflx", 0)) != 0:
+        raise NotImplementedError("sfc_and_turb_nosgs: sfcmodel=1, isfcflx=0 only")
+    if int(_opt(cfg, "ipbl", 0)) != 0 or int(_opt(cfg, "tbc", 1)) == 3:
+        raise NotImplementedError("sfc_and_turb_nosgs: ipbl=0, tbc/=3 only")
+    if int(_opt(cfg, "imove", 0)) == 1:
+        um, vm = float(_opt(cfg, "umove", 0.0)), float(_opt(cfg, "vmove", 0.0))
+        ugr, vgr = ua + um, va + vm
+    elif int(_opt(cfg, "pertflx", 0)) == 1:
+        ugr, vgr = ua - u0, va - v0
+    else:
+        ugr, vgr = ua, va
+    ni, nj, n = g.ni, g.nj, g.ngxy
+    k1 = g.ngz
+    J, I = slice(n, n + nj), slice(n, n + ni)
+    Jp, Ip = slice(n + 1, n + nj + 1), slice(n + 1, n + ni + 1)
+    u1i = 0.5 * (ugr[k1, J, I] + ugr[k1, J, Ip])
+    v1i = 0.5 * (vgr[k1, J, I] + vgr[k1, Jp, I])
+    s1i = bk.xp.sqrt(u1i**2 + v1i**2)
+    r = getcecd(
+        bk,
+        cfg,
+        u1=u1i,
+        v1=v1i,
+        s1=s1i,
+        za=zh[k1, J, I],
+        xland=xland[J, I],
+        znt=znt[J, I],
+    )
+    z2 = bk.zeros(g.s_shape[1:])
+    out = {}
+    for name, val in (
+        ("ust", r["ust"]),
+        ("u1", u1i),
+        ("v1", v1i),
+        ("s1", s1i),
+        ("znt", r["znt"]),
+    ):
+        base = znt if name == "znt" else z2
+        out[name] = bc2d(bk, g, cfg, bk.set(bk.copy(base), (J, I), val))
+    z3 = bk.zeros(g.s_shape)
+    out.update(
+        sfcstress(
+            bk,
+            g,
+            cfg,
+            ust=out["ust"],
+            u1=out["u1"],
+            v1=out["v1"],
+            s1=out["s1"],
+            rf=rf,
+            t13=z3,
+            t23=z3,
+        )
+    )
+    return out
+
+
+def sfc_drag_tendencies(
+    bk, g, cfg=None, *, dt, uf, vh, uh, vf, mh, mf, rho, rf, ua, va, wa, uten1,
+    vten1, t13, t23, **unused,
+):  # fmt: skip
+    """solve1.F ``doturb`` block for sgsmodel=0 with bbc=3: turbu / turbv
+    with zero eddy viscosity, so only the surface stress t13, t23 (k=1)
+    acts.  (turbw and turbs add exact zeros: no stress above the surface,
+    no surface fluxes.)  Returns uten1, vten1."""
+    zs, zw = bk.zeros(g.s_shape), bk.zeros(g.w_shape)
+    uten1 = turbu(
+        bk, g, cfg, dt=dt, uf=uf, vh=vh, mh=mh, mf=mf, rho=rho, rf=rf, u=ua,
+        uten=uten1, w=wa, t11=zs, t12=zs, t13=t13, kmv=zw,
+    )["uten"]  # fmt: skip
+    vten1 = turbv(
+        bk, g, cfg, dt=dt, uh=uh, vf=vf, mh=mh, mf=mf, rho=rho, rf=rf, v=va,
+        vten=vten1, w=wa, t12=zs, t22=zs, t23=t23, kmv=zw,
+    )["vten"]  # fmt: skip
+    return {"uten1": uten1, "vten1": vten1}
+
+
+# ---------------------------------------------------------------------------
 # sfc_and_turb (LES path)
 
 
@@ -847,6 +1179,7 @@ def sfc_and_turb(
     t22=None,
     t23=None,
     t33=None,
+    terrain=None,
     **unused,
 ):
     """turb.F ``sfc_and_turb`` for cm1setup=1, sgsmodel=1 (no surface layer,
@@ -918,6 +1251,7 @@ def sfc_and_turb(
         s33=t33,
         defv=defv,
         defh=defh,
+        terrain=terrain,
     )
     k = tkekm(
         bk,
@@ -1002,10 +1336,17 @@ def tke_source(
     return {"tketen": bk.set(tketen, R.idx, v)}
 
 
-def dissheat(bk, g, cfg=None, *, pi0, ppi, qa=None, dissten, thten1, **unused):
+def dissheat(
+    bk, g, cfg=None, *, pi0, ppi, qa=None, dissten, thten1, ust=None, znt=None,
+    zf=None, **unused,
+):  # fmt: skip
     """solve1.F: dissipative heating (idiss=1), ``thten1(1:ni,1:nj,1:nk) +=
-    epsilon/(cp_v pi)`` with cvm from qa for eqtset=2, imoist=1 (bbc=1, so
-    k1=1).  Returns {"thten1", "cvm"} (cvm = solve1's dum1 on the interior)."""
+    epsilon/(cp_v pi)`` with cvm from qa for eqtset=2, imoist=1.  With bbc=3
+    the subgrid term starts at k=2 and k=1 gets the surface-layer
+    dissipation u*^3 ln((dz1+z0)/z0)/(karman dz1) (2-D ``ust``, ``znt``
+    [j, i] with halos, ``zf`` the 3-D w-level heights); ``dissten=None``
+    means no subgrid dissipation (sgsmodel=0).  Returns {"thten1", "cvm"}
+    (cvm = solve1's dum1 on the interior)."""
     xp = bk.xp
     idiss = int(_opt(cfg, "idiss", 1))
     eqtset = int(_opt(cfg, "eqtset", 2))
@@ -1031,14 +1372,32 @@ def dissheat(bk, g, cfg=None, *, pi0, ppi, qa=None, dissten, thten1, **unused):
     out = {"cvm": cvm, "thten1": thten1}
     if idiss != 1:
         return out
-    if int(_opt(cfg, "bbc", 1)) == 3:
-        raise NotImplementedError("dissheat: bbc=3 not ported")
-    epsd = 0.5 * (R(dissten) + R(dissten, dk=1))
-    if m["imoist"] == 1 and eqtset == 2:
-        dheat = epsd / (C.cpdcv * cvm * (R(pi0) + R(ppi)))
-    else:
-        dheat = epsd / (C.cp * (R(pi0) + R(ppi)))
-    out["thten1"] = bk.set(bk.copy(thten1), R.idx, R(thten1) + dheat)
+    moist2 = m["imoist"] == 1 and eqtset == 2
+    bbc3 = int(_opt(cfg, "bbc", 1)) == 3
+    thten1 = bk.copy(thten1)
+    if dissten is not None:
+        k1 = 2 if bbc3 else 1
+        Rk = Reg(g, (k1, g.nk), (1, g.nj), (1, g.ni))
+        epsd = 0.5 * (Rk(dissten) + Rk(dissten, dk=1))
+        if moist2:
+            dheat = epsd / (C.cpdcv * cvm[k1 - 1 :] * (Rk(pi0) + Rk(ppi)))
+        else:
+            dheat = epsd / (C.cp * (Rk(pi0) + Rk(ppi)))
+        thten1 = bk.set(thten1, Rk.idx, Rk(thten1) + dheat)
+    if bbc3:
+        xp = bk.xp
+        R1 = Reg(g, (1, 1), (1, g.nj), (1, g.ni))
+        n = g.ngxy
+        J, I = slice(n, n + g.nj), slice(n, n + g.ni)
+        dz1 = R1(zf, dk=1) - R1(zf)
+        z0 = znt[J, I][None]
+        epsd = (ust[J, I][None] ** 3) * xp.log((dz1 + z0) / z0) / (C.karman * dz1)
+        if moist2:
+            dheat = epsd / (C.cpdcv * cvm[:1] * (R1(pi0) + R1(ppi)))
+        else:
+            dheat = epsd / (C.cp * (R1(pi0) + R1(ppi)))
+        thten1 = bk.set(thten1, R1.idx, R1(thten1) + dheat)
+    out["thten1"] = thten1
     return out
 
 
@@ -1091,6 +1450,7 @@ def turb_tendencies(
     t22,
     t23,
     t33,
+    terrain=None,
     **unused,
 ):
     """solve1.F ``doturb`` block (sgsmodel=1): turbu(ua)->uten1,
@@ -1125,6 +1485,7 @@ def turb_tendencies(
         t12=t12,
         t13=t13,
         kmv=kmv,
+        terrain=terrain,
     )["uten"]
     vten1 = turbv_(
         bk,
@@ -1144,6 +1505,7 @@ def turb_tendencies(
         t22=t22,
         t23=t23,
         kmv=kmv,
+        terrain=terrain,
     )["vten"]
     wten1 = turbw_(
         bk,
@@ -1162,6 +1524,7 @@ def turb_tendencies(
         t23=t23,
         t33=t33,
         kmh=kmh,
+        terrain=terrain,
     )["wten"]
     dum7 = dum8 = None
     if int(_opt(cfg, "doimpl", 1)) == 1:
@@ -1169,8 +1532,12 @@ def turb_tendencies(
         dum7, dum8 = v["dum7"], v["dum8"]
     zs = g.ngz
     n = g.ngxy
-    tem = th0[zs : zs + nk, n : n + 1, n : n + 1] - th0r  # th0(1,1,k) - th0r
-    sadv = bk.set(bk.zeros(g.s_shape), slice(zs, zs + nk), tem + tha[zs : zs + nk])
+    if _opt(cfg, "terrain_flag", False):
+        R = Reg(g, (1, nk), (0, g.nj + 1), (0, g.ni + 1))
+        sadv = bk.set(bk.zeros(g.s_shape), R.idx, (R(th0) - th0r) + R(tha))
+    else:
+        tem = th0[zs : zs + nk, n : n + 1, n : n + 1] - th0r  # th0(1,1,k) - th0r
+        sadv = bk.set(bk.zeros(g.s_shape), slice(zs, zs + nk), tem + tha[zs : zs + nk])
     common = {
         "dt": dt,
         "uh": uh,
@@ -1186,6 +1553,7 @@ def turb_tendencies(
         "khv": khv,
         "dum7": dum7,
         "dum8": dum8,
+        "terrain": terrain,
     }
     thten1 = turbs_(bk, g, cfg, iflux=1, s=sadv, sten=thten1, **common)["sten"]
     qout = None

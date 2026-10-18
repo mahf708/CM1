@@ -1,21 +1,28 @@
 """Pre-RK tendencies, ported from src/solve1.F.
 
 Only the code paths active for the reference cases (irdamp=0/1, hrdamp=0,
-sgsmodel=0 or 1 (cm1setup=1), idiff=0, lspgrad=0, testcase=0, no
-radiation/PBL/cumulus/nudging/recycling, psolver=3, eqtset=2, imoist=1,
-ptype>=1) are ported, in solve1.F's order:
+sgsmodel=0 or 1 (cm1setup=1), idiff=0, lspgrad=0/1, testcase=0, no
+radiation/PBL/cumulus/nudging/recycling, psolver=3, eqtset=2, imoist=0/1,
+ptype>=1 when moist; terrain_flag with or without TKE as far as cm1x.turb
+supports it) are ported, in solve1.F's order:
 
   * sgsmodel=1: the TKE tendency tketen (shear/buoyancy production -
     dissipation, cm1x.turb.tke_source) plus its subgrid diffusion (turbt);
   * Rayleigh damping (irdamp=1) into uten1, vten1, wten1, thten1;
   * qten = 0;
+  * lspgrad=1: large-scale pressure gradient in geostrophic balance with
+    the base-state wind (icor=1, fcor);
   * sgsmodel=1: dissipative heating (idiss=1, cm1x.turb.dissheat) and the
     ``doturb`` block (turbu/turbv/turbw/turbs, cm1x.turb.turb_tendencies);
-  * the mass-conserving pressure tendency ppten (eqtset=2, moist) plus the
-    diabatic tendencies of the previous step (qpten, qtten, qvten, qcten).
+  * the mass-conserving pressure tendency ppten (eqtset=2, moist or dry)
+    plus, when moist, the diabatic tendencies of the previous step (qpten,
+    qtten, qvten, qcten).
 
 With sgsmodel=0 the turbulence terms are identically zero (zero eddy
-viscosities, stresses and dissipation) and are skipped.
+viscosities, stresses and dissipation) and are skipped, except with the
+semi-slip lower boundary (bbc=3, which sfcmodel>=1 forces): then the surface
+stress acts on u, v at k=1 and idiss=1 adds the surface-layer dissipation.
+Radiation (radopt=2) adds thraten to thten1 after the dissipative heating.
 """
 
 from __future__ import annotations
@@ -38,17 +45,17 @@ def _check(cfg):
     for name, ok in (
         ("irdamp", (0, 1)),
         ("hrdamp", (0,)),
-        ("lspgrad", (0,)),
+        ("lspgrad", (0, 1)),
         ("idiff", (0,)),
         ("sgsmodel", (0, 1)),
         ("ipbl", (0,)),
-        ("radopt", (0,)),
+        ("radopt", (0, 2)),
         ("cuparam", (0,)),
         ("testcase", (0,)),
         ("rterm", (0,)),
         ("eqtset", (2,)),
         ("psolver", (3,)),
-        ("imoist", (1,)),
+        ("imoist", (0, 1)),
         ("isfcflx", (0,)),
         ("axisymm", (0,)),
     ):
@@ -57,7 +64,6 @@ def _check(cfg):
             bad.append(f"{name}={v}")
     for name in (
         "do_lsnudge",
-        "terrain_flag",
         "do_recycle_w",
         "do_recycle_e",
         "do_recycle_s",
@@ -65,8 +71,13 @@ def _check(cfg):
     ):
         if _opt(cfg, name, False):
             bad.append(f"{name}=T")
-    if int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) != 1:
+    if int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) not in (
+        0,
+        1,
+    ):
         bad.append(f"sgsmodel=1 with cm1setup={_opt(cfg, 'cm1setup', 1)}")
+    if int(_opt(cfg, "lspgrad", 0)) == 1 and int(_opt(cfg, "imove", 0)) != 0:
+        bad.append("lspgrad=1 with imove=1")
     if bad:
         raise NotImplementedError("solve1: options not ported: " + ", ".join(bad))
 
@@ -102,6 +113,7 @@ def solve1(
     ppten=None,
     qten=None,
     turb=None,
+    thraten=None,
     **unused,
 ):
     """solve1.F ``solve1`` (active path only).
@@ -114,6 +126,14 @@ def solve1(
     vh, vf, mh, mf, the density arrays rr, rf, and the output of the previous
     cm1x.turb.sfc_and_turb call: tkea, kmh, kmv, khh, khv, nm, defv, defh,
     dissten, t11, t12, t13, t22, t23, t33.
+
+    With sgsmodel=0 and bbc=3 (sfcmodel=1) ``turb`` holds uh, uf, vh, vf,
+    mh, mf, zf, rf and the surface layer of cm1x.turb.sfc_and_turb_nosgs:
+    ust, znt, t13, t23 (surface drag on uten1/vten1, surface-layer
+    dissipative heating for idiss=1).
+
+    ``thraten`` (radopt=2): the potential-temperature tendency of the last
+    radiation call (cm1x.radiation_driver), added to thten1.
     """
     _check(cfg)
     xp = bk.xp
@@ -139,7 +159,17 @@ def solve1(
     else:
         qten = [bk.copy(q) for q in qten]
 
-    les = int(_opt(cfg, "sgsmodel", 0)) == 1
+    # cm1setup=0: no subgrid turbulence (idoles = .false.) whatever sgsmodel
+    les = int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) == 1
+    # sgsmodel=0 with the semi-slip lower boundary (bbc=3, forced by
+    # sfcmodel>=1): only the surface stress and surface-layer dissipation
+    sfc = (not les) and int(_opt(cfg, "bbc", 1)) == 3
+    if sfc:
+        from .turb import dissheat, sfc_drag_tendencies
+
+        if turb is None:
+            raise ValueError("solve1: bbc=3 needs the turb dict (surface layer)")
+        T = turb
     tketen = None
     if les:
         from .turb import dissheat, tke_source, turb_tendencies
@@ -178,6 +208,7 @@ def solve1(
             tten=tketen,
             kmh=T["kmh"],
             kmv=T["kmv"],
+            terrain=T.get("terrain"),
         )["tten"]
 
     # Fortran k=1..nk, j=1..nj+1, i=1..ni+1
@@ -210,19 +241,39 @@ def solve1(
     for m in range(numq):
         qten[m] = bk.set(qten[m], S, bk.zeros(qa[m][S].shape))
 
+    # ---- large-scale pressure gradient (lspgrad=1) ---------------------------
+    if int(_opt(cfg, "lspgrad", 0)) == 1:
+        fcor = float(_opt(cfg, "fcor", 0.0))
+        vmove = umove = 0.0  # imove=0
+        Jq = slice(n + 1, n + nj + 2)  # j+1
+        Iq = slice(n + 1, n + ni + 2)  # i+1
+        vs = 0.25 * ((v0[K, Jp, Ip] + v0[K, Jq, Ip]) + (v0[K, Jp, Im] + v0[K, Jq, Im]))
+        us = 0.25 * ((u0[K, Jp, Ip] + u0[K, Jp, Iq]) + (u0[K, Jm, Ip] + u0[K, Jm, Iq]))
+        uten1 = bk.set(uten1, R, uten1[R] - fcor * (vs + vmove))
+        vten1 = bk.set(vten1, R, vten1[R] + fcor * (us + umove))
+
+    # ---- dissipative heating (sgsmodel=1, idiss=1) ---------------------------
+    if (les or sfc) and int(_opt(cfg, "idiss", 1)) == 1:
+        thten1 = dissheat(
+            bk,
+            g,
+            cfg,
+            pi0=pi0,
+            ppi=ppi,
+            qa=qa,
+            dissten=T["dissten"] if les else None,
+            thten1=thten1,
+            ust=T.get("ust"),
+            znt=T.get("znt"),
+            zf=T.get("zf"),
+        )["thten1"]
+
+    # ---- radiation tendency (radopt=2) ----------------------------------------
+    if thraten is not None:
+        thten1 = bk.set(thten1, S, thten1[S] + thraten[S])
+
     # ---- subgrid turbulence (sgsmodel=1) ------------------------------------
     if les:
-        if int(_opt(cfg, "idiss", 1)) == 1:
-            thten1 = dissheat(
-                bk,
-                g,
-                cfg,
-                pi0=pi0,
-                ppi=ppi,
-                qa=qa,
-                dissten=T["dissten"],
-                thten1=thten1,
-            )["thten1"]
         tt = turb_tendencies(
             bk,
             g,
@@ -258,6 +309,7 @@ def solve1(
             t22=T["t22"],
             t23=T["t23"],
             t33=T["t33"],
+            terrain=T.get("terrain"),
         )
         uten1, vten1, wten1, thten1 = (
             tt["uten1"],
@@ -266,22 +318,50 @@ def solve1(
             tt["thten1"],
         )
         qten = list(tt["qten"])
+    elif sfc:
+        sd = sfc_drag_tendencies(
+            bk,
+            g,
+            cfg,
+            dt=dt,
+            uf=T["uf"],
+            vh=T["vh"],
+            uh=T["uh"],
+            vf=T["vf"],
+            mh=T["mh"],
+            mf=T["mf"],
+            rho=rho,
+            rf=T["rf"],
+            ua=ua,
+            va=va,
+            wa=wa,
+            uten1=uten1,
+            vten1=vten1,
+            t13=T["t13"],
+            t23=T["t23"],
+        )
+        uten1, vten1 = sd["uten1"], sd["vten1"]
 
-    # ---- pressure tendency for mass conservation (eqtset=2, moist) --------
+    # ---- pressure tendency for mass conservation (eqtset=2) ---------------
     rdt = 1.0 / dt
     tem = 0.0001 * tsmall
     th1 = thten1[S]
-    qv1 = qten[nqv][S]
     thnew = tha[S] + dt * th1
-    qvnew = qa[nqv][S] + dt * qv1
-    pinew = (
-        rho[S] * (th0[S] + thnew) * (c.rd + c.rv * qvnew) * c.rp00
-    ) ** c.rddcv - pi0[S]
-    cond = (xp.abs(dt * th1) > tem) | (xp.abs(dt * qv1) > qsmall)
+    moist = int(_opt(cfg, "imoist", 1)) == 1
+    if moist:
+        qv1 = qten[nqv][S]
+        qvnew = qa[nqv][S] + dt * qv1
+        pinew = (
+            rho[S] * (th0[S] + thnew) * (c.rd + c.rv * qvnew) * c.rp00
+        ) ** c.rddcv - pi0[S]
+        cond = (xp.abs(dt * th1) > tem) | (xp.abs(dt * qv1) > qsmall)
+    else:
+        pinew = (rho[S] * (th0[S] + thnew) * c.rd * c.rp00) ** c.rddcv - pi0[S]
+        cond = xp.abs(dt * th1) > tem
     pt = xp.where(cond, (pinew - ppi[S]) * rdt, xp.zeros_like(pinew))
     ppten = bk.set(ppten, S, pt)
 
-    if ptype >= 1:
+    if moist and ptype >= 1:
         # diabatic tendencies from last timestep as a good estimate
         ppten = bk.set(ppten, S, ppten[S] + qpten[S])
         thten1 = bk.set(thten1, S, thten1[S] + qtten[S])

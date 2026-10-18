@@ -117,8 +117,8 @@ def param_grid(cfg, bk, g: Grid | None = None) -> dict:
       Python-float scalars (module ``input`` in CM1): cgs1..3, cgt1..3, dgs*, dgt*,
         wbe*, wte*, minx, maxx, miny, maxy, centerx, centery, maxz
     """
-    if cfg.terrain_flag or cfg.stretch_x or cfg.stretch_y or cfg.stretch_z:
-        raise NotImplementedError("only uniform grids without terrain are supported")
+    if cfg.stretch_x or cfg.stretch_y or cfg.stretch_z:
+        raise NotImplementedError("only uniform grids (no stretching) are supported")
     xp = bk.xp
     if g is None:
         g = Grid(cfg.ni, cfg.nj, cfg.nk, float(cfg.dx), float(cfg.dy), float(cfg.dz))
@@ -228,6 +228,70 @@ def param_grid(cfg, bk, g: Grid | None = None) -> dict:
         maxz=maxz,
     )
     out.update(extrap_coeffs(sigma, sigmaf, nk))
+    if cfg.get("terrain_flag", False):
+        out.update(_terrain_metrics(cfg, bk, g, out))
+    return out
+
+
+def _terrain_metrics(cfg, bk, g: Grid, pg: dict) -> dict:
+    """param.F with ``terrain_flag``: ``init_terrain`` (zs, zh, zf, metric
+    terms) then the column-dependent mh, rmh, mf, rmf, c1, c2 (cc1/cc2) and
+    Rayleigh-damping coefficients tauh, taus, tauf."""
+    from . import bc as _bc
+    from .init_terrain import init_terrain
+
+    xp = bk.xp
+    S = bk.asarray
+    nk = g.nk
+    dz = S(float(cfg.dz))
+    t = init_terrain(
+        bk,
+        g,
+        cfg,
+        **{k: pg[k] for k in ("xh", "uh", "xf", "uf", "yh", "vh", "yf", "vf")},
+        **{k: pg[k] for k in ("rds", "sigma", "rdsf", "sigmaf")},
+        maxx=pg["maxx"],
+        maxy=pg["maxy"],
+        maxz=pg["maxz"],
+    )
+    zh, zf = t["zh"], t["zf"]
+    one = S(1.0)
+    mh = dz / (zf[1:] - zf[:-1])  # k = kb..ke
+    mf_in = dz / (zh[1:] - zh[:-1])  # k = 1..nk+1
+    mf = xp.concat([mf_in[:1], mf_in, mf_in[-1:]])
+    cc2 = (zf[1 : nk + 2] - zh[0 : nk + 1]) / (zh[1 : nk + 2] - zh[0 : nk + 1])
+    z0 = bk.zeros((1,) + g.s_shape[1:])
+    cc2 = xp.concat([z0, cc2])
+    cc2 = _bc.bcs(bk, g, cc2, cfg)
+    cc1 = xp.concat([z0, one - cc2[1:]])
+
+    zd = float(cfg.zd)
+    if cfg.irdamp >= 1 and zd < pg["maxz"]:
+        pi, zds, half = S(C.pi), S(zd), S(0.5)
+        ztop = zf[nk + 1]
+        th_ = half * (one - xp.cos(pi * (zh - zds) / (ztop - zds)))
+        th_ = xp.where(zh > zds, th_, S(0.0))
+        kk = xp.arange(nk + 2)[:, None, None]
+        th_ = xp.where((kk >= 1) & (kk <= nk), th_, S(0.0))
+        tf_ = half * (one - xp.cos(pi * (zf - zds) / (ztop - zds)))
+        tf_ = xp.where(zf > zds, tf_, S(0.0))
+        kf = xp.arange(nk + 3)[:, None, None]
+        tf_ = xp.where((kf >= 1) & (kf <= nk + 1), tf_, S(0.0))
+        tauh, tauf = th_, tf_
+    else:
+        tauh, tauf = bk.zeros(g.s_shape), bk.zeros(g.w_shape)
+    out = dict(t)
+    out.update(
+        mh=mh,
+        rmh=one / mh,
+        mf=mf,
+        rmf=one / mf,
+        c1=cc1,
+        c2=cc2,
+        tauh=tauh,
+        taus=bk.copy(tauh),
+        tauf=tauf,
+    )
     return out
 
 
@@ -260,111 +324,152 @@ def extrapbcs(bk, s, cg, nk):
 # base.F
 
 
-def base(bk, cfg, *, zh, mh, rmh, c1, c2, zf, mf, cg: dict) -> dict:
+def base(
+    bk, cfg, *, zh, mh, rmh, c1, c2, zf, mf, cg: dict, g: Grid | None = None
+) -> dict:
     """Port of ``base`` (src/base.F): sounding, hydrostatic base state, winds.
 
     ``cg`` holds the extrapolation coefficients cgs1..3 / cgt1..3 (module
     ``input`` scalars in CM1; e.g. the dict returned by ``param_grid``).
+    Every column is computed (vectorised over ``[j, i]``, same per-column
+    operation order as CM1), so with terrain (``zh`` varying in x/y) the base
+    state is 3-D exactly like CM1's.
 
     Returns arrays keyed by Fortran name: pi0, prs0, rho0, thv0, th0, rth0, qv0,
     qc0, qi0, rr0, rf0, rrf0, t0, rh0 (scalar points), u0, v0 (staggered),
     rho0s, pi0s, prs0s, rth0s (2-D), plus Python-float scalars psurf, tsurf,
     qsurf, thsurf and the 0-d array pmin.
     """
+    from . import bc as _bc
+
     xp = bk.xp
     S = bk.asarray
     nk = zh.shape[0] - 2
     shp_s = zh.shape
+    sh2 = shp_s[1:]
     shp_u = (shp_s[0], shp_s[1], shp_s[2] + 1)
     shp_v = (shp_s[0], shp_s[1] + 1, shp_s[2])
+    if g is None:
+        g = Grid(cfg.ni, cfg.nj, cfg.nk, float(cfg.dx), float(cfg.dy), float(cfg.dz))
     imoist = cfg.imoist
     ptype = cfg.ptype
+    terrain = bool(cfg.get("terrain_flag", False))
     cg = {k: S(cg[k]) for k in ("cgs1", "cgs2", "cgs3", "cgt1", "cgt2", "cgt3")}
 
-    g, cp, rd, rv, p00 = S(C.g), S(C.cp), S(C.rd), S(C.rv), S(C.p00)
+    grav, cp, rd, rv, p00 = S(C.g), S(C.cp), S(C.rd), S(C.rv), S(C.p00)
     reps = rv / rd
     cpdrd = cp / rd
     rovcp = rd / cp
     rp00 = S(1.0) / p00
     one, zero = S(1.0), S(0.0)
-
-    zc = zh[:, 0, 0]  # column, Python index == Fortran k
-
-    if cfg.isnd != 5:
-        raise NotImplementedError(f"isnd={cfg.isnd} not ported (only isnd=5)")
-
-    # ---------------- isnd = 5: Weisman-Klemp analytic sounding
-    z_trop, th_trop, t_trop = S(12000.0), S(343.0), S(213.0)
-    th_sfc, prs_sfc, qv_pbl = S(300.0), S(100000.0), S(0.014)
-
-    pi_sfc = (prs_sfc / p00) ** (rd / cp)
-    qv_sfc = rslf(bk, prs_sfc, th_sfc * pi_sfc, ptype)
-    thv_sfc = th_sfc * (one + qv_sfc * reps) / (one + qv_sfc)
-
-    zi = zc[1 : nk + 1]
-    ratio = (zi / z_trop) ** S(1.25)
-    below = zi < z_trop
-    th_in = xp.where(
-        below,
-        th_sfc + (th_trop - th_sfc) * ratio,
-        th_trop * xp.exp((g / (t_trop * cp)) * (zi - z_trop)),
-    )
-    if imoist == 1:
-        rh_in = xp.where(below, one - S(0.75) * ratio, S(0.25))
-    else:
-        rh_in = bk.zeros((nk,))
-    th0 = xp.concat([th_in[:1], th_in, th_in[-1:]])
-    z1 = bk.zeros((1,))
-    rh0 = xp.concat([z1, rh_in, z1])
-    qv0 = bk.zeros((nk + 2,))
-    pi0 = bk.zeros((nk + 2,))
-    prs0 = bk.zeros((nk + 2,))
-    thv0 = None
-
     half = S(0.5)
-    for _n in range(20):
-        thv0 = th0 * (one + reps * qv0) / (one + qv0)
-        pis = [pi_sfc - g * zc[1] / (cp * half * (thv_sfc + thv0[1]))]
-        for k in range(2, nk + 1):
-            pis.append(
-                pis[-1]
-                - g * (zc[k] - zc[k - 1]) / (cp * half * (thv0[k] + thv0[k - 1]))
-            )
-        pi_in = xp.stack(pis)
-        pi0 = xp.concat([pi0[:1], pi_in, pi0[-1:]])
-        prs_in = p00 * (pi_in ** (cp / rd))
-        prs0 = xp.concat([prs0[:1], prs_in, prs0[-1:]])
-        qv_in = rh_in * rslf(bk, prs_in, th_in * pi_in, ptype)
-        qv_in = xp.where(qv_in > qv_pbl, qv_pbl, qv_in)
-        qv0 = xp.concat([qv0[:1], qv_in, qv0[-1:]])
 
-    rh_in = qv0[1 : nk + 1] / rslf(
-        bk, prs0[1 : nk + 1], th0[1 : nk + 1] * pi0[1 : nk + 1], ptype
-    )
-    rh0 = xp.concat([rh0[:1], rh_in, rh0[-1:]])
+    def Z(n):
+        return bk.zeros((n,) + sh2)
 
-    psurf = prs_sfc
-    tsurf = th_sfc * ((psurf * rp00) ** rovcp)
-    if imoist == 1:
-        q1 = cg["cgs1"] * qv0[1] + cg["cgs2"] * qv0[2] + cg["cgs3"] * qv0[3]
-        qsurf = xp.where(qv0[1] < qv_pbl, q1, qv_pbl)
-    else:
+    zc = zh  # [k, j, i], Python index == Fortran k
+    z1 = Z(1)
+    qc0 = Z(nk + 2)
+    qi0 = Z(nk + 2)
+
+    if cfg.isnd == 5:
+        # ---------------- isnd = 5: Weisman-Klemp analytic sounding
+        z_trop, th_trop, t_trop = S(12000.0), S(343.0), S(213.0)
+        th_sfc, prs_sfc, qv_pbl = S(300.0), S(100000.0), S(0.014)
+
+        pi_sfc = (prs_sfc / p00) ** (rd / cp)
+        qv_sfc = rslf(bk, prs_sfc, th_sfc * pi_sfc, ptype)
+        thv_sfc = th_sfc * (one + qv_sfc * reps) / (one + qv_sfc)
+
+        zi = zc[1 : nk + 1]
+        ratio = (zi / z_trop) ** S(1.25)
+        below = zi < z_trop
+        th_in = xp.where(
+            below,
+            th_sfc + (th_trop - th_sfc) * ratio,
+            th_trop * xp.exp((grav / (t_trop * cp)) * (zi - z_trop)),
+        )
+        if imoist == 1:
+            rh_in = xp.where(below, one - S(0.75) * ratio, S(0.25))
+        else:
+            rh_in = Z(nk)
+        th0 = xp.concat([th_in[:1], th_in, th_in[-1:]])
+        rh0 = xp.concat([z1, rh_in, z1])
+        qv0 = Z(nk + 2)
+        pi0 = Z(nk + 2)
+        prs0 = Z(nk + 2)
+
+        for _n in range(20):
+            thv0 = th0 * (one + reps * qv0) / (one + qv0)
+            pis = [pi_sfc - grav * zc[1] / (cp * half * (thv_sfc + thv0[1]))]
+            for k in range(2, nk + 1):
+                pis.append(
+                    pis[-1]
+                    - grav * (zc[k] - zc[k - 1]) / (cp * half * (thv0[k] + thv0[k - 1]))
+                )
+            pi_in = xp.stack(pis)
+            pi0 = xp.concat([pi0[:1], pi_in, pi0[-1:]])
+            prs_in = p00 * (pi_in ** (cp / rd))
+            prs0 = xp.concat([prs0[:1], prs_in, prs0[-1:]])
+            qv_in = rh_in * rslf(bk, prs_in, th_in * pi_in, ptype)
+            qv_in = xp.where(qv_in > qv_pbl, qv_pbl, qv_in)
+            qv0 = xp.concat([qv0[:1], qv_in, qv0[-1:]])
+
+        rh_in = qv0[1 : nk + 1] / rslf(
+            bk, prs0[1 : nk + 1], th0[1 : nk + 1] * pi0[1 : nk + 1], ptype
+        )
+        rh0 = xp.concat([rh0[:1], rh_in, rh0[-1:]])
+
+        psurf = prs_sfc
+        tsurf = th_sfc * ((psurf * rp00) ** rovcp)
+        if imoist == 1:
+            q1 = cg["cgs1"] * qv0[1, 0, 0] + cg["cgs2"] * qv0[2, 0, 0]
+            q1 = q1 + cg["cgs3"] * qv0[3, 0, 0]
+            qsurf = xp.where(qv0[1, 0, 0] < qv_pbl, q1, qv_pbl)
+        else:
+            qsurf = zero
+    elif cfg.isnd == 9:
+        # ---------------- isnd = 9: dry, constant Brunt-Vaisala frequency
+        ns1 = S(0.0001)
+        zl1 = 40000.0
+        if float(xp.max(zc[1 : nk + 2])) > zl1 or float(xp.min(zc[1])) >= zl1:
+            raise NotImplementedError("isnd=9 above zl1 = 40 km not ported")
+        th_sfc, pi_sfc = S(288.0), S(1.0)
+        psurf = p00 * (pi_sfc ** (cp / rd))
+        tsurf = th_sfc * pi_sfc
+        zi = zc[1 : nk + 1]
+        thv_in = th_sfc * xp.exp(ns1 * zi / grav)
+        pi_in = pi_sfc + grav * grav / (cp * ns1 * th_sfc) * (
+            xp.exp(-ns1 * zi / grav) - one
+        )
+        prs_in = p00 * (pi_in**cpdrd)
+        # rh0 = 0 => qv0 = 0 and th0 = thv0*(1+0+0)/(1+0) = thv0 exactly
+        th0 = xp.concat([z1, thv_in, z1])
+        pi0 = xp.concat([z1, pi_in, z1])
+        prs0 = xp.concat([z1, prs_in, z1])
+        qv0 = Z(nk + 2)
+        rh0 = Z(nk + 2)
         qsurf = zero
+    else:
+        raise NotImplementedError(f"isnd={cfg.isnd} not ported (only isnd=5, 9)")
 
-    # ---------------- ghost cells (bcs is a no-op on homogeneous fields)
-    qc0 = bk.zeros((nk + 2,))
-    qi0 = bk.zeros((nk + 2,))
-    pi0 = extrapbcs(bk, pi0, cg, nk)
-    prs0 = extrapbcs(bk, prs0, cg, nk)
-    th0 = extrapbcs(bk, th0, cg, nk)
-    qv0 = extrapbcs(bk, qv0, cg, nk)
-    rh0 = extrapbcs(bk, rh0, cg, nk)
+    # ---------------- ghost cells
+    def bcx(a):
+        return extrapbcs(bk, _bc.bcs(bk, g, a, cfg), cg, nk)
+
+    pi0 = bcx(pi0)
+    prs0 = bcx(prs0)
+    th0 = bcx(th0)
+    qv0 = bcx(qv0)
+    qc0 = bcx(qc0)
+    qi0 = bcx(qi0)
+    rh0 = bcx(rh0)
 
     if imoist == 1:
         thv0 = th0 * (one + reps * qv0) / (one + qv0 + qc0 + qi0)
     else:
-        qv0 = bk.zeros((nk + 2,))
-        rh0 = bk.zeros((nk + 2,))
+        qv0 = Z(nk + 2)
+        rh0 = Z(nk + 2)
         thv0 = th0
 
     prs0 = p00 * (pi0**cpdrd)
@@ -381,13 +486,12 @@ def base(bk, cfg, *, zh, mh, rmh, c1, c2, zf, mf, cg: dict) -> dict:
     else:
         thv0 = th0
 
-    rho0 = extrapbcs(bk, rho0, cg, nk)
+    rho0 = bcx(rho0)
     if cfg.psolver in (5, 6):
-        rho0 = bk.full((nk + 2,), 1.0)
+        rho0 = bk.full(shp_s, 1.0)
 
     rr0 = one / rho0
-    c1c, c2c = c1[:, 0, 0], c2[:, 0, 0]
-    rf_mid = c1c[2 : nk + 1] * rho0[1:nk] + c2c[2 : nk + 1] * rho0[2 : nk + 1]
+    rf_mid = c1[2 : nk + 1] * rho0[1:nk] + c2[2 : nk + 1] * rho0[2 : nk + 1]
     rf1 = cg["cgs1"] * rho0[1] + cg["cgs2"] * rho0[2] + cg["cgs3"] * rho0[3]
     rftop = (
         cg["cgt1"] * rho0[nk] + cg["cgt2"] * rho0[nk - 1] + cg["cgt3"] * rho0[nk - 2]
@@ -396,25 +500,55 @@ def base(bk, cfg, *, zh, mh, rmh, c1, c2, zf, mf, cg: dict) -> dict:
     rrf0 = one / rf0
     rho0s = rf1
 
-    # ---------------- surface values (no terrain, psurf/tsurf set by isnd=5)
+    # ---------------- surface values
     tsm = float(cfg.tsmall)
-    if not (float(psurf) >= tsm and float(tsurf) >= tsm and not cfg.terrain_flag):
-        raise NotImplementedError(
-            "surface-value branch for terrain / unset psurf not ported"
-        )
-    thsurf = tsurf / ((psurf * rp00) ** rovcp)
-    prs0s = psurf
-    pi0s = (psurf * rp00) ** rovcp
-    rth0s = thsurf ** (-one)
+    if float(psurf) >= tsm and float(tsurf) >= tsm and not terrain:
+        thsurf = tsurf / ((psurf * rp00) ** rovcp)
+        prs0s = psurf + bk.zeros(sh2)
+        pi0s = (psurf * rp00) ** rovcp + bk.zeros(sh2)
+        rth0s = thsurf ** (-one) + bk.zeros(sh2)
+    else:
+        ths = cg["cgs1"] * th0[1] + cg["cgs2"] * th0[2] + cg["cgs3"] * th0[3]
+        qs = cg["cgs1"] * qv0[1] + cg["cgs2"] * qv0[2] + cg["cgs3"] * qv0[3]
+        thvsurf = ths * (one + qs * reps) / (one + qs)
+        pi0s = pi0[1] + zc[1] * grav / (cp * half * (thvsurf + thv0[1]))
+        prs0s = p00 * (pi0s ** (cp / rd))
+        rth0s = ths ** (-one)
+        # module scalars keep the last column's values (i = ie, j = je)
+        thsurf = ths[-1, -1]
+        qsurf = qs[-1, -1]
+        if float(psurf) < tsm:
+            psurf = prs0s[3, 3]
+        if float(tsurf) <= tsm:
+            tsurf = (
+                cg["cgs1"] * t0[1, 3, 3]
+                + cg["cgs2"] * t0[2, 3, 3]
+                + cg["cgs3"] * t0[3, 3, 3]
+            )
+        if float(qsurf) <= tsm:
+            qsurf = (
+                cg["cgs1"] * qv0[1, 3, 3]
+                + cg["cgs2"] * qv0[2, 3, 3]
+                + cg["cgs3"] * qv0[3, 3, 3]
+            )
+        thsurf = tsurf / ((psurf * rp00) ** rovcp)
 
     # ---------------- base-state wind (iwnd)
-    zu = half * (zc + zc)  # 0.5*(zh(i-1)+zh(i)), homogeneous
+    # computed on every column, then cut to the (i, j) range CM1 sets for
+    # this iwnd (zero elsewhere, as CM1's initial u0/v0), then bcu/bcv and
+    # the k = 0, nk+1 extrapolation (with mixed open/periodic boundaries
+    # the halo corners keep those zeros, as in CM1).
+    zfull = xp.concat([zc[:, :, :1], zc, zc[:, :, -1:]], axis=2)
+    zu = half * (zfull[:, :, :-1] + zfull[:, :, 1:])  # u points
+    zfull = xp.concat([zc[:, :1, :], zc, zc[:, -1:, :]], axis=1)
+    zv = half * (zfull[:, :-1, :] + zfull[:, 1:, :])  # v points
+    zu, zv = zu[1 : nk + 1], zv[1 : nk + 1]
     if cfg.iwnd in (0, None):
-        u_in = bk.zeros((nk,))
-        v_in = bk.zeros((nk,))
+        u_in = bk.zeros(zu.shape)
+        v_in = bk.zeros(zv.shape)
     elif cfg.iwnd == 1:
         udep1, udep2, uc1, uc2 = S(0.0), S(2500.0), S(0.0), S(10.0)
-        z = zu[1 : nk + 1]
+        z = zu
         u_in = xp.where(
             z < udep1,
             uc1,
@@ -424,11 +558,11 @@ def base(bk, cfg, *, zh, mh, rmh, c1, c2, zf, mf, cg: dict) -> dict:
                 uc2,
             ),
         )
-        v_in = bk.zeros((nk,))
+        v_in = bk.zeros(zv.shape)
     elif cfg.iwnd == 2:
         udep1, udep2, umax1, umax2 = S(2000.0), S(6000.0), S(7.0), S(31.0)
         pi180 = S(C.pi) / S(180.0)
-        z = zu[1 : nk + 1]
+        z = zu
         angle = S(90.0) * (z / udep1) * pi180
         u_in = xp.where(
             z <= udep1,
@@ -440,51 +574,69 @@ def base(bk, cfg, *, zh, mh, rmh, c1, c2, zf, mf, cg: dict) -> dict:
             ),
         )
         vmax1 = umax1
-        v_in = xp.where(z <= udep1, vmax1 * xp.sin(angle), vmax1)
+        anglev = S(90.0) * (zv / udep1) * pi180
+        v_in = xp.where(zv <= udep1, vmax1 * xp.sin(anglev), vmax1)
+    elif cfg.iwnd == 6:
+        tc = int(cfg.get("testcase", 0))
+        uval, vval = {1: (1.0, 0.0), 2: (15.0, 0.0), 4: (7.0, -5.5), 9: (8.0, 0.0)}.get(
+            tc, {11: (2.0, 0.0), 12: (20.0, 0.0)}.get(tc, (10.0, 0.0))
+        )
+        u_in = S(uval) + bk.zeros(zu.shape)
+        v_in = S(vval) + bk.zeros(zv.shape)
     else:
         raise NotImplementedError(f"iwnd={cfg.iwnd} not ported")
 
     if cfg.imove == 1:
+        if terrain:
+            raise NotImplementedError("imove=1 with terrain")
         u_in = u_in - S(float(cfg.umove))
         v_in = v_in - S(float(cfg.vmove))
 
-    def ext_full(col_in):
-        col = xp.concat([z1, col_in, z1])
-        return extrapbcs(bk, col, cg, nk)
+    # Fortran (j, i) ranges set by each iwnd option; Python index = Fortran + 2
+    rng = {
+        1: (((0, g.nj + 1), (0, g.ni + 2)), ((0, g.nj + 2), (0, g.ni + 1))),
+        2: (((1, g.nj), (1, g.ni + 1)), ((1, g.nj + 1), (1, g.ni))),
+    }.get(int(cfg.iwnd or 0))
+    if rng is not None:
 
-    u0c = ext_full(u_in)
-    v0c = ext_full(v_in)
+        def _cut(a, jr, ir):
+            m = bk.zeros(a.shape[1:])
+            m = bk.set(
+                m, (slice(jr[0] + 2, jr[1] + 3), slice(ir[0] + 2, ir[1] + 3)), 1.0
+            )
+            return a * m[None]
+
+        u_in, v_in = _cut(u_in, *rng[0]), _cut(v_in, *rng[1])
+
+    u0 = xp.concat([bk.zeros((1,) + shp_u[1:]), u_in, bk.zeros((1,) + shp_u[1:])])
+    v0 = xp.concat([bk.zeros((1,) + shp_v[1:]), v_in, bk.zeros((1,) + shp_v[1:])])
+    u0 = extrapbcs(bk, _bc.bcu(bk, g, u0, cfg), cg, nk)
+    v0 = extrapbcs(bk, _bc.bcv(bk, g, v0, cfg), cg, nk)
 
     rth0 = one / th0
 
-    def to3(col, shp):
-        return col[:, None, None] + bk.zeros(shp)
-
-    def to2(x):
-        return x + bk.zeros(shp_s[1:])
-
     out = dict(
-        pi0=to3(pi0, shp_s),
-        prs0=to3(prs0, shp_s),
-        rho0=to3(rho0, shp_s),
-        thv0=to3(thv0, shp_s),
-        th0=to3(th0, shp_s),
-        rth0=to3(rth0, shp_s),
-        qv0=to3(qv0, shp_s),
-        qc0=to3(qc0, shp_s),
-        qi0=to3(qi0, shp_s),
-        rr0=to3(rr0, shp_s),
-        rf0=to3(rf0, shp_s),
-        rrf0=to3(rrf0, shp_s),
-        t0=to3(t0, shp_s),
-        rh0=to3(rh0, shp_s),
-        u0=to3(u0c, shp_u),
-        v0=to3(v0c, shp_v),
-        rho0s=to2(rho0s),
-        pi0s=to2(pi0s),
-        prs0s=to2(prs0s),
-        rth0s=to2(rth0s),
-        pmin=xp.min(prs0[1 : nk + 1]),
+        pi0=pi0,
+        prs0=prs0,
+        rho0=rho0,
+        thv0=thv0,
+        th0=th0,
+        rth0=rth0,
+        qv0=qv0,
+        qc0=qc0,
+        qi0=qi0,
+        rr0=rr0,
+        rf0=rf0,
+        rrf0=rrf0,
+        t0=t0,
+        rh0=rh0,
+        u0=u0,
+        v0=v0,
+        rho0s=rho0s,
+        pi0s=pi0s,
+        prs0s=prs0s,
+        rth0s=rth0s,
+        pmin=xp.min(prs0[1 : nk + 1, 3 : 3 + g.nj, 3 : 3 + g.ni]),
         psurf=float(psurf),
         tsurf=float(tsurf),
         qsurf=float(qsurf),

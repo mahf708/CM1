@@ -2,8 +2,10 @@
 step; torch.compile of the hot routines, Backend.kernel) reproduces the
 eager step to round-off.
 
-Runs a few steps of both reference cases on a small grid (nx=ny=12, nz=16)
-eagerly and compiled on the same backend and compares every output field.
+Runs a few steps of the reference cases on a small grid (nx=ny=12, nz=16)
+eagerly and compiled on the same backend and compares every output field
+(kessler_rrtmg: steps 1 and 3 use the compiled step without radiation,
+step 2 the variant with the RRTMG call).
 The compiled program evaluates the same operations (fixed-trip / masked
 loops, ``Backend.fori_loop`` / ``Backend.scan`` for the data-dependent and
 vertical loops), so only floating-point re-association by the compiler is
@@ -21,10 +23,12 @@ import pytest
 from cm1x.model import Model
 
 REF = Path(__file__).resolve().parents[2] / "reference"
-CASES = ("kessler_periodic", "supercell_kessler")
+CASES = ("kessler_periodic", "supercell_kessler", "kessler_rrtmg")
 SMALL = {"nx": 12, "ny": 12, "nz": 16}
 NSTEPS = 3
 RTOL = 1.0e-10
+# cloud forcings (W m-2) are differences of fluxes, zero in clear sky
+FLOOR = {"lwcf": 1.0, "swcf": 1.0}
 # torch.compile of the hot routines takes ~3 min per case with a cold inductor
 # cache (~30 s warm); opt in with CM1X_TEST_TORCH_COMPILE=1
 TORCH_COMPILE = os.environ.get("CM1X_TEST_TORCH_COMPILE", "0") == "1"
@@ -50,7 +54,7 @@ def test_jit_matches_eager(bk, case):
     assert fe.keys() == fj.keys()
     bad = []
     for k in fe:
-        scale = max(float(np.abs(fe[k]).max()), 1.0e-30)
+        scale = max(float(np.abs(fe[k]).max()), FLOOR.get(k, 1.0e-30))
         err = float(np.abs(fe[k] - fj[k]).max())
         if not err <= RTOL * scale:
             bad.append(f"{k}: max|diff|={err:.3e} (max|f|={scale:.3e})")
