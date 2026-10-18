@@ -3,6 +3,7 @@
 // arrays (halos included) against every dumped step.
 #include "driver/cm1k_model.hpp"
 #include "dynamics/cm1k_dyncore.hpp"
+#include "physics/rrtmg/cm1k_radiation.hpp"
 #include "share/cm1k_dump_io.hpp"
 
 #include "cm1k_test_utils.hpp"
@@ -37,6 +38,8 @@ double run_case(const std::string& case_name, double tol, bool native_init = fal
   if (m.has_wrf_surface())   // sfcmodel=2,3: mol, and the SLAB soil temperatures tslb
     for (auto& [n, a] : m.wrf_surface().dumped()) fields.push_back(n);
   for (auto& n : m.pbl_field_names()) fields.push_back(n);   // ipbl=1,2: hpbl, thpten, ..., vpten
+  if (m.radiation())   // radopt=2: tendencies, fluxes, o30, cldfra, coszen, gsw, glw, ...
+    for (auto& [n, a] : m.radiation()->dumped()) fields.push_back(n);
   for (auto& n : m.field_names())
     if (n.rfind("qa_", 0) == 0) fields.push_back(n);
 
@@ -346,6 +349,113 @@ TEST_CASE("dyncore + simple PBL + MM5 surface layer + SLAB + Kessler: pbl2_sfcla
   run_case("pbl2_sfclay_land", 0.0, false, true);
 }
 
+// terrain-following coordinate (terrain_flag): bit-for-bit
+TEST_CASE("dyncore + terrain: nh_mountain_waves vs Fortran", "[dyn][step][terrain][openbc]") {
+  // 2D bell (itern=1), open E/W (irbc=4), WENO scalars, Coriolis + lspgrad, Rayleigh damping
+  run_case("nh_mountain_waves", 0.0);
+}
+
+TEST_CASE("dyncore + terrain: nh_mountain_waves from Model::init (no dump)", "[dyn][step][init][terrain][openbc]") {
+  run_case("nh_mountain_waves", 0.0, true);
+}
+
+TEST_CASE("dyncore + terrain: nh_mountain_waves_long from Model::init (900 steps)", "[dyn][step][init][terrain][long]") {
+  // 30 min of mountain waves, for long-run drift; skipped when the step
+  // tests are capped (CM1K_MAX_STEP, the bounds-checked debug build)
+  if (cm1k::testing::max_step() < 900) {
+    WARN("nh_mountain_waves_long skipped (CM1K_MAX_STEP < 900)");
+    return;
+  }
+  run_case("nh_mountain_waves_long", 0.0, true);
+}
+
+TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke vs Fortran",
+          "[dyn][step][terrain][kessler][turb]") {
+  // 3D hill (itern=3), periodic, TKE (doimpl=1, idiss=1) and Kessler
+  run_case("kessler_terrain_tke", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke from Model::init (no dump)",
+          "[dyn][step][init][terrain][kessler][turb]") {
+  run_case("kessler_terrain_tke", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke_openbc (open E/W, walls S/N)",
+          "[dyn][step][init][terrain][kessler][turb][openbc]") {
+  run_case("kessler_terrain_tke_openbc", 0.0, false, true);
+  run_case("kessler_terrain_tke_openbc", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + RRTMG + YSU + MM5 surface layer + SLAB + Kessler: rrtmg_ysu_kessler vs Fortran",
+          "[dyn][step][pbl][sfc][ysu][kessler][rrtmg]") {
+  // radopt=2 (RRTMG LW + SW every dtrad = 36 s = 6 steps, daytime: 21 UTC
+  // at -98.35 E in May) over land (lu0=3, SLAB driven by gsw/glw), Kessler
+  // clouds (cal_cldfra1), YSU with rthraten = thraten. Compares the
+  // radiation arrays too (dump N holds the last call before pass N's).
+  run_case("rrtmg_ysu_kessler", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + RRTMG + YSU + Kessler: rrtmg_ysu_kessler from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][ysu][kessler][rrtmg]") {
+  run_case("rrtmg_ysu_kessler", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + RRTMG + GFS-EDMF + MM5 surface layer + SLAB + Kessler: rrtmg_gfs_kessler vs Fortran",
+          "[dyn][step][pbl][sfc][gfs][kessler][rrtmg]") {
+  // as gfs_sfclay_land with radopt=2 (dtrad = 36 s, daytime): GFS-EDMF
+  // reads rthraten = thraten, SLAB gsw/glw
+  run_case("rrtmg_gfs_kessler", 0.0, false, true);
+}
+
+TEST_CASE("radiation options: unsupported ones throw", "[rrtmg]") {
+  rrtmg::RadOptions o;
+  o.radopt = 2; o.imoist = 1; o.ptype = 1; o.sfcmodel = 2;
+  REQUIRE_NOTHROW(o.check());
+  auto with = [&](auto f) { auto p = o; f(p); return p; };
+  CHECK_THROWS(with([](auto& p) { p.radopt = 1; }).check());                 // NASA-GSFC
+  CHECK_THROWS(with([](auto& p) { p.radopt = 3; }).check());
+  CHECK_THROWS(with([](auto& p) { p.ptype = 0; }).check());                  // cal_cldfra1: no branch
+  CHECK_THROWS(with([](auto& p) { p.ptype = 5; }).check());                  // has_req* = 1 schemes
+  CHECK_THROWS(with([](auto& p) { p.imoist = 0; }).check());
+  CHECK_THROWS(with([](auto& p) { p.sfcmodel = 0; }).check());
+  CHECK_THROWS(with([](auto& p) { p.sfcmodel = 1; }).check());
+  CHECK_THROWS(with([](auto& p) { p.ipbl = 4; }).check());                   // MYNN icloud_bl
+  CHECK_THROWS(with([](auto& p) { p.ipbl = 6; p.sfcmodel = 7; }).check());   // MYJ
+  CHECK_THROWS(with([](auto& p) { p.ipbl = 3; p.sfcmodel = 4; }).check());   // GFDL surface layer
+  CHECK_THROWS(with([](auto& p) { p.sfcmodel = 6; }).check());               // MYNN surface layer
+  REQUIRE_NOTHROW(with([](auto& p) { p.ipbl = 3; p.sfcmodel = 3; }).check()); // GFS-EDMF
+  CHECK_THROWS(with([](auto& p) { p.testcase = 8; }).check());
+  CHECK_THROWS(with([](auto& p) { p.rterm = 1; }).check());
+  REQUIRE_NOTHROW(with([](auto& p) { p.radopt = 0; p.ptype = 0; }).check());
+}
+
+TEST_CASE("radiation clock: radtim after a restart", "[rrtmg]") {
+  // cm1.F: radiation in the startup pass and in every pass whose end time
+  // reaches radtim - 0.1*dt; Radiation::clock_at must give radtim before
+  // the radiation of pass n, for a restart from dump n
+  const Real dt = 6.0;
+  for (Real dtrad : {36.0, 30.0, 6.0, 1.0, 100.0}) {
+    std::vector<double> radtim{0.0};   // radtim[n]: before the radiation of pass n
+    std::vector<int> calls;
+    double mtime = 0.0, rt = 0.0;
+    const Real dtr = std::max(dtrad, dt);
+    for (int n = 0; n <= 60; ++n) {
+      if (n > 0) mtime += double(dt);
+      if (n == 0 || mtime >= rt - 0.1 * double(dt)) {
+        calls.push_back(n);
+        do { rt += dtr; } while (!(rt > mtime));
+      }
+      radtim.push_back(rt);
+    }
+    for (int n = 0; n <= 60; ++n) {
+      INFO("dtrad " << dtrad << " nstep " << n);
+      CHECK(rrtmg::Radiation::clock_at(n, dt, dtrad) == radtim[n]);
+    }
+    if (dtrad == 36.0) CHECK(calls[1] == 6);
+    if (dtrad <= dt) CHECK(calls[1] == 1);
+  }
+}
+
 TEST_CASE("dyncore + GFS-EDMF PBL + GFDL surface layer + Kessler: gfs_kessler vs Fortran",
           "[dyn][step][pbl][sfc][gfs][kessler]") {
   // cm1setup=2, ipbl=3 (GFS-EDMF: K profile, mass flux, stratocumulus
@@ -427,8 +537,37 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   REQUIRE_THROWS(DynConfig::from_namelist(nl).check());
   nl.set("psolver", "3");
   REQUIRE_NOTHROW(DynConfig::from_namelist(nl).check());
+  // terrain: ported on these paths; diff2, imove, the surface layer, PBL schemes and radiation throw
   nl.set("terrain_flag", ".true.");
-  REQUIRE_THROWS(DynConfig::from_namelist(nl).check());
+  REQUIRE_NOTHROW(DynConfig::from_namelist(nl).check());
+  for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{{"imove", "1"}, {"idiff", "1"}}) {
+    auto x = nl;
+    x.set(k, v);
+    if (k == "idiff") { x.set("difforder", "2"); x.set("cm1setup", "0"); }   // (param.F: cm1setup>=1 turns diff2 off)
+    INFO("terrain with " << k << " = " << v);
+    REQUIRE_THROWS(DynConfig::from_namelist(x).check());
+  }
+  {
+    auto x = nl;
+    x.set("idiff", "1"); x.set("difforder", "6");
+    REQUIRE_NOTHROW(DynConfig::from_namelist(x).check());
+    auto sf = Namelist::from_file(cm1k::testing::case_namelist("cbl_sfc"));
+    sf.set("terrain_flag", ".true.");
+    REQUIRE_THROWS(DynConfig::from_namelist(sf).check());
+    // every PBL scheme (ipbl=1..6), surface layer (sfcmodel 1..7) and RRTMG throws with terrain
+    for (const char* c : {"pbl2_kessler", "ysu_kessler", "mynn25_kessler", "myj_kessler", "gfs_kessler",
+                          "rrtmg_ysu_kessler", "rrtmg_gfs_kessler"}) {
+      auto t = Namelist::from_file(cm1k::testing::case_namelist(c));
+      REQUIRE_NOTHROW(DynConfig::from_namelist(t).check());
+      t.set("terrain_flag", ".true.");
+      INFO(c << " with terrain");
+      REQUIRE_THROWS(DynConfig::from_namelist(t).check());
+    }
+    auto tr = Namelist::from_file(cm1k::testing::case_namelist("kessler_terrain_tke"));
+    REQUIRE_NOTHROW(DynConfig::from_namelist(tr).check());
+    tr.set("radopt", "2");
+    REQUIRE_THROWS(DynConfig::from_namelist(tr).check());
+  }
   nl.set("terrain_flag", ".false.");
   // lateral boundaries: 1..4 are ported (2 with irbc = 1, 2, 4)
   nl.set("wbc", "2"); nl.set("ebc", "2");

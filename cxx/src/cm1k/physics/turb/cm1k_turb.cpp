@@ -9,6 +9,7 @@
 #include "physics/turb/cm1k_turb.hpp"
 
 #include "init/cm1k_cm1libs.hpp"
+#include "dynamics/cm1k_bc.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -139,7 +140,9 @@ void Options::check() const {
   if (tbc != 1) fail("tbc=" + std::to_string(tbc) + " is not ported (only free slip, tbc=1)");
   for (int v : {wbc, ebc, sbc, nbc})
     if (v < 1 || v > 4) fail("lateral boundary condition " + std::to_string(v) + " is not ported");
-  if (terrain_flag) fail("terrain is not ported");
+  // terrain: the LES TKE scheme (sgsmodel=1) without a surface layer
+  if (terrain_flag && !les) fail("terrain with cm1setup=2 (PBL schemes) is not ported");
+  if (terrain_flag && sfcmodel >= 1) fail("terrain with a surface layer (sfcmodel>=1) is not ported");
   if (axisymm != 0) fail("axisymm=1 is not ported");
   if (do_ib) fail("immersed boundaries (do_ib) are not ported");
   if (les && (!dohturb || !dovturb)) fail("dohturb/dovturb must be true (LES)");
@@ -200,7 +203,7 @@ void bcw(const Options& o, const Bounds& b, const FArray3& w, int flag) {
     // west
     if (o.wbc == 1)
       Kokkos::parallel_for("bcw_w", box3(1, ng, b.jb, b.je, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-        w(1 - i, j, k) = w(ni + 1 - i, j, k); });
+        w(1 - i, j, k) = w(pwrap(ni + 1 - i, 1, ni), j, k); });
     else if (o.wbc == 2)
       Kokkos::parallel_for("bcw_w", box3(1 - ng, 0, 0, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, j, k) = w(1, j, k); });
@@ -210,7 +213,7 @@ void bcw(const Options& o, const Bounds& b, const FArray3& w, int flag) {
     // east
     if (o.ebc == 1)
       Kokkos::parallel_for("bcw_e", box3(1, ng, b.jb, b.je, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-        w(ni + i, j, k) = w(i, j, k); });
+        w(ni + i, j, k) = w(pwrap(i, 1, ni), j, k); });
     else if (o.ebc == 2)
       Kokkos::parallel_for("bcw_e", box3(ni + 1, ni + ng, 0, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, j, k) = w(ni, j, k); });
@@ -220,7 +223,7 @@ void bcw(const Options& o, const Bounds& b, const FArray3& w, int flag) {
     // south
     if (o.sbc == 1)
       Kokkos::parallel_for("bcw_s", box3(b.ib, b.ie, 1, ng, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-        w(i, 1 - j, k) = w(i, nj + 1 - j, k); });
+        w(i, 1 - j, k) = w(i, pwrap(nj + 1 - j, 1, nj), k); });
     else if (o.sbc == 2)
       Kokkos::parallel_for("bcw_s", box3(0, ni + 1, 1 - ng, 0, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, j, k) = w(i, 1, k); });
@@ -230,7 +233,7 @@ void bcw(const Options& o, const Bounds& b, const FArray3& w, int flag) {
     // north
     if (o.nbc == 1)
       Kokkos::parallel_for("bcw_n", box3(b.ib, b.ie, 1, ng, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-        w(i, nj + j, k) = w(i, j, k); });
+        w(i, nj + j, k) = w(i, pwrap(j, 1, nj), k); });
     else if (o.nbc == 2)
       Kokkos::parallel_for("bcw_n", box3(0, ni + 1, nj + 1, nj + ng, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, j, k) = w(i, nj, k); });
@@ -249,28 +252,28 @@ void bc2d_level(const Options& o, const Bounds& b, const FArray3& s, int k) {
   const int ni = b.ni, nj = b.nj, ng = b.ngxy;
   // west
   if (o.wbc == 1)
-    Kokkos::parallel_for("bc2d_w", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(1 - i, j, k) = s(ni + 1 - i, j, k); });
+    Kokkos::parallel_for("bc2d_w", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(1 - i, j, k) = s(pwrap(ni + 1 - i, 1, ni), j, k); });
   else if (o.wbc == 2)
     Kokkos::parallel_for("bc2d_w", box2(1 - ng, 0, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(i, j, k) = s(1, j, k); });
   else
     Kokkos::parallel_for("bc2d_w", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(1 - i, j, k) = s(i, j, k); });
   // east
   if (o.ebc == 1)
-    Kokkos::parallel_for("bc2d_e", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(ni + i, j, k) = s(i, j, k); });
+    Kokkos::parallel_for("bc2d_e", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(ni + i, j, k) = s(pwrap(i, 1, ni), j, k); });
   else if (o.ebc == 2)
     Kokkos::parallel_for("bc2d_e", box2(ni + 1, ni + ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(i, j, k) = s(ni, j, k); });
   else
     Kokkos::parallel_for("bc2d_e", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(ni + i, j, k) = s(ni + 1 - i, j, k); });
   // south
   if (o.sbc == 1)
-    Kokkos::parallel_for("bc2d_s", box2(b.ib, b.ie, 1, ng), KOKKOS_LAMBDA(int i, int j) { s(i, 1 - j, k) = s(i, nj + 1 - j, k); });
+    Kokkos::parallel_for("bc2d_s", box2(b.ib, b.ie, 1, ng), KOKKOS_LAMBDA(int i, int j) { s(i, 1 - j, k) = s(i, pwrap(nj + 1 - j, 1, nj), k); });
   else if (o.sbc == 2)
     Kokkos::parallel_for("bc2d_s", box2(b.ib, b.ie, 1 - ng, 0), KOKKOS_LAMBDA(int i, int j) { s(i, j, k) = s(i, 1, k); });
   else
     Kokkos::parallel_for("bc2d_s", box2(b.ib, b.ie, 1, ng), KOKKOS_LAMBDA(int i, int j) { s(i, 1 - j, k) = s(i, j, k); });
   // north
   if (o.nbc == 1)
-    Kokkos::parallel_for("bc2d_n", box2(b.ib, b.ie, 1, ng), KOKKOS_LAMBDA(int i, int j) { s(i, nj + j, k) = s(i, j, k); });
+    Kokkos::parallel_for("bc2d_n", box2(b.ib, b.ie, 1, ng), KOKKOS_LAMBDA(int i, int j) { s(i, nj + j, k) = s(i, pwrap(j, 1, nj), k); });
   else if (o.nbc == 2)
     Kokkos::parallel_for("bc2d_n", box2(b.ib, b.ie, nj + 1, nj + ng), KOKKOS_LAMBDA(int i, int j) { s(i, j, k) = s(i, nj, k); });
   else
@@ -398,11 +401,91 @@ void calcnm(const Options& o, const Constants& c, const Bounds& b, Real rdz,
   });
 }
 
+// turb.F calcdef, "Cartesian with terrain": strain rates (times rho);
+// dum1/dum2 are scratch (u, v at w points; then w at scalar points)
+void calcdef_terrain(const Grid& g, const FArray3& rho, const FArray3& rf,
+                     const FArray3& ua, const FArray3& va, const FArray3& wa,
+                     const FArray3& s11, const FArray3& s12, const FArray3& s13,
+                     const FArray3& s22, const FArray3& s23, const FArray3& s33,
+                     const FArray3& dum1, const FArray3& dum2) {
+  const auto& b = g.b;
+  const int ni = b.ni, nj = b.nj, nk = b.nk;
+  const Real rdx = g.rdx, rdy = g.rdy, zt = g.zt;
+  const Real cgs1 = g.cgs1, cgs2 = g.cgs2, cgs3 = g.cgs3, cgt1 = g.cgt1, cgt2 = g.cgt2, cgt3 = g.cgt3;
+  const auto uh = g.uh; const auto uf = g.uf; const auto vh = g.vh; const auto vf = g.vf;
+  const auto rds = g.rds; const auto sigma = g.sigma; const auto rdsf = g.rdsf; const auto sigmaf = g.sigmaf;
+  const auto gz = g.gz; const auto rgz = g.rgz; const auto rgzu = g.rgzu; const auto rgzv = g.rgzv;
+  const auto gx = g.gx; const auto gy = g.gy;
+
+  // dum1 stores u at w-pts, dum2 stores v at w-pts
+  Kokkos::parallel_for("calcdef_t_uvw", box3(0, ni + 2, 0, nj + 2, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+    if (k == 1) {
+      dum1(i, j, 1) = cgs1 * ua(i, j, 1) + cgs2 * ua(i, j, 2) + cgs3 * ua(i, j, 3);
+      dum2(i, j, 1) = cgs1 * va(i, j, 1) + cgs2 * va(i, j, 2) + cgs3 * va(i, j, 3);
+    } else if (k == nk + 1) {
+      dum1(i, j, nk + 1) = cgt1 * ua(i, j, nk) + cgt2 * ua(i, j, nk - 1) + cgt3 * ua(i, j, nk - 2);
+      dum2(i, j, nk + 1) = cgt1 * va(i, j, nk) + cgt2 * va(i, j, nk - 1) + cgt3 * va(i, j, nk - 2);
+    } else {
+      const Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+      const Real r1 = 1.0 - r2;
+      dum1(i, j, k) = r1 * ua(i, j, k - 1) + r2 * ua(i, j, k);
+      dum2(i, j, k) = r1 * va(i, j, k - 1) + r2 * va(i, j, k);
+    }
+  });
+  Kokkos::parallel_for("calcdef_t_s", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    Real t = gz(i, j, 1) * (ua(i + 1, j, k) * rgzu(i + 1, j, 1) - ua(i, j, k) * rgzu(i, j, 1)) * rdx * uh(i)
+             + (gx(i, j, k + 1) * (dum1(i, j, k + 1) + dum1(i + 1, j, k + 1))
+                - gx(i, j, k) * (dum1(i, j, k) + dum1(i + 1, j, k))) * 0.5 * rdsf(k);
+    s11(i, j, k) = t * rho(i, j, k);
+    t = gz(i, j, 1) * (va(i, j + 1, k) * rgzv(i, j + 1, 1) - va(i, j, k) * rgzv(i, j, 1)) * rdy * vh(j)
+        + (gy(i, j, k + 1) * (dum2(i, j, k + 1) + dum2(i, j + 1, k + 1))
+           - gy(i, j, k) * (dum2(i, j, k) + dum2(i, j + 1, k))) * 0.5 * rdsf(k);
+    s22(i, j, k) = t * rho(i, j, k);
+    t = (wa(i, j, k + 1) - wa(i, j, k)) * rdsf(k) * gz(i, j, 1);
+    s33(i, j, k) = t * rho(i, j, k);
+  });
+  Kokkos::parallel_for("calcdef_t_s12", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    const Real r1 = 0.25 * ((rho(i - 1, j - 1, k) * gz(i - 1, j - 1, 1) + rho(i, j, k) * gz(i, j, 1))
+                           + (rho(i - 1, j, k) * gz(i - 1, j, 1) + rho(i, j - 1, k) * gz(i, j - 1, 1)));
+    s12(i, j, k) = 0.5 * ((r1 * (ua(i, j, k) * rgzu(i, j, 1) - ua(i, j - 1, k) * rgzu(i, j - 1, 1)) * rdy * vf(j)
+                           + 0.5 * ((zt - sigmaf(k + 1)) * (dum1(i, j - 1, k + 1) + dum1(i, j, k + 1))
+                                    - (zt - sigmaf(k)) * (dum1(i, j - 1, k) + dum1(i, j, k)))
+                                 * rdsf(k) * r1 * (rgzu(i, j, 1) - rgzu(i, j - 1, 1)) * rdy * vf(j))
+                          + (r1 * (va(i, j, k) * rgzv(i, j, 1) - va(i - 1, j, k) * rgzv(i - 1, j, 1)) * rdx * uf(i)
+                             + 0.5 * ((zt - sigmaf(k + 1)) * (dum2(i - 1, j, k + 1) + dum2(i, j, k + 1))
+                                      - (zt - sigmaf(k)) * (dum2(i - 1, j, k) + dum2(i, j, k)))
+                                   * rdsf(k) * r1 * (rgzv(i, j, 1) - rgzv(i - 1, j, 1)) * rdx * uf(i)));
+  });
+  // now, dum1 stores w at scalar-pts
+  Kokkos::parallel_for("calcdef_t_ws", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    dum1(i, j, k) = 0.5 * (wa(i, j, k) + wa(i, j, k + 1));
+  });
+  if (nk >= 2) {
+    Kokkos::parallel_for("calcdef_t_s13", box3(1, ni + 1, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      const Real t = 0.5 * ((ua(i, j, k) - ua(i, j, k - 1)) * rds(k)
+                            + (wa(i, j, k) * rgz(i, j, 1) - wa(i - 1, j, k) * rgz(i - 1, j, 1)) * rdx * uf(i)
+                            + 0.5 * rds(k) * ((zt - sigma(k)) * (dum1(i, j, k) + dum1(i - 1, j, k))
+                                              - (zt - sigma(k - 1)) * (dum1(i, j, k - 1) + dum1(i - 1, j, k - 1)))
+                                  * (rgz(i, j, 1) - rgz(i - 1, j, 1)) * rdx * uf(i));
+      s13(i, j, k) = t * 0.5 * (gz(i - 1, j, 1) * rf(i - 1, j, k) + gz(i, j, 1) * rf(i, j, k));
+    });
+    Kokkos::parallel_for("calcdef_t_s23", box3(1, ni, 1, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      const Real t = 0.5 * ((va(i, j, k) - va(i, j, k - 1)) * rds(k)
+                            + (wa(i, j, k) * rgz(i, j, 1) - wa(i, j - 1, k) * rgz(i, j - 1, 1)) * rdy * vf(j)
+                            + 0.5 * rds(k) * ((zt - sigma(k)) * (dum1(i, j, k) + dum1(i, j - 1, k))
+                                              - (zt - sigma(k - 1)) * (dum1(i, j, k - 1) + dum1(i, j - 1, k - 1)))
+                                  * (rgz(i, j, 1) - rgz(i, j - 1, 1)) * rdy * vf(j));
+      s23(i, j, k) = t * 0.5 * (gz(i, j - 1, 1) * rf(i, j - 1, k) + gz(i, j, 1) * rf(i, j, k));
+    });
+  }
+}
+
 void calcdef(const Options& o, const Grid& g, const FArray3& rho, const FArray3& rf,
              const FArray3& ua, const FArray3& va, const FArray3& wa,
              const FArray3& s11, const FArray3& s12, const FArray3& s13,
              const FArray3& s22, const FArray3& s23, const FArray3& s33,
-             const FArray3& defv, const FArray3& defh) {
+             const FArray3& defv, const FArray3& defh,
+             const FArray3& dum1, const FArray3& dum2) {
   const auto& b = g.b;
   const int ni = b.ni, nj = b.nj, nk = b.nk;
   const Real rdx = g.rdx, rdy = g.rdy, rdz = g.rdz;
@@ -415,6 +498,12 @@ void calcdef(const Options& o, const Grid& g, const FArray3& rho, const FArray3&
   const auto c1 = g.c1;
   const auto c2 = g.c2;
 
+  if (b.terrain_flag) {
+    // Cartesian with terrain (no wall conditions in this branch of turb.F)
+    if (!dum1.is_allocated() || !dum2.is_allocated())
+      throw std::runtime_error("cm1k turb::calcdef: terrain needs the dum1/dum2 scratch arrays");
+    calcdef_terrain(g, rho, rf, ua, va, wa, s11, s12, s13, s22, s23, s33, dum1, dum2);
+  } else {
   Kokkos::parallel_for("calcdef_s", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     const Real temz = rdz * mh(1, 1, k);
     s11(i, j, k) = rho(i, j, k) * (ua(i + 1, j, k) - ua(i, j, k)) * rdx * uh(i);
@@ -476,6 +565,7 @@ void calcdef(const Options& o, const Grid& g, const FArray3& rho, const FArray3&
     else if (o.nbc == 4 && o.ibn == 1)
       Kokkos::parallel_for("calcdef_n23", box2(1, ni, 2, nk), KOKKOS_LAMBDA(int i, int k) { s23(i, nj + 1, k) = -2.0 * wa(i, nj, k) * rdy * vf(nj + 1); });
   }
+  }  // terrain_flag
 
   // open boundary conditions
   if (o.wbc == 2 || o.ebc == 2 || o.sbc == 2 || o.nbc == 2) {
@@ -710,7 +800,8 @@ void sfc_and_turb(const Options& o, const Constants& c, const Grid& g, const Bas
   });
   calcnm(o, c, b, g.rdz, g.c1, g.c2, g.mf, base.pi0, base.th0, ts.nm, w.d1, w.d2, w.d3, w.d6,
          prs, ppi, tha, qa);
-  calcdef(o, g, rho, rf, ua, va, wa, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, ts.defv, ts.defh);
+  calcdef(o, g, rho, rf, ua, va, wa, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, ts.defv, ts.defh,
+          w.d1, w.d2);
   tkekm(o, g, ts.nm, w.d1, w.d3, w.d4, w.d5, kmh, kmv, khh, khv, ts.cme, ts.ce1, ts.ce2,
         tkea, ts.lenscl, ts.dissten);
   tkebc(o, b, tkea, kmh, kmv, khh, khv, sfc);
@@ -765,6 +856,54 @@ void turbt(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
   const auto mf = g.mf;
   const auto turbx = w.d1, turby = w.d2, turbz = w.d3, dumx = w.d4, dumy = w.d5, dumz = w.d6;
 
+  if (b.terrain_flag) {
+    // Cartesian with terrain
+    const Real zt = g.zt;
+    const auto rds = g.rds; const auto sigma = g.sigma;
+    const auto gz = g.gz; const auto rgz = g.rgz; const auto rgzu = g.rgzu; const auto rgzv = g.rgzv;
+    // turbz stores t at s-pts
+    Kokkos::parallel_for("turbt_t_ts", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      turbz(i, j, k) = 0.5 * (t(i, j, k) + t(i, j, k + 1));
+    });
+    Kokkos::parallel_for("turbt_t_fx", box3(1, ni + 1, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      // note: K is multiplied by 2
+      dumx(i, j, k) = -0.25 * (gz(i, j, 1) * rf(i, j, k) + gz(i - 1, j, 1) * rf(i - 1, j, k))
+                      * 2.0 * (kmh(i, j, k) + kmh(i - 1, j, k)) * (
+                          (t(i, j, k) * rgz(i, j, 1) - t(i - 1, j, k) * rgz(i - 1, j, 1)) * rdx * uf(i)
+                          + 0.5 * ((zt - sigma(k)) * (turbz(i - 1, j, k) + turbz(i, j, k))
+                                   - (zt - sigma(k - 1)) * (turbz(i - 1, j, k - 1) + turbz(i, j, k - 1)))
+                                * rds(k) * (rgz(i, j, 1) - rgz(i - 1, j, 1)) * rdx * uf(i));
+    });
+    Kokkos::parallel_for("turbt_t_fy", box3(1, ni, 1, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      dumy(i, j, k) = -0.25 * (gz(i, j, 1) * rf(i, j, k) + gz(i, j - 1, 1) * rf(i, j - 1, k))
+                      * 2.0 * (kmh(i, j, k) + kmh(i, j - 1, k)) * (
+                          (t(i, j, k) * rgz(i, j, 1) - t(i, j - 1, k) * rgz(i, j - 1, 1)) * rdy * vf(j)
+                          + 0.5 * ((zt - sigma(k)) * (turbz(i, j - 1, k) + turbz(i, j, k))
+                                   - (zt - sigma(k - 1)) * (turbz(i, j - 1, k - 1) + turbz(i, j, k - 1)))
+                                * rds(k) * (rgz(i, j, 1) - rgz(i, j - 1, 1)) * rdy * vf(j));
+    });
+    Kokkos::parallel_for("turbt_t_tb", box2(1, ni + 1, 1, nj + 1), KOKKOS_LAMBDA(int i, int j) {
+      dumx(i, j, 1) = 0.0;
+      dumx(i, j, nk + 1) = 0.0;
+      dumy(i, j, 1) = 0.0;
+      dumy(i, j, nk + 1) = 0.0;
+    });
+    // turbz stores dumx at s-pts, dumz stores dumy at s-pts
+    Kokkos::parallel_for("turbt_t_fs", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      turbz(i, j, k) = 0.5 * (dumx(i, j, k) + dumx(i, j, k + 1));
+      dumz(i, j, k) = 0.5 * (dumy(i, j, k) + dumy(i, j, k + 1));
+    });
+    Kokkos::parallel_for("turbt_t_h", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      turbx(i, j, k) = -(dumx(i + 1, j, k) * rgzu(i + 1, j, 1) - dumx(i, j, k) * rgzu(i, j, 1)) * gz(i, j, 1) * rdx * uh(i)
+                       - 0.5 * ((zt - sigma(k)) * (turbz(i, j, k) + turbz(i + 1, j, k))
+                                - (zt - sigma(k - 1)) * (turbz(i, j, k - 1) + turbz(i + 1, j, k - 1)))
+                             * rds(k) * (rgzu(i + 1, j, 1) - rgzu(i, j, 1)) * gz(i, j, 1) * rdx * uh(i);
+      turby(i, j, k) = -(dumy(i, j + 1, k) * rgzv(i, j + 1, 1) - dumy(i, j, k) * rgzv(i, j, 1)) * gz(i, j, 1) * rdy * vh(j)
+                       - 0.5 * ((zt - sigma(k)) * (dumz(i, j, k) + dumz(i, j + 1, k))
+                                - (zt - sigma(k - 1)) * (dumz(i, j, k - 1) + dumz(i, j + 1, k - 1)))
+                             * rds(k) * (rgzv(i, j + 1, 1) - rgzv(i, j, 1)) * gz(i, j, 1) * rdy * vh(j);
+    });
+  } else {
   Kokkos::parallel_for("turbt_flux", box3(1, ni + 1, 1, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     // note: K is multiplied by 2
     dumx(i, j, k) = -0.25 * (rf(i, j, k) + rf(i - 1, j, k))
@@ -782,6 +921,7 @@ void turbt(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
     turbx(i, j, k) = -(dumx(i + 1, j, k) - dumx(i, j, k)) * rdx * uh(i);
     turby(i, j, k) = -(dumy(i, j + 1, k) - dumy(i, j, k)) * rdy * vh(j);
   });
+  }  // terrain_flag
   if (o.wbc == 2 || o.ebc == 2 || o.sbc == 2 || o.nbc == 2) {
     if (o.wbc == 2 && o.ibw == 1) Kokkos::parallel_for("turbt_ow", box2(1, nj, 2, nk), KOKKOS_LAMBDA(int j, int k) { turbx(1, j, k) = 0.0; });
     if (o.ebc == 2 && o.ibe == 1) Kokkos::parallel_for("turbt_oe", box2(1, nj, 2, nk), KOKKOS_LAMBDA(int j, int k) { turbx(ni, j, k) = 0.0; });
@@ -901,7 +1041,8 @@ void dissheat(const Options& o, const Constants& c, const Bounds& b, const FArra
 void turbuz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
             const FArray3& u, const FArray3& w, const FArray3& t13, const FArray3& kmv,
             const FArray3& turbz, const FArray3& dum1, const FArray3& dum2, const FArray3& dum3,
-            const FArray3& dum7) {
+            const FArray3& dum7,
+            const FArray3& dum9) {
   const auto& b = g.b;
   const int ni = b.ni, nj = b.nj, nk = b.nk;
   if (nk < 3) throw std::runtime_error("cm1k turb::turbuz: nk >= 3 required");
@@ -919,6 +1060,16 @@ void turbuz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const 
     const Real tema = -0.0625 * dt * vialpha * rdz * rdz;
     const Real temb = 0.0625 * dt * vibeta * rdz * rdz;
     const Real temc = 0.5 * dt * rdz;
+    const bool terrain = b.terrain_flag;
+    if (terrain && !dum9.is_allocated())
+      throw std::runtime_error("cm1k turb::turbuz: terrain needs the dum9 scratch array");
+    const Real zt = g.zt;
+    const auto rds = g.rds; const auto sigma = g.sigma; const auto gz = g.gz; const auto rgz = g.rgz;
+    if (terrain)
+      // dum9 stores w at scalar-pts
+      Kokkos::parallel_for("turbuz_ws", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        dum9(i, j, k) = 0.5 * (w(i, j, k) + w(i, j, k + 1));
+      });
     Kokkos::parallel_for("turbuz_i", box2(1, ni + 1, 1, nj), KOKKOS_LAMBDA(int i, int j) {
       {
         const int k = 1;
@@ -950,9 +1101,18 @@ void turbuz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const 
         dum1(i, j, k) = -cfc * tem;
         dum2(i, j, k) = (cfd - cfa * dum2(i, j, k - 1)) * tem;
         // explicit piece ... dwdx term
-        dum7(i, j, k) = (w(i, j, k) - w(i - 1, j, k)) * rdx * uf(i)
-                        * 0.25 * (kmv(i - 1, j, k) + kmv(i, j, k))
-                        * (rf(i - 1, j, k) + rf(i, j, k));
+        if (terrain) {
+          const Real d7 = (w(i, j, k) * rgz(i, j, 1) - w(i - 1, j, k) * rgz(i - 1, j, 1)) * rdx * uf(i)
+                          + 0.5 * rds(k) * ((zt - sigma(k)) * (dum9(i, j, k) + dum9(i - 1, j, k))
+                                            - (zt - sigma(k - 1)) * (dum9(i, j, k - 1) + dum9(i - 1, j, k - 1)))
+                                * (rgz(i, j, 1) - rgz(i - 1, j, 1)) * rdx * uf(i);
+          dum7(i, j, k) = d7 * 0.25 * (kmv(i - 1, j, k) + kmv(i, j, k))
+                          * (gz(i - 1, j, 1) * rf(i - 1, j, k) + gz(i, j, 1) * rf(i, j, k));
+        } else {
+          dum7(i, j, k) = (w(i, j, k) - w(i - 1, j, k)) * rdx * uf(i)
+                          * 0.25 * (kmv(i - 1, j, k) + kmv(i, j, k))
+                          * (rf(i - 1, j, k) + rf(i, j, k));
+        }
       }
       {
         const int k = nk;
@@ -967,9 +1127,18 @@ void turbuz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const 
         tem = 1.0 / (cfa * dum1(i, j, k - 1) + cfb);
         dum3(i, j, k) = (cfd - cfa * dum2(i, j, k - 1)) * tem;
         turbz(i, j, k) = (rho(i - 1, j, k) + rho(i, j, k)) * (dum3(i, j, k) - u(i, j, k)) * rdt;
-        dum7(i, j, k) = (w(i, j, k) - w(i - 1, j, k)) * rdx * uf(i)
-                        * 0.25 * (kmv(i - 1, j, k) + kmv(i, j, k))
-                        * (rf(i - 1, j, k) + rf(i, j, k));
+        if (terrain) {
+          const Real d7 = (w(i, j, k) * rgz(i, j, 1) - w(i - 1, j, k) * rgz(i - 1, j, 1)) * rdx * uf(i)
+                          + 0.5 * rds(k) * ((zt - sigma(k)) * (dum9(i, j, k) + dum9(i - 1, j, k))
+                                            - (zt - sigma(k - 1)) * (dum9(i, j, k - 1) + dum9(i - 1, j, k - 1)))
+                                * (rgz(i, j, 1) - rgz(i - 1, j, 1)) * rdx * uf(i);
+          dum7(i, j, k) = d7 * 0.25 * (kmv(i - 1, j, k) + kmv(i, j, k))
+                          * (gz(i - 1, j, 1) * rf(i - 1, j, k) + gz(i, j, 1) * rf(i, j, k));
+        } else {
+          dum7(i, j, k) = (w(i, j, k) - w(i - 1, j, k)) * rdx * uf(i)
+                          * 0.25 * (kmv(i - 1, j, k) + kmv(i, j, k))
+                          * (rf(i - 1, j, k) + rf(i, j, k));
+        }
         turbz(i, j, k) = turbz(i, j, k) + (0.0 - dum7(i, j, k)) * rdz * 0.5 * (mh(i - 1, j, k) + mh(i, j, k));
       }
       for (int k = nk - 1; k >= 1; --k) {
@@ -994,6 +1163,38 @@ void turbu(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
   const auto turbx = wk.d1, turby = wk.d2, turbz = wk.d3, dum1 = wk.d4, dum2 = wk.d5, dum3 = wk.d6, dum7 = wk.d7;
 
   if (o.dohturb) {
+    if (b.terrain_flag) {
+      const Real zt = g.zt;
+      const Real cgs1 = g.cgs1, cgs2 = g.cgs2, cgs3 = g.cgs3, cgt1 = g.cgt1, cgt2 = g.cgt2, cgt3 = g.cgt3;
+      const auto rds = g.rds; const auto sigma = g.sigma; const auto rdsf = g.rdsf; const auto sigmaf = g.sigmaf;
+      const auto gzu = g.gzu; const auto rgz = g.rgz; const auto gxu = g.gxu;
+      // dum1 stores t11 at w-pts, dum2 stores t12 at w-pts
+      Kokkos::parallel_for("turbu_t_w", box3(0, ni + 1, 1, nj + 1, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (k == 1) {
+          dum1(i, j, 1) = cgs1 * t11(i, j, 1) + cgs2 * t11(i, j, 2) + cgs3 * t11(i, j, 3);
+          dum2(i, j, 1) = cgs1 * t12(i, j, 1) + cgs2 * t12(i, j, 2) + cgs3 * t12(i, j, 3);
+        } else if (k == nk + 1) {
+          dum1(i, j, nk + 1) = cgt1 * t11(i, j, nk) + cgt2 * t11(i, j, nk - 1) + cgt3 * t11(i, j, nk - 2);
+          dum2(i, j, nk + 1) = cgt1 * t12(i, j, nk) + cgt2 * t12(i, j, nk - 1) + cgt3 * t12(i, j, nk - 2);
+        } else {
+          const Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+          const Real r1 = 1.0 - r2;
+          dum1(i, j, k) = r1 * t11(i, j, k - 1) + r2 * t11(i, j, k);
+          dum2(i, j, k) = r1 * t12(i, j, k - 1) + r2 * t12(i, j, k);
+        }
+      });
+      Kokkos::parallel_for("turbu_t_h", box3(1, ni + 1, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        turbx(i, j, k) = gzu(i, j, 1) * (t11(i, j, k) * rgz(i, j, 1) - t11(i - 1, j, k) * rgz(i - 1, j, 1)) * rdx * uf(i)
+                         + 0.5 * (gxu(i, j, k + 1) * (dum1(i - 1, j, k + 1) + dum1(i, j, k + 1))
+                                  - gxu(i, j, k) * (dum1(i - 1, j, k) + dum1(i, j, k))) * rdsf(k);
+        const Real r1 = 0.25 * ((rgz(i - 1, j - 1, 1) + rgz(i, j, 1)) + (rgz(i - 1, j, 1) + rgz(i, j - 1, 1)));
+        const Real r2 = 0.25 * ((rgz(i - 1, j + 1, 1) + rgz(i, j, 1)) + (rgz(i - 1, j, 1) + rgz(i, j + 1, 1)));
+        turby(i, j, k) = gzu(i, j, 1) * (t12(i, j + 1, k) * r2 - t12(i, j, k) * r1) * rdy * vh(j)
+                         + 0.5 * ((zt - sigmaf(k + 1)) * (dum2(i, j, k + 1) + dum2(i, j + 1, k + 1))
+                                  - (zt - sigmaf(k)) * (dum2(i, j, k) + dum2(i, j + 1, k)))
+                               * gzu(i, j, 1) * (r2 - r1) * rdy * vh(j) * rdsf(k);
+      });
+    } else
     Kokkos::parallel_for("turbu_h", box3(1, ni + 1, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       turbx(i, j, k) = (t11(i, j, k) - t11(i - 1, j, k)) * rdx * uf(i);
       turby(i, j, k) = (t12(i, j + 1, k) - t12(i, j, k)) * rdy * vh(j);
@@ -1011,7 +1212,7 @@ void turbu(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
 
   // turbuz (z-direction)
   if (o.dovturb) {
-    turbuz(o, g, dt, rho, rf, u, w, t13, kmv, turbz, dum1, dum2, dum3, dum7);
+    turbuz(o, g, dt, rho, rf, u, w, t13, kmv, turbz, dum1, dum2, dum3, dum7, wk.d9);
   } else {
     Kokkos::parallel_for("turbu_z0", box3(1, ni + 1, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) { turbz(i, j, k) = 0.0; });
   }
@@ -1025,7 +1226,8 @@ void turbu(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
 void turbvz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
             const FArray3& v, const FArray3& w, const FArray3& t23, const FArray3& kmv,
             const FArray3& turbz, const FArray3& dum1, const FArray3& dum2, const FArray3& dum3,
-            const FArray3& dum7) {
+            const FArray3& dum7,
+            const FArray3& dum9) {
   const auto& b = g.b;
   const int ni = b.ni, nj = b.nj, nk = b.nk;
   if (nk < 3) throw std::runtime_error("cm1k turb::turbvz: nk >= 3 required");
@@ -1043,6 +1245,16 @@ void turbvz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const 
     const Real tema = -0.0625 * dt * vialpha * rdz * rdz;
     const Real temb = 0.0625 * dt * vibeta * rdz * rdz;
     const Real temc = 0.5 * dt * rdz;
+    const bool terrain = b.terrain_flag;
+    if (terrain && !dum9.is_allocated())
+      throw std::runtime_error("cm1k turb::turbvz: terrain needs the dum9 scratch array");
+    const Real zt = g.zt;
+    const auto rds = g.rds; const auto sigma = g.sigma; const auto gz = g.gz; const auto rgz = g.rgz;
+    if (terrain)
+      // dum9 stores w at scalar-pts
+      Kokkos::parallel_for("turbvz_ws", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        dum9(i, j, k) = 0.5 * (w(i, j, k) + w(i, j, k + 1));
+      });
     Kokkos::parallel_for("turbvz_i", box2(1, ni, 1, nj + 1), KOKKOS_LAMBDA(int i, int j) {
       {
         const int k = 1;
@@ -1074,9 +1286,18 @@ void turbvz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const 
         dum1(i, j, k) = -cfc * tem;
         dum2(i, j, k) = (cfd - cfa * dum2(i, j, k - 1)) * tem;
         // explicit piece ... dwdy term
-        dum7(i, j, k) = (w(i, j, k) - w(i, j - 1, k)) * rdy * vf(j)
-                        * 0.25 * (kmv(i, j - 1, k) + kmv(i, j, k))
-                        * (rf(i, j - 1, k) + rf(i, j, k));
+        if (terrain) {
+          const Real d7 = (w(i, j, k) * rgz(i, j, 1) - w(i, j - 1, k) * rgz(i, j - 1, 1)) * rdy * vf(j)
+                          + 0.5 * rds(k) * ((zt - sigma(k)) * (dum9(i, j, k) + dum9(i, j - 1, k))
+                                            - (zt - sigma(k - 1)) * (dum9(i, j, k - 1) + dum9(i, j - 1, k - 1)))
+                                * (rgz(i, j, 1) - rgz(i, j - 1, 1)) * rdy * vf(j);
+          dum7(i, j, k) = d7 * 0.25 * (kmv(i, j - 1, k) + kmv(i, j, k))
+                          * (gz(i, j - 1, 1) * rf(i, j - 1, k) + gz(i, j, 1) * rf(i, j, k));
+        } else {
+          dum7(i, j, k) = (w(i, j, k) - w(i, j - 1, k)) * rdy * vf(j)
+                          * 0.25 * (kmv(i, j - 1, k) + kmv(i, j, k))
+                          * (rf(i, j - 1, k) + rf(i, j, k));
+        }
       }
       {
         const int k = nk;
@@ -1091,9 +1312,18 @@ void turbvz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const 
         tem = 1.0 / (cfa * dum1(i, j, k - 1) + cfb);
         dum3(i, j, k) = (cfd - cfa * dum2(i, j, k - 1)) * tem;
         turbz(i, j, k) = (rho(i, j - 1, k) + rho(i, j, k)) * (dum3(i, j, k) - v(i, j, k)) * rdt;
-        dum7(i, j, k) = (w(i, j, k) - w(i, j - 1, k)) * rdy * vf(j)
-                        * 0.25 * (kmv(i, j - 1, k) + kmv(i, j, k))
-                        * (rf(i, j - 1, k) + rf(i, j, k));
+        if (terrain) {
+          const Real d7 = (w(i, j, k) * rgz(i, j, 1) - w(i, j - 1, k) * rgz(i, j - 1, 1)) * rdy * vf(j)
+                          + 0.5 * rds(k) * ((zt - sigma(k)) * (dum9(i, j, k) + dum9(i, j - 1, k))
+                                            - (zt - sigma(k - 1)) * (dum9(i, j, k - 1) + dum9(i, j - 1, k - 1)))
+                                * (rgz(i, j, 1) - rgz(i, j - 1, 1)) * rdy * vf(j);
+          dum7(i, j, k) = d7 * 0.25 * (kmv(i, j - 1, k) + kmv(i, j, k))
+                          * (gz(i, j - 1, 1) * rf(i, j - 1, k) + gz(i, j, 1) * rf(i, j, k));
+        } else {
+          dum7(i, j, k) = (w(i, j, k) - w(i, j - 1, k)) * rdy * vf(j)
+                          * 0.25 * (kmv(i, j - 1, k) + kmv(i, j, k))
+                          * (rf(i, j - 1, k) + rf(i, j, k));
+        }
         turbz(i, j, k) = turbz(i, j, k) + (0.0 - dum7(i, j, k)) * rdz * 0.5 * (mh(i, j - 1, k) + mh(i, j, k));
       }
       for (int k = nk - 1; k >= 1; --k) {
@@ -1118,6 +1348,38 @@ void turbv(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
   const auto turbx = wk.d1, turby = wk.d2, turbz = wk.d3, dum1 = wk.d4, dum2 = wk.d5, dum3 = wk.d6, dum7 = wk.d7;
 
   if (o.dohturb) {
+    if (b.terrain_flag) {
+      const Real zt = g.zt;
+      const Real cgs1 = g.cgs1, cgs2 = g.cgs2, cgs3 = g.cgs3, cgt1 = g.cgt1, cgt2 = g.cgt2, cgt3 = g.cgt3;
+      const auto rds = g.rds; const auto sigma = g.sigma; const auto rdsf = g.rdsf; const auto sigmaf = g.sigmaf;
+      const auto gzv = g.gzv; const auto rgz = g.rgz; const auto gyv = g.gyv;
+      // dum1 stores t12 at w-pts, dum2 stores t22 at w-pts
+      Kokkos::parallel_for("turbv_t_w", box3(1, ni + 1, 0, nj + 1, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (k == 1) {
+          dum1(i, j, 1) = cgs1 * t12(i, j, 1) + cgs2 * t12(i, j, 2) + cgs3 * t12(i, j, 3);
+          dum2(i, j, 1) = cgs1 * t22(i, j, 1) + cgs2 * t22(i, j, 2) + cgs3 * t22(i, j, 3);
+        } else if (k == nk + 1) {
+          dum1(i, j, nk + 1) = cgt1 * t12(i, j, nk) + cgt2 * t12(i, j, nk - 1) + cgt3 * t12(i, j, nk - 2);
+          dum2(i, j, nk + 1) = cgt1 * t22(i, j, nk) + cgt2 * t22(i, j, nk - 1) + cgt3 * t22(i, j, nk - 2);
+        } else {
+          const Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+          const Real r1 = 1.0 - r2;
+          dum1(i, j, k) = r1 * t12(i, j, k - 1) + r2 * t12(i, j, k);
+          dum2(i, j, k) = r1 * t22(i, j, k - 1) + r2 * t22(i, j, k);
+        }
+      });
+      Kokkos::parallel_for("turbv_t_h", box3(1, ni, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        const Real r1 = 0.25 * ((rgz(i - 1, j - 1, 1) + rgz(i, j, 1)) + (rgz(i - 1, j, 1) + rgz(i, j - 1, 1)));
+        const Real r2 = 0.25 * ((rgz(i + 1, j - 1, 1) + rgz(i, j, 1)) + (rgz(i + 1, j, 1) + rgz(i, j - 1, 1)));
+        turbx(i, j, k) = gzv(i, j, 1) * (t12(i + 1, j, k) * r2 - t12(i, j, k) * r1) * rdx * uh(i)
+                         + 0.5 * ((zt - sigmaf(k + 1)) * (dum1(i, j, k + 1) + dum1(i + 1, j, k + 1))
+                                  - (zt - sigmaf(k)) * (dum1(i, j, k) + dum1(i + 1, j, k)))
+                               * gzv(i, j, 1) * (r2 - r1) * rdx * uh(i) * rdsf(k);
+        turby(i, j, k) = gzv(i, j, 1) * (t22(i, j, k) * rgz(i, j, 1) - t22(i, j - 1, k) * rgz(i, j - 1, 1)) * rdy * vf(j)
+                         + 0.5 * (gyv(i, j, k + 1) * (dum2(i, j - 1, k + 1) + dum2(i, j, k + 1))
+                                  - gyv(i, j, k) * (dum2(i, j - 1, k) + dum2(i, j, k))) * rdsf(k);
+      });
+    } else
     Kokkos::parallel_for("turbv_h", box3(1, ni, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       turbx(i, j, k) = (t12(i + 1, j, k) - t12(i, j, k)) * rdx * uh(i);
       turby(i, j, k) = (t22(i, j, k) - t22(i, j - 1, k)) * rdy * vf(j);
@@ -1135,7 +1397,7 @@ void turbv(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
 
   // turbvz (z-direction)
   if (o.dovturb) {
-    turbvz(o, g, dt, rho, rf, v, w, t23, kmv, turbz, dum1, dum2, dum3, dum7);
+    turbvz(o, g, dt, rho, rf, v, w, t23, kmv, turbz, dum1, dum2, dum3, dum7, wk.d9);
   } else {
     Kokkos::parallel_for("turbv_z0", box3(1, ni, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) { turbz(i, j, k) = 0.0; });
   }
@@ -1160,6 +1422,23 @@ void turbw(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
   const auto turbx = wk.d1, turby = wk.d2, turbz = wk.d3, dum1 = wk.d4, dum2 = wk.d5, dum3 = wk.d6;
 
   if (o.dohturb) {
+    if (b.terrain_flag) {
+      const Real zt = g.zt;
+      const auto rds = g.rds; const auto sigma = g.sigma;
+      const auto gz = g.gz; const auto rgzu = g.rgzu; const auto rgzv = g.rgzv;
+      Kokkos::parallel_for("turbw_t_s", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        dum1(i, j, k) = 0.25 * ((t13(i, j, k + 1) + t13(i + 1, j, k + 1)) + (t13(i, j, k) + t13(i + 1, j, k)));
+        dum2(i, j, k) = 0.25 * ((t23(i, j, k + 1) + t23(i, j + 1, k + 1)) + (t23(i, j, k) + t23(i, j + 1, k)));
+      });
+      Kokkos::parallel_for("turbw_t_h", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        turbx(i, j, k) = gz(i, j, 1) * (t13(i + 1, j, k) * rgzu(i + 1, j, 1) - t13(i, j, k) * rgzu(i, j, 1)) * rdx * uh(i)
+                         + ((zt - sigma(k)) * dum1(i, j, k) - (zt - sigma(k - 1)) * dum1(i, j, k - 1))
+                               * gz(i, j, 1) * (rgzu(i + 1, j, 1) - rgzu(i, j, 1)) * rdx * uh(i) * rds(k);
+        turby(i, j, k) = gz(i, j, 1) * (t23(i, j + 1, k) * rgzv(i, j + 1, 1) - t23(i, j, k) * rgzv(i, j, 1)) * rdy * vh(j)
+                         + ((zt - sigma(k)) * dum2(i, j, k) - (zt - sigma(k - 1)) * dum2(i, j, k - 1))
+                               * gz(i, j, 1) * (rgzv(i, j + 1, 1) - rgzv(i, j, 1)) * rdy * vh(j) * rds(k);
+      });
+    } else
     Kokkos::parallel_for("turbw_h", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       turbx(i, j, k) = (t13(i + 1, j, k) - t13(i, j, k)) * rdx * uh(i);
       turby(i, j, k) = (t23(i, j + 1, k) - t23(i, j, k)) * rdy * vh(j);
@@ -1350,7 +1629,69 @@ void turbs(const Options& o, const Grid& g, int iflux, Real dt, const FArray3& r
   const auto vf = g.vf;
   const auto turbx = wk.d1, turby = wk.d2, turbz = wk.d3, dumx = wk.d4, dumy = wk.d5, dumz = wk.d6;
 
-  if (o.dohturb) {
+  if (o.dohturb && b.terrain_flag) {
+    // Cartesian with terrain (the open-bc flux copies of the flat branch are not applied here)
+    if (nk < 3) throw std::runtime_error("cm1k turb::turbs: terrain needs nk >= 3");
+    const Real cgs1 = g.cgs1, cgs2 = g.cgs2, cgs3 = g.cgs3, cgt1 = g.cgt1, cgt2 = g.cgt2, cgt3 = g.cgt3;
+    const auto rds = g.rds; const auto sigma = g.sigma; const auto rdsf = g.rdsf; const auto sigmaf = g.sigmaf;
+    const auto gz = g.gz; const auto rgz = g.rgz; const auto rgzu = g.rgzu; const auto rgzv = g.rgzv;
+    const auto gx = g.gx; const auto gxu = g.gxu; const auto gy = g.gy; const auto gyv = g.gyv;
+    // use turbz as a temporary array for s at w-pts
+    Kokkos::parallel_for("turbs_t_sw", box3(0, ni + 1, 0, nj + 1, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+      if (k == 1) {
+        turbz(i, j, 1) = cgs1 * s(i, j, 1) + cgs2 * s(i, j, 2) + cgs3 * s(i, j, 3);
+      } else if (k == nk + 1) {
+        turbz(i, j, nk + 1) = cgt1 * s(i, j, nk) + cgt2 * s(i, j, nk - 1) + cgt3 * s(i, j, nk - 2);
+      } else {
+        const Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+        const Real r1 = 1.0 - r2;
+        turbz(i, j, k) = r1 * s(i, j, k - 1) + r2 * s(i, j, k);
+      }
+    });
+    Kokkos::parallel_for("turbs_t_fx", box3(1, ni + 1, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      dumx(i, j, k) = -0.125 * (gz(i, j, 1) * rho(i, j, k) + gz(i - 1, j, 1) * rho(i - 1, j, k))
+                      * ((khh(i, j, k) + khh(i - 1, j, k)) + (khh(i, j, k + 1) + khh(i - 1, j, k + 1))) * (
+                          (s(i, j, k) * rgz(i, j, 1) - s(i - 1, j, k) * rgz(i - 1, j, 1)) * rdx * uf(i)
+                          + 0.5 * (gxu(i, j, k + 1) * (turbz(i, j, k + 1) + turbz(i - 1, j, k + 1))
+                                   - gxu(i, j, k) * (turbz(i, j, k) + turbz(i - 1, j, k)))
+                                * rdsf(k) * rgzu(i, j, 1));
+    });
+    Kokkos::parallel_for("turbs_t_fy", box3(1, ni, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      dumy(i, j, k) = -0.125 * (gz(i, j, 1) * rho(i, j, k) + gz(i, j - 1, 1) * rho(i, j - 1, k))
+                      * ((khh(i, j, k) + khh(i, j - 1, k)) + (khh(i, j, k + 1) + khh(i, j - 1, k + 1))) * (
+                          (s(i, j, k) * rgz(i, j, 1) - s(i, j - 1, k) * rgz(i, j - 1, 1)) * rdy * vf(j)
+                          + 0.5 * (gyv(i, j, k + 1) * (turbz(i, j, k + 1) + turbz(i, j - 1, k + 1))
+                                   - gyv(i, j, k) * (turbz(i, j, k) + turbz(i, j - 1, k)))
+                                * rdsf(k) * rgzv(i, j, 1));
+    });
+    // use turbz, dumz as temporary arrays for the fluxes at w-pts
+    Kokkos::parallel_for("turbs_t_fw", box3(1, ni + 1, 1, nj + 1, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+      if (k == 1) {
+        turbz(i, j, 1) = cgs1 * dumx(i, j, 1) + cgs2 * dumx(i, j, 2) + cgs3 * dumx(i, j, 3);
+        dumz(i, j, 1) = cgs1 * dumy(i, j, 1) + cgs2 * dumy(i, j, 2) + cgs3 * dumy(i, j, 3);
+      } else if (k == nk + 1) {
+        turbz(i, j, nk + 1) = cgt1 * dumx(i, j, nk) + cgt2 * dumx(i, j, nk - 1) + cgt3 * dumx(i, j, nk - 2);
+        dumz(i, j, nk + 1) = cgt1 * dumy(i, j, nk) + cgt2 * dumy(i, j, nk - 1) + cgt3 * dumy(i, j, nk - 2);
+      } else {
+        const Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+        const Real r1 = 1.0 - r2;
+        turbz(i, j, k) = r1 * dumx(i, j, k - 1) + r2 * dumx(i, j, k);
+        dumz(i, j, k) = r1 * dumy(i, j, k - 1) + r2 * dumy(i, j, k);
+      }
+    });
+    Kokkos::parallel_for("turbs_t_h", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      turbx(i, j, k) = -gz(i, j, 1) * (dumx(i + 1, j, k) * rgzu(i + 1, j, 1) - dumx(i, j, k) * rgzu(i, j, 1)) * rdx * uh(i)
+                       - ((gx(i, j, k + 1) * (turbz(i, j, k + 1) + turbz(i + 1, j, k + 1))
+                           - gx(i, j, k) * (turbz(i, j, k) + turbz(i + 1, j, k)))) * 0.5 * rdsf(k);
+      turby(i, j, k) = -gz(i, j, 1) * (dumy(i, j + 1, k) * rgzv(i, j + 1, 1) - dumy(i, j, k) * rgzv(i, j, 1)) * rdy * vh(j)
+                       - ((gy(i, j, k + 1) * (dumz(i, j, k + 1) + dumz(i, j + 1, k + 1))
+                           - gy(i, j, k) * (dumz(i, j, k) + dumz(i, j + 1, k)))) * 0.5 * rdsf(k);
+    });
+    if (o.wbc == 2 && o.ibw == 1) Kokkos::parallel_for("turbs_ow", box2(1, nj, 1, nk), KOKKOS_LAMBDA(int j, int k) { turbx(1, j, k) = 0.0; });
+    if (o.ebc == 2 && o.ibe == 1) Kokkos::parallel_for("turbs_oe", box2(1, nj, 1, nk), KOKKOS_LAMBDA(int j, int k) { turbx(ni, j, k) = 0.0; });
+    if (o.sbc == 2 && o.ibs == 1) Kokkos::parallel_for("turbs_os", box2(1, ni, 1, nk), KOKKOS_LAMBDA(int i, int k) { turby(i, 1, k) = 0.0; });
+    if (o.nbc == 2 && o.ibn == 1) Kokkos::parallel_for("turbs_on", box2(1, ni, 1, nk), KOKKOS_LAMBDA(int i, int k) { turby(i, nj, k) = 0.0; });
+  } else if (o.dohturb) {
     Kokkos::parallel_for("turbs_flux", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       dumx(i, j, k) = -0.125 * (rho(i, j, k) + rho(i - 1, j, k))
                       * ((khh(i, j, k) + khh(i - 1, j, k)) + (khh(i, j, k + 1) + khh(i - 1, j, k + 1)))
@@ -1409,6 +1750,11 @@ void turb_tendencies(const Options& o, const Grid& g, const BaseState& base, Rea
   if ((o.doimpl == 1 && o.dovturb) || (o.cm1setup == 2 && o.ipbl == 2)) vimpl_coefs(b, khv, g.mf, rf, g.mh, rr, wk.d7, wk.d8);
   // cm1r18: subtract th0r from theta (as in advection scheme)
   const auto th0 = base.th0, sadv = wk.sadv;
+  if (b.terrain_flag)
+    Kokkos::parallel_for("turb_sadv", box3(0, b.ni + 1, 0, b.nj + 1, 1, b.nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      sadv(i, j, k) = (th0(i, j, k) - th0r) + tha(i, j, k);
+    });
+  else
   Kokkos::parallel_for("turb_sadv", box3(0, b.ni + 1, 0, b.nj + 1, 1, b.nk), KOKKOS_LAMBDA(int i, int j, int k) {
     const Real tem = th0(1, 1, k) - th0r;
     sadv(i, j, k) = tem + tha(i, j, k);

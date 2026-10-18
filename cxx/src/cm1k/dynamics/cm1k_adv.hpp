@@ -6,7 +6,8 @@
 // src/pdef.F, which advs calls with pdscheme=1, hard-wired in param.F).
 //
 // Supported (everything else throws in AdvOptions::check):
-//   * Cartesian grid without terrain (terrain_flag=.false., axisymm=0),
+//   * Cartesian grid (axisymm=0), with or without terrain (terrain_flag:
+//     the terrain branches of adv.F and pdef.F, metrics from the Grid),
 //     no immersed boundaries (do_ib=.false.), no large-scale w (dolsw=.false.)
 //   * flux-form advection of orders 2..10 (hadvord*, vadvord*)
 //   * WENO for scalars/velocities with weno_order = 5 (advwenos/advwenov = 1,2),

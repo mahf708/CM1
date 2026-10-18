@@ -25,7 +25,13 @@
 //     fluxes of theta and qv into turbs: dosfcflx)
 //   * tbc=1 (free-slip upper boundary)
 //   * lateral boundaries wbc..nbc = 1 (periodic), 2 (open), 3, 4 (walls)
-//   * no terrain, axisymm=0, do_ib=.false.
+//   * terrain_flag: the "Cartesian with terrain" branches of calcdef, turbt,
+//     turbu/turbuz, turbv/turbvz, turbw and turbs, and solve1's theta-th0
+//     with th0(i,j,k); metrics, zt and the param.F extrapolation
+//     coefficients cgs*/cgt* come from the Grid. Only without a surface
+//     layer (bbc=1) and with the LES (cm1setup=1); calcdef then needs the
+//     dum1/dum2 scratch arrays and turbuz/turbvz (doimpl=1) dum9
+//   * axisymm=0, do_ib=.false.
 //   * imoist=0, or imoist=1 with the moisture layout in Options (ptype=1
 //     Kessler from the namelist; the ice branch of calcnm is ported and
 //     tested through Options set by hand)
@@ -178,7 +184,8 @@ void calcdef(const Options& o, const Grid& g, const FArray3& rho, const FArray3&
              const FArray3& ua, const FArray3& va, const FArray3& wa,
              const FArray3& s11, const FArray3& s12, const FArray3& s13,
              const FArray3& s22, const FArray3& s23, const FArray3& s33,
-             const FArray3& defv, const FArray3& defh);
+             const FArray3& defv, const FArray3& defh,
+             const FArray3& dum1 = FArray3(), const FArray3& dum2 = FArray3());
 
 // turb.F tkekm: length scales, dissipation (dissten +=), kmh/kmv/khh/khv
 // (k=2..nk), then bcw(K,1) on all four.
@@ -248,11 +255,11 @@ void turbw(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
 void turbuz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
             const FArray3& u, const FArray3& w, const FArray3& t13, const FArray3& kmv,
             const FArray3& turbz, const FArray3& dum1, const FArray3& dum2, const FArray3& dum3,
-            const FArray3& dum7);
+            const FArray3& dum7, const FArray3& dum9 = FArray3());
 void turbvz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
             const FArray3& v, const FArray3& w, const FArray3& t23, const FArray3& kmv,
             const FArray3& turbz, const FArray3& dum1, const FArray3& dum2, const FArray3& dum3,
-            const FArray3& dum7);
+            const FArray3& dum7, const FArray3& dum9 = FArray3());
 // turbtend.F turbsz: vertical subgrid flux divergence of s into turbz
 // (1..ni,1..nj,1..nk; rho-weighted, the caller multiplies by rr). dum7/dum8:
 // vimpl coefficients (doimpl=1); iflux=1 with dosfcflx uses sflux at k=1.

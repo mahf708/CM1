@@ -26,3 +26,5 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/cm1f_bridge_myj.F90 PROP
 
 file(GLOB CM1F_BRIDGE_TESTS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*_tests.cpp)
 cm1k_add_test(fortran_bridge_tests SOURCES ${CM1F_BRIDGE_TESTS} LIBS cm1f_bridge gfortran)
+# RRTMG: the Fortran reads RRTMG_LW_DATA / RRTMG_SW_DATA from run/.
+target_compile_definitions(fortran_bridge_tests PRIVATE CM1K_SOURCE_RUN_DIR="${CMAKE_SOURCE_DIR}/../run")

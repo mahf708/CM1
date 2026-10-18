@@ -76,16 +76,33 @@ TEST_CASE("init: init_variants_dry", "[init][ref]") { check_case("init_variants_
 TEST_CASE("init: cbl_sfc", "[init][ref][sfc]") { check_case("cbl_sfc"); }
 TEST_CASE("init: cbl_sfc_moist", "[init][ref][sfc]") { check_case("cbl_sfc_moist"); }
 
+// terrain-following coordinate: itern=1 (2D bell, open E/W, isnd=9, iwnd=6)
+// and itern=3 (3D hill, Kessler + TKE); every metric (zs, gz, rgzu, dzdx,
+// gx, gyv, ...) and the terrain-dependent base state are compared
+TEST_CASE("init: nh_mountain_waves", "[init][ref][terrain]") { check_case("nh_mountain_waves"); }
+TEST_CASE("init: kessler_terrain_tke", "[init][ref][terrain]") { check_case("kessler_terrain_tke"); }
+TEST_CASE("init: nh_mountain_waves_long", "[init][ref][terrain]") { check_case("nh_mountain_waves_long"); }
+TEST_CASE("init: kessler_terrain_tke_openbc", "[init][ref][terrain]") { check_case("kessler_terrain_tke_openbc"); }
+
 TEST_CASE("init: unsupported options throw", "[init]") {
   const auto nl0 = Namelist::from_file(testing::case_namelist("dry_bubble"));
   const std::vector<std::pair<std::string, std::string>> bad = {
       {"isnd", "7"},      {"iwnd", "5"},           {"iinit", "4"},  {"stretch_z", "2"},
-      {"stretch_x", "1"}, {"terrain_flag", ".true."}, {"irandp", "2"}, {"ibalance", "2"},
+      {"stretch_x", "1"}, {"irandp", "2"}, {"ibalance", "2"},
       {"testcase", "1"},  {"iorigin", "3"},        {"wbc", "5"}};
   for (const auto& kv : bad) {
     INFO(kv.first << " = " << kv.second);
     auto nl = nl0;
     nl.set(kv.first, kv.second);
+    Model m(nl);
+    REQUIRE_THROWS_AS(m.init(), std::runtime_error);
+  }
+  // terrain: itern=1,2,3 are ported; 0 and 4 (GrADS perts.dat) throw
+  for (const char* it : {"0", "4"}) {
+    INFO("terrain_flag with itern = " << it);
+    auto nl = nl0;
+    nl.set("terrain_flag", ".true.");
+    nl.set("itern", it);
     Model m(nl);
     REQUIRE_THROWS_AS(m.init(), std::runtime_error);
   }

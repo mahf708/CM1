@@ -18,9 +18,13 @@ namespace init {
 // parity with it is the goal. Device arrays are filled by deep copies.
 //
 // Supported (anything else throws std::runtime_error):
-//   param.F : stretch_x = stretch_y = 0, stretch_z = 0 or 1, terrain_flag
-//             = .false., iorigin = 1 or 2, axisymm = 0, wbc..nbc = 1..4
-//   base.F  : isnd = 1, 4, 5;  iwnd = 0, 1, 2;  imove = 0 or 1;
+//   param.F : stretch_x = stretch_y = 0, stretch_z = 0 or 1, iorigin = 1
+//             or 2, axisymm = 0, wbc..nbc = 1..4; terrain_flag = .true.
+//             with itern = 1, 2, 3 (init_terrain.F; itern = 4 reads
+//             perts.dat and throws, as does itern = 0): zs, the metrics gz,
+//             rgz, gzu, rgzu, gzv, rgzv, dzdx, dzdy (zsgrad), gx, gxu, gy,
+//             gyv, and terrain-following zh/zf/mh/mf/c1/c2
+//   base.F  : isnd = 1, 4, 5, 9;  iwnd = 0, 1, 2, 6;  imove = 0 or 1;
 //             testcase = 0;  psolver any
 //   init3d.F: iinit = 0 or 1, irandp = 0 or 1 (testcase = 0, with
 //             use_truly_random_pert = .false.), ibalance = 0 or 1, ptype 0/1

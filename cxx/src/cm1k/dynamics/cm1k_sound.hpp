@@ -9,7 +9,8 @@ namespace cm1k {
 
 // Port of sound.F (psolver=3): acoustic sub-steps, horizontally explicit,
 // vertically implicit, with divergence damping (kdiv). Cartesian grid,
-// no terrain, no updraft nudging / convergence forcing / immersed boundaries
+// with or without terrain (terrain=true: the terrain-following branches),
+// no updraft nudging / convergence forcing / immersed boundaries
 // (callers check the options; see DynConfig). Open-radiative lateral
 // boundaries (wbc..nbc = 2) through `obc` (cm1k_openbc.hpp).
 //
@@ -31,6 +32,13 @@ struct SoundArgs {
   FArray3 rrw, wa, w3d, wten;
   FArray3 ppi, pp3d, piadv, ppten, ppx;
   FArray3 thv, ppterm;
+  // terrain (terrain_flag): metrics (2D ones as (i,j,1)), rho0/rrf0, the
+  // scratch dum3 and the open-boundary flags (ibw..ibn)
+  bool terrain = false;
+  Real zt = 0, rzt = 0;
+  int ibw = 0, ibe = 0, ibs = 0, ibn = 0;
+  FArray1 rds, rdsf, sigma, sigmaf;
+  FArray3 gz, rgzu, rgzv, dzdx, dzdy, gxu, gyv, rho0, rrf0, dum3;
   // open boundaries: phase speeds, options and arrays of the open-bc block
   // at the start of each acoustic step (nullptr: no open boundary)
   const SoundOpenBc* obc = nullptr;

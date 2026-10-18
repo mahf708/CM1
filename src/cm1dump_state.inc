@@ -58,6 +58,23 @@
         call dump3('khh',khh,ibc,iec,jbc,jec,kbc,kec)
         call dump3('khv',khv,ibc,iec,jbc,jec,kbc,kec)
         call dump3('rain',rain,ib,ie,jb,je,1,nrain)
+        if( terrain_flag )then
+          ! terrain (param.F/init_terrain.F): 2D metrics dumped with a
+          ! third dimension 1:1, then the 3D ones
+          call dump3('zs',zs,ib,ie,jb,je,1,1)
+          call dump3('gz',gz,itb,ite,jtb,jte,1,1)
+          call dump3('rgz',rgz,itb,ite,jtb,jte,1,1)
+          call dump3('gzu',gzu,itb,ite,jtb,jte,1,1)
+          call dump3('rgzu',rgzu,itb,ite,jtb,jte,1,1)
+          call dump3('gzv',gzv,itb,ite,jtb,jte,1,1)
+          call dump3('rgzv',rgzv,itb,ite,jtb,jte,1,1)
+          call dump3('dzdx',dzdx,itb,ite,jtb,jte,1,1)
+          call dump3('dzdy',dzdy,itb,ite,jtb,jte,1,1)
+          call dump3('gx',gx,itb,ite,jtb,jte,ktb,kte)
+          call dump3('gxu',gxu,itb,ite,jtb,jte,ktb,kte)
+          call dump3('gy',gy,itb,ite,jtb,jte,ktb,kte)
+          call dump3('gyv',gyv,itb,ite,jtb,jte,ktb,kte)
+        endif
         if( sfcmodel.ge.1 )then
           ! surface layer (2D arrays, dumped with a third dimension 1:1):
           ! inputs carried across steps, then what sfc_and_turb computed
@@ -136,6 +153,47 @@
           call dump3('qi_bl',qi_bl,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
           call dump3('cldfra_bl',cldfra_bl,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
           call dump3('dqke',dqke,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+        endif
+        if( radopt.eq.2 )then
+          ! RRTMG radiation: the tendencies and fluxes of the last
+          ! radiation_driver call (it runs after the dump of its pass), the
+          ! ozone it writes back, and the surface arrays it reads/writes
+          call dump3('swten',swten,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('lwten',lwten,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('swtenc',swtenc,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('lwtenc',lwtenc,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('thraten',thraten,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('cldfra',cldfra,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('o30',o30,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('lwupt',lwupt,ibr,ier,jbr,jer,1,1)
+          call dump3('lwuptc',lwuptc,ibr,ier,jbr,jer,1,1)
+          call dump3('lwdnt',lwdnt,ibr,ier,jbr,jer,1,1)
+          call dump3('lwdntc',lwdntc,ibr,ier,jbr,jer,1,1)
+          call dump3('lwupb',lwupb,ibr,ier,jbr,jer,1,1)
+          call dump3('lwupbc',lwupbc,ibr,ier,jbr,jer,1,1)
+          call dump3('lwdnb',lwdnb,ibr,ier,jbr,jer,1,1)
+          call dump3('lwdnbc',lwdnbc,ibr,ier,jbr,jer,1,1)
+          call dump3('swupt',swupt,ibr,ier,jbr,jer,1,1)
+          call dump3('swuptc',swuptc,ibr,ier,jbr,jer,1,1)
+          call dump3('swdnt',swdnt,ibr,ier,jbr,jer,1,1)
+          call dump3('swdntc',swdntc,ibr,ier,jbr,jer,1,1)
+          call dump3('swupb',swupb,ibr,ier,jbr,jer,1,1)
+          call dump3('swupbc',swupbc,ibr,ier,jbr,jer,1,1)
+          call dump3('swdnb',swdnb,ibr,ier,jbr,jer,1,1)
+          call dump3('swdnbc',swdnbc,ibr,ier,jbr,jer,1,1)
+          call dump3('lwcf',lwcf,ibr,ier,jbr,jer,1,1)
+          call dump3('swcf',swcf,ibr,ier,jbr,jer,1,1)
+          call dump3('coszr',coszr,ibr,ier,jbr,jer,1,1)
+          call dump3('coszen',coszen,ibr,ier,jbr,jer,1,1)
+          call dump3('hrang',hrang,ibr,ier,jbr,jer,1,1)
+          call dump3('swddir',swddir,ibr,ier,jbr,jer,1,1)
+          call dump3('swddni',swddni,ibr,ier,jbr,jer,1,1)
+          call dump3('swddif',swddif,ibr,ier,jbr,jer,1,1)
+          call dump3('olr',olr,1,ni,1,nj,1,1)
+          call dump3('albd',albd,ibl,iel,jbl,jel,1,1)
+          call dump3('emiss',emiss,ibl,iel,jbl,jel,1,1)
+          call dump3('gsw',gsw,ibl,iel,jbl,jel,1,1)
+          call dump3('glw',glw,ibl,iel,jbl,jel,1,1)
         endif
         if( sfcmodel.eq.7 )then
           ! MYJ surface layer: the stability arrays, the SLAB soil

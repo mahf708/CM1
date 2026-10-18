@@ -19,6 +19,10 @@ struct Bounds {
   int ibt = 1, iet = 1, jbt = 1, jet = 1, kbt = 1, ket = 1;   // tke
   int ibc = 1, iec = 1, jbc = 1, jec = 1, kbc = 1, kec = 1;   // eddy viscosities
   int numq = 1, nrain = 1;
+  // terrain (cm1.F): itb:ite, jtb:jte, ktb:kte = ib:ie, jb:je, kb:ke with
+  // terrain_flag, else 1:1 (the terrain metrics are then never read)
+  bool terrain_flag = false;
+  int itb = 1, ite = 1, jtb = 1, jte = 1, ktb = 1, kte = 1;
 
   // Same logic as cm1.F (ngxy/ngz) and param.F (ibm/ibt/ibc, numq).
   static Bounds from_namelist(const Namelist& nl);
@@ -35,6 +39,19 @@ struct Grid {
   FArray1 sigma, rds, sigmaf, rdsf;             // (kb:ke), (kb:ke+1)
   FArray3 zh, mh, rmh, c1, c2;                  // (ib:ie,jb:je,kb:ke)
   FArray3 zf, mf, rmf;                          // (ib:ie,jb:je,kb:ke+1)
+
+  // terrain (param.F / init_terrain.F). The Fortran 2D arrays are stored
+  // with a third dimension 1:1 (as in the dumps): zs(i,j) is zs(i,j,1).
+  //   zs (ib:ie,jb:je), gz rgz gzu rgzu gzv rgzv dzdx dzdy (itb:ite,jtb:jte)
+  //   gx gxu gy gyv (itb:ite,jtb:jte,ktb:kte)
+  // zt = rzt = 0 without terrain (as in the Fortran: never used then).
+  Real zt = 0, rzt = 0;
+  // param.F 2nd-order extrapolation coefficients to the surface (cgs*) and
+  // the top (cgt*) (init::extrap_coeffs; set by Model::init and
+  // Model::init_from_dump; the terrain branches of turb read them here)
+  Real cgs1 = 0, cgs2 = 0, cgs3 = 0, cgt1 = 0, cgt2 = 0, cgt3 = 0;
+  FArray3 zs, gz, rgz, gzu, rgzu, gzv, rgzv, dzdx, dzdy;
+  FArray3 gx, gxu, gy, gyv;
 
   void allocate(const Bounds& bounds);
 };

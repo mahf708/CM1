@@ -28,6 +28,7 @@ namespace cm1k {
 //   for (int n = 0; n < 10; ++n) m.step();
 //   m.write_dump(out_dir);
 class Dyncore;
+namespace rrtmg { class Radiation; }
 
 class Model {
 public:
@@ -103,6 +104,9 @@ public:
   std::vector<std::string> pbl_field_names() const;
   // The dynamical core (set up on the first step()).
   Dyncore& dyncore();
+  // RRTMG radiation (radopt=2; its arrays are registered fields, as
+  // src/cm1dump_state.inc dumps them). nullptr with radopt=0.
+  rrtmg::Radiation* radiation() { return m_rad.get(); }
 
   int nstep() const { return m_nstep; }
   double mtime() const { return m_mtime; }
@@ -135,6 +139,7 @@ private:
   double m_mtime = 0;
   Real m_dt = 0;
 
+  std::unique_ptr<rrtmg::Radiation> m_rad;   // radopt=2
   std::unique_ptr<Dyncore> m_dyn;   // created/started lazily in step()
   bool m_dyn_started = false;
   std::shared_ptr<void> m_mp;       // microphysics work arrays

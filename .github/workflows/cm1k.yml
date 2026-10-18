@@ -4,7 +4,8 @@
 #   fortran-refs         build the Fortran (double precision) and run every case in
 #                        cxx/cases with the dump hook; upload the dumps as artifact
 #                        `cm1-refs` (layout: cxx/cases/README.md). Cached by the hash
-#                        of src/, cxx/cases/ and the scripts that make the dumps.
+#                        of src/, cxx/cases/, the scripts that make the dumps and
+#                        the RRTMG data files in run/.
 #   fortran-determinism  run-to-run and OpenMP thread-count reproducibility of the
 #                        Fortran dumps (cxx/scripts/check_determinism.sh).
 #   cm1k                 build cm1k and run ctest against the references, for the
@@ -53,7 +54,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: refs
-          key: cm1-refs-${{ env.REFS_CACHE_VERSION }}-${{ hashFiles('src/**', 'cxx/cases/**', 'cxx/scripts/make_refs.sh') }}
+          key: cm1-refs-${{ env.REFS_CACHE_VERSION }}-${{ hashFiles('src/**', 'cxx/cases/**', 'cxx/scripts/make_refs.sh', 'run/RRTMG_LW_DATA', 'run/RRTMG_SW_DATA') }}
 
       - name: Install Fortran toolchain
         if: steps.cache.outputs.cache-hit != 'true'
@@ -92,7 +93,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends gfortran libnetcdff-dev libopenmpi-dev python3-numpy
 
       - name: Run twice, and with 1 and 2 OpenMP threads
-        run: JOBS=4 cxx/scripts/check_determinism.sh "$RUNNER_TEMP/det" dry_shear kessler_tke kessler_saturated kessler_periodic
+        run: JOBS=4 cxx/scripts/check_determinism.sh "$RUNNER_TEMP/det" dry_shear kessler_tke kessler_saturated kessler_periodic kessler_terrain_tke
 
   cm1k:
     name: cm1k (${{ matrix.name }})

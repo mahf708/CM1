@@ -5,10 +5,21 @@
 #include "share/cm1k_dump_io.hpp"
 
 #include "physics/kessler/cm1k_kessler.hpp"
+#include "physics/rrtmg/cm1k_radiation.hpp"
 
 #include <stdexcept>
 
 namespace cm1k {
+
+namespace {
+// param.F extrapolation coefficients, kept on the Grid for the terrain
+// branches of the subgrid turbulence
+void set_extrap_coeffs(Grid& g) {
+  const auto ex = init::extrap_coeffs(g.sigma.to_host(), g.sigmaf.to_host(), g.b.nk);
+  g.cgs1 = ex.cgs1; g.cgs2 = ex.cgs2; g.cgs3 = ex.cgs3;
+  g.cgt1 = ex.cgt1; g.cgt2 = ex.cgt2; g.cgt3 = ex.cgt3;
+}
+} // namespace
 
 Model::Model(const Namelist& nl) : m_nl(nl) {
   m_c = Constants::make(nl.geti("testcase", 0));
@@ -56,6 +67,15 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     m_use_myj = cfg.myj && m_sfc_opt.myj();
     if (m_use_myj) m_myj.allocate(b, m_sfc_opt);
   }
+  // radiation (radopt=2): gsw, glw, emiss are SLAB's (sfcmodel=2,3)
+  {
+    const auto ro = rrtmg::RadOptions::from_namelist(nl);
+    if (ro.active()) {
+      ro.check();
+      m_rad = std::make_unique<rrtmg::Radiation>();
+      m_rad->setup(ro, m_c, b, m_sfc.tsk, m_sfc.xland, m_wsfc.gsw, m_wsfc.glw, m_wsfc.emiss);
+    }
+  }
   build_registry();
 }
 
@@ -70,6 +90,10 @@ void Model::build_registry() {
     m_reg.add(a->label(), *a);
   for (auto* a : {&g.zh, &g.mh, &g.rmh, &g.c1, &g.c2, &g.zf, &g.mf, &g.rmf})
     m_reg.add(a->label(), *a);
+  if (g.b.terrain_flag)   // src/cm1dump_state.inc: dumped only with terrain
+    for (auto* a : {&g.zs, &g.gz, &g.rgz, &g.gzu, &g.rgzu, &g.gzv, &g.rgzv, &g.dzdx, &g.dzdy,
+                    &g.gx, &g.gxu, &g.gy, &g.gyv})
+      m_reg.add(a->label(), *a);
   auto& bs = m_base;
   for (auto* a : {&bs.pi0, &bs.th0, &bs.rho0, &bs.prs0, &bs.thv0, &bs.rth0, &bs.qv0, &bs.qc0, &bs.qi0,
                   &bs.rr0, &bs.rf0, &bs.rrf0, &bs.u0, &bs.v0})
@@ -100,6 +124,8 @@ void Model::build_registry() {
     m_reg.add("qipten", m_pbl.qipten);
     for (auto& [name, a] : m_mynn.dumped_pbl()) m_reg.add(name, a);
   }
+  if (m_rad)
+    for (auto& [name, a] : m_rad->dumped()) m_reg.add(name, a);
   if (m_use_myj) {
     for (auto& [name, a] : m_myj.dumped_sfc()) m_reg.add(name, a);
     m_reg.add("hpbl", m_sfc.hpbl);
@@ -189,8 +215,15 @@ void Model::init_from_dump(const std::string& step_dir) {
     else                       r.read_into<3>(name, field3(name));
   }
   if (m_sfc_opt.has_layer()) sfc::set_dsxy(m_sfc_opt, m_grid, m_sfc);   // not in the dumps
+  if (m_grid.b.terrain_flag) {   // init_terrain.F: zt = maxz = sigmaf(nk+1) (not in the dumps)
+    auto sigmaf = m_grid.sigmaf.to_host();
+    m_grid.zt = sigmaf(m_grid.b.nk + 1);
+    m_grid.rzt = 1.0 / sigmaf(m_grid.b.nk + 1);
+  }
+  set_extrap_coeffs(m_grid);
   m_nstep = r.nstep();
   m_mtime = r.mtime();
+  if (m_rad) m_rad->set_clock(m_nstep, m_dt);   // radtim of the Fortran at this dump
   m_dyn.reset();           // the dynamical core is set up again from these arrays
   m_dyn_started = false;
 }
@@ -207,10 +240,12 @@ void Model::init() {
   // param.F (grid), base.F (base state), init3d.F + getset (initial state);
   // see init/cm1k_init.hpp for the supported options.
   auto info = init::init_grid(m_nl, m_grid);
+  set_extrap_coeffs(m_grid);
   init::init_base(m_nl, m_c, m_grid, info, m_base);
   init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
   if (m_sfc_opt.has_layer()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
   if (m_sfc_opt.wrf()) sfclay::init_soil(m_grid.b, m_wsfc);                 // tslb
+  if (m_rad) m_rad->init_state();                                           // o30, radtim
   if (m_use_mynn) m_mynn.init_soil(m_grid.b, m_sfc);                       // tslb (sfcmodel=6)
   if (m_use_myj) myj::init(m_grid.b, m_sfc, m_myj);   // MYJSFCINIT ust, z0base, tslb
   if (m_sfc_opt.gfdl()) m_gsfc.init_soil(m_grid.b);                          // tslb (sfcmodel=4)
@@ -228,6 +263,7 @@ Dyncore& Model::dyncore() {
     if (m_sfc_opt.wrf()) m_dyn->set_wrf_surface(m_wsfc);
     if (m_use_pbl) m_dyn->set_pbl(m_pbl);
     if (m_use_mynn) m_dyn->set_mynn(m_mynn);
+    if (m_rad) m_dyn->set_radiation(m_rad->thraten);
     if (m_use_myj) m_dyn->set_myj(m_myj);
     if (m_sfc_opt.gfdl()) m_dyn->set_gfdl_surface(m_gsfc);
     if (m_use_pbl && m_ipbl == 3) m_dyn->set_gfs(m_gfs);
@@ -254,6 +290,10 @@ void Model::step() {
     dyn.start_from_state();
     m_dyn_started = true;
   }
+  // radiation (radopt=2): cm1.F calls radiation_driver at the end of a pass
+  // when due (always in the startup pass), after the dump and before
+  // sfc_and_turb; with the same argument as for sfc_and_turb this is here
+  if (m_rad) m_rad->pass(m_mtime, m_nstep, m_dt, m_grid, m_base, m_state);
   // nstep: cm1.F's update_sfc is .false. in the startup pass (nstep = 0)
   dyn.sfc_and_turb(m_mtime, m_nstep);            // no-op unless sgsmodel=1 or a PBL scheme
   dyn.diff2_stress();                            // no-op unless idiff=1, difforder=2
