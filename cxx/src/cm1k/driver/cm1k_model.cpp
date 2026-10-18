@@ -5,6 +5,7 @@
 #include "share/cm1k_dump_io.hpp"
 
 #include "physics/kessler/cm1k_kessler.hpp"
+#include "physics/rrtmg/cm1k_radiation.hpp"
 
 #include <stdexcept>
 
@@ -50,6 +51,15 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     m_use_mynn = cfg.mynn && m_sfc_opt.mynn();
     if (m_use_mynn) m_mynn.allocate(b, m_sfc, m_pbl);
   }
+  // radiation (radopt=2): gsw, glw, emiss are SLAB's (sfcmodel=2,3)
+  {
+    const auto ro = rrtmg::RadOptions::from_namelist(nl);
+    if (ro.active()) {
+      ro.check();
+      m_rad = std::make_unique<rrtmg::Radiation>();
+      m_rad->setup(ro, m_c, b, m_sfc.tsk, m_sfc.xland, m_wsfc.gsw, m_wsfc.glw, m_wsfc.emiss);
+    }
+  }
   build_registry();
 }
 
@@ -87,6 +97,8 @@ void Model::build_registry() {
     m_reg.add("qipten", m_pbl.qipten);
     for (auto& [name, a] : m_mynn.dumped_pbl()) m_reg.add(name, a);
   }
+  if (m_rad)
+    for (auto& [name, a] : m_rad->dumped()) m_reg.add(name, a);
 }
 
 std::vector<std::string> Model::pbl_field_names() const {
@@ -155,6 +167,7 @@ void Model::init_from_dump(const std::string& step_dir) {
   if (m_sfc_opt.has_layer()) sfc::set_dsxy(m_sfc_opt, m_grid, m_sfc);   // not in the dumps
   m_nstep = r.nstep();
   m_mtime = r.mtime();
+  if (m_rad) m_rad->set_clock(m_nstep, m_dt);   // radtim of the Fortran at this dump
   m_dyn.reset();           // the dynamical core is set up again from these arrays
   m_dyn_started = false;
 }
@@ -175,6 +188,7 @@ void Model::init() {
   init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
   if (m_sfc_opt.has_layer()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
   if (m_sfc_opt.wrf()) sfclay::init_soil(m_grid.b, m_wsfc);                 // tslb
+  if (m_rad) m_rad->init_state();                                           // o30, radtim
   m_nstep = 0;
   m_mtime = 0;
   m_dyn.reset();            // the dynamical core is set up again from the new grid
@@ -189,6 +203,7 @@ Dyncore& Model::dyncore() {
     if (m_sfc_opt.wrf()) m_dyn->set_wrf_surface(m_wsfc);
     if (m_use_pbl) m_dyn->set_pbl(m_pbl);
     if (m_use_mynn) m_dyn->set_mynn(m_mynn);
+    if (m_rad) m_dyn->set_radiation(m_rad->thraten);
   }
   return *m_dyn;
 }
@@ -212,6 +227,10 @@ void Model::step() {
     dyn.start_from_state();
     m_dyn_started = true;
   }
+  // radiation (radopt=2): cm1.F calls radiation_driver at the end of a pass
+  // when due (always in the startup pass), after the dump and before
+  // sfc_and_turb; with the same argument as for sfc_and_turb this is here
+  if (m_rad) m_rad->pass(m_mtime, m_nstep, m_dt, m_grid, m_base, m_state);
   // nstep: cm1.F's update_sfc is .false. in the startup pass (nstep = 0)
   dyn.sfc_and_turb(m_mtime, m_nstep);            // no-op unless sgsmodel=1 or a PBL scheme
   dyn.diff2_stress();                            // no-op unless idiff=1, difforder=2

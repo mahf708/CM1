@@ -137,6 +137,10 @@ public:
   // MYNN's carried arrays (DynConfig::mynn), owned by the Model (they are in
   // the dumps). Call after setup().
   void set_mynn(const pbl_mynn::Carried& c);
+  // radopt=2: the radiative potential-temperature tendency thraten
+  // (rrtmg::Radiation), owned by the Model; solve1 adds it to thten1 and
+  // YSU reads it (rthraten). Call after setup().
+  void set_radiation(const FArray3& thraten);
   // solve2.F: qke advection for the MYNN PBL, one RK stage (public: it
   // launches device lambdas)
   void advect_qke(int nrk, Real dttmp);
@@ -223,6 +227,9 @@ private:
   BcParams m_bc;
   OpenBcParams m_obc;
   RadBc m_rad;
+  FArray3 m_thraten;           // radopt=2 (set_radiation)
+  bool m_has_thraten = false;
+  const FArray3& rad_thraten() const;   // throws without set_radiation()
   SoundOpenBc m_sobc;
   Grid m_g;
   BaseState m_b;

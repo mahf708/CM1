@@ -37,7 +37,7 @@ Options: `CM1K_ENABLE_FORTRAN_BRIDGE` (default ON, needs gfortran),
 |---|---|
 | `src/cm1k/share` | types, `FArray` (Fortran-indexed arrays), constants, namelist, grid, state, dump I/O |
 | `src/cm1k/dynamics` | dynamical core: advection, acoustic solver, boundary conditions, solve1/2/3 |
-| `src/cm1k/physics/<scheme>` | physics (e.g. `kessler`) |
+| `src/cm1k/physics/<scheme>` | physics (e.g. `kessler`; `rrtmg`: RRTMG radiation, which reads `RRTMG_LW_DATA` / `RRTMG_SW_DATA` from `$CM1K_RRTMG_DATA_DIR`, the working directory or the source tree's `run/`) |
 | `src/cm1k/init` | native initialization (grid, base state, initial perturbations) |
 | `src/cm1k/driver` | `Model` (the public API) and the `cm1k` executable |
 | `python/` | pybind11 module `cm1k` |
@@ -94,7 +94,8 @@ Two levels, both required for a ported component:
 `src/cm1dump.F` (Fortran, enabled only when `CM1_DUMP_DIR` is set) writes
 `$CM1_DUMP_DIR/step_NNNNNN/{index.txt,<name>.bin}` at step 0 and every
 `CM1_DUMP_EVERY` steps: grid metrics, base state, `ua va wa ppi tha rho prs`,
-`qa_<qname>`, `tkea kmh kmv khh khv rain`. Raw float64 in Fortran order,
+`qa_<qname>`, `tkea kmh kmv khh khv rain` (plus the surface, PBL and, with
+`radopt = 2`, radiation arrays: see `src/cm1dump_state.inc`). Raw float64 in Fortran order,
 halos included; `index.txt` lists `name kind ndims lb ub ...`.
 `Model::write_dump` writes the same format, so the Python tools and tests
 can compare either side.

@@ -39,6 +39,12 @@ constexpr Real tbl_sfz0[2][33] = {
    40., 1., 10., 30., 15., 10., 0.1, 1., 15., 1., 80., 80., 80., 80., 80., 80.},
   {80., 5., 2., 5., 5., 20., 10., 1., 1., 15., 50., 50., 50., 50., 20., 0.01, 20.,
    40., 1., 10., 30., 15., 5., 0.1, 1., 15., 1., 80., 80., 80., 80., 80., 80.}};
+// albd (albedo x 100; getlanduse: ALBEDO = ALBD/100)
+constexpr Real tbl_albd[2][33] = {
+  {15., 17., 18., 18., 18., 16., 19., 22., 20., 20., 16., 14., 12., 12., 13., 8., 14.,
+   14., 25., 15., 15., 15., 25., 55., 30., 18., 70., 15., 15., 15., 10., 10., 10.},
+  {15., 20., 20., 20., 20., 20., 23., 22., 22., 20., 17., 15., 12., 12., 14., 8., 14.,
+   14., 23., 15., 15., 15., 25., 70., 40., 18., 70., 15., 15., 15., 10., 10., 10.}};
 // sfem (emissivity) and therin (thermal inertia x 100)
 constexpr Real tbl_sfem[2][33] = {
   {.88, .985, .985, .985, .98, .985, .96, .93, .95, .92, .93, .94, .95, .95, .97, .98, .95,
@@ -63,6 +69,7 @@ Real landuse_slmo(int cat, int season) { check_cat(cat, season); return tbl_slmo
 Real landuse_sfz0(int cat, int season) { check_cat(cat, season); return tbl_sfz0[season - 1][cat - 1]; }
 Real landuse_sfem(int cat, int season) { check_cat(cat, season); return tbl_sfem[season - 1][cat - 1]; }
 Real landuse_therin(int cat, int season) { check_cat(cat, season); return tbl_therin[season - 1][cat - 1]; }
+Real landuse_albd(int cat, int season) { check_cat(cat, season); return tbl_albd[season - 1][cat - 1]; }
 
 //------------------------------------------------------------------------------
 // Options

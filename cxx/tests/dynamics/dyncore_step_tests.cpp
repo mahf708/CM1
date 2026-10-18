@@ -3,6 +3,7 @@
 // arrays (halos included) against every dumped step.
 #include "driver/cm1k_model.hpp"
 #include "dynamics/cm1k_dyncore.hpp"
+#include "physics/rrtmg/cm1k_radiation.hpp"
 #include "share/cm1k_dump_io.hpp"
 
 #include "cm1k_test_utils.hpp"
@@ -37,6 +38,8 @@ double run_case(const std::string& case_name, double tol, bool native_init = fal
   if (m.has_wrf_surface())   // sfcmodel=2,3: mol, and the SLAB soil temperatures tslb
     for (auto& [n, a] : m.wrf_surface().dumped()) fields.push_back(n);
   for (auto& n : m.pbl_field_names()) fields.push_back(n);   // ipbl=1,2: hpbl, thpten, ..., vpten
+  if (m.radiation())   // radopt=2: tendencies, fluxes, o30, cldfra, coszen, gsw, glw, ...
+    for (auto& [n, a] : m.radiation()->dumped()) fields.push_back(n);
   for (auto& n : m.field_names())
     if (n.rfind("qa_", 0) == 0) fields.push_back(n);
 
@@ -315,6 +318,65 @@ TEST_CASE("dyncore + simple PBL + MM5 surface layer + SLAB + Kessler: pbl2_sfcla
   // ipbl=2 (gethpbl2 before SFCLAY) with sfcmodel=2 over land: SLAB, and the
   // surface fluxes thflux/qvflux from SFCLAY/SLAB's hfx, qfx (dosfcflx)
   run_case("pbl2_sfclay_land", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + RRTMG + YSU + MM5 surface layer + SLAB + Kessler: rrtmg_ysu_kessler vs Fortran",
+          "[dyn][step][pbl][sfc][ysu][kessler][rrtmg]") {
+  // radopt=2 (RRTMG LW + SW every dtrad = 36 s = 6 steps, daytime: 21 UTC
+  // at -98.35 E in May) over land (lu0=3, SLAB driven by gsw/glw), Kessler
+  // clouds (cal_cldfra1), YSU with rthraten = thraten. Compares the
+  // radiation arrays too (dump N holds the last call before pass N's).
+  run_case("rrtmg_ysu_kessler", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + RRTMG + YSU + Kessler: rrtmg_ysu_kessler from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][ysu][kessler][rrtmg]") {
+  run_case("rrtmg_ysu_kessler", 0.0, true, true);
+}
+
+TEST_CASE("radiation options: unsupported ones throw", "[rrtmg]") {
+  rrtmg::RadOptions o;
+  o.radopt = 2; o.imoist = 1; o.ptype = 1; o.sfcmodel = 2;
+  REQUIRE_NOTHROW(o.check());
+  auto with = [&](auto f) { auto p = o; f(p); return p; };
+  CHECK_THROWS(with([](auto& p) { p.radopt = 1; }).check());                 // NASA-GSFC
+  CHECK_THROWS(with([](auto& p) { p.radopt = 3; }).check());
+  CHECK_THROWS(with([](auto& p) { p.ptype = 0; }).check());                  // cal_cldfra1: no branch
+  CHECK_THROWS(with([](auto& p) { p.ptype = 5; }).check());                  // has_req* = 1 schemes
+  CHECK_THROWS(with([](auto& p) { p.imoist = 0; }).check());
+  CHECK_THROWS(with([](auto& p) { p.sfcmodel = 0; }).check());
+  CHECK_THROWS(with([](auto& p) { p.sfcmodel = 1; }).check());
+  CHECK_THROWS(with([](auto& p) { p.ipbl = 4; }).check());                   // MYNN icloud_bl
+  CHECK_THROWS(with([](auto& p) { p.testcase = 8; }).check());
+  CHECK_THROWS(with([](auto& p) { p.rterm = 1; }).check());
+  REQUIRE_NOTHROW(with([](auto& p) { p.radopt = 0; p.ptype = 0; }).check());
+}
+
+TEST_CASE("radiation clock: radtim after a restart", "[rrtmg]") {
+  // cm1.F: radiation in the startup pass and in every pass whose end time
+  // reaches radtim - 0.1*dt; Radiation::clock_at must give radtim before
+  // the radiation of pass n, for a restart from dump n
+  const Real dt = 6.0;
+  for (Real dtrad : {36.0, 30.0, 6.0, 1.0, 100.0}) {
+    std::vector<double> radtim{0.0};   // radtim[n]: before the radiation of pass n
+    std::vector<int> calls;
+    double mtime = 0.0, rt = 0.0;
+    const Real dtr = std::max(dtrad, dt);
+    for (int n = 0; n <= 60; ++n) {
+      if (n > 0) mtime += double(dt);
+      if (n == 0 || mtime >= rt - 0.1 * double(dt)) {
+        calls.push_back(n);
+        do { rt += dtr; } while (!(rt > mtime));
+      }
+      radtim.push_back(rt);
+    }
+    for (int n = 0; n <= 60; ++n) {
+      INFO("dtrad " << dtrad << " nstep " << n);
+      CHECK(rrtmg::Radiation::clock_at(n, dt, dtrad) == radtim[n]);
+    }
+    if (dtrad == 36.0) CHECK(calls[1] == 6);
+    if (dtrad <= dt) CHECK(calls[1] == 1);
+  }
 }
 
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {

@@ -163,7 +163,8 @@ void DynConfig::check() const {
   if (testcase != 0) unsupported("testcase");
   if (axisymm != 0) unsupported("axisymm");
   if (cuparam != 0) unsupported("cuparam");
-  if (radopt != 0) unsupported("radopt");
+  // radopt=2 (RRTMG): rrtmg::RadOptions::check has the supported subset
+  if (radopt != 0 && radopt != 2) unsupported("radopt=" + std::to_string(radopt));
   if (iptra != 0) unsupported("iptra");
   if (iprcl != 0) unsupported("iprcl");
   if (iinit == 10 || iinit == 11 || iinit == 12) unsupported("iinit=" + std::to_string(iinit) + " (forcing in sound/solve1)");
@@ -505,6 +506,16 @@ void Dyncore::wrf_inputs() {
   wrfphys::pbl_moist(B.ni, B.nj, B.nk, m_cfg.imoist, po.nqv, po.nqc, po.nqi, q3d, w.qv, w.qc, w.qi);
 }
 
+void Dyncore::set_radiation(const FArray3& thraten) {
+  m_thraten = thraten;   // shallow: the view is shared with the caller
+  m_has_thraten = true;
+}
+
+const FArray3& Dyncore::rad_thraten() const {
+  if (!m_has_thraten) throw std::runtime_error("cm1k dyncore: radopt=2 needs set_radiation()");
+  return m_thraten;
+}
+
 void Dyncore::set_pbl(const pbl::Tendencies& t) {
   m_pt = t;   // shallow: the views are shared with the caller
   m_has_pbl = true;
@@ -528,7 +539,9 @@ void Dyncore::pbl(double /*rtime*/) {
     const auto& ss = m_wsfc.s;
     pbl_ysu::Inputs in;
     in.ux = w.d1; in.vx = w.d2; in.tx = w.d4; in.qvx = w.qv; in.qcx = w.qc; in.qix = w.qi;
-    in.p2d = s.prs; in.p2di = w.d6; in.pi2d = w.d7; in.dz8w2d = w.d5; in.rthraten = w.rth;   // rth = 0
+    in.p2d = s.prs; in.p2di = w.d6; in.pi2d = w.d7; in.dz8w2d = w.d5;
+    // turb.F: dum9 = thraten with radopt>=1, else rth = 0
+    in.rthraten = m_has_thraten ? m_thraten : w.rth;
     in.psfcpa = ss.psfc; in.znt = m_sfc.zntmp; in.ust = ss.ust; in.psim = ss.fm; in.psih = ss.fh;
     in.xland = ss.xland; in.hfx = ss.hfx; in.qfx = ss.qfx; in.wspd = ss.wspd; in.br = ss.br;
     pbl_ysu::Outputs out;
@@ -587,6 +600,16 @@ void Dyncore::diff2_stress() {
 }
 
 //===========================================================================
+namespace {
+// solve1.F (radopt>=1): thten1 = thten1 + thraten, after the dissipative
+// heating and before the PBL tendency of theta and the doturb block
+void add_thraten(const Bounds& B, const FArray3& thraten, const FArray3& thten1) {
+  Kokkos::parallel_for("thraten", box3(1, B.ni, 1, B.nj, 1, B.nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    thten1(i, j, k) = thten1(i, j, k) + thraten(i, j, k);
+  });
+}
+} // namespace
+
 void Dyncore::solve1() {
   openbc_solve1();   // radbc (irbc=1)
 
@@ -646,6 +669,7 @@ void Dyncore::solve1() {
     // dissipative heating (~919), before the turbulent fluxes of theta
     const sfc::SfcState* sp = m_has_sfc ? &m_sfc : nullptr;
     turb::dissheat(to, c, B, pi0, ppi, qa, ts.dissten, thten1, cvm, m_g.zf, sp);
+    if (cfg.radopt != 0) add_thraten(B, rad_thraten(), thten1);   // (~1056)
     // doturb block (~1119)
     turb::turb_tendencies(to, m_g, m_b, m_dt, rho, rr, rf, ua, va, wa, tha, qa, uten1, vten1, wten1, thten1,
                           qten, m_s.kmh, m_s.kmv, m_s.khh, m_s.khv, ts, m_tw, sp);
@@ -654,6 +678,7 @@ void Dyncore::solve1() {
     const auto& to = cfg.turb_opt;
     // dissipative heating (~919; idiss=1, dissten from turbparam_*)
     turb::dissheat(to, c, B, pi0, ppi, qa, ts.dissten, thten1, cvm, m_g.zf, &m_sfc);
+    if (cfg.radopt != 0) add_thraten(B, rad_thraten(), thten1);   // (~1056)
     // PBL tendency of theta (~1087), before the doturb block
     pbl::add_theta_tendency(B, m_pt, thten1);
     // doturb block (~1119): only with dohturb (horizturb=1); turbw also
@@ -663,6 +688,8 @@ void Dyncore::solve1() {
                             qten, m_s.kmh, m_s.kmv, m_s.khh, m_s.khv, ts, m_tw, &m_sfc);
     // PBL tendencies of u, v (~1269) and the moisture (~1329)
     pbl::add_tendencies(cfg.pbl_opt, B, m_pt, uten1, vten1, qten);
+  } else if (cfg.radopt != 0) {
+    add_thraten(B, rad_thraten(), thten1);   // (~1056)
   }
 
   //  contribution to pressure tendency from potential temperature

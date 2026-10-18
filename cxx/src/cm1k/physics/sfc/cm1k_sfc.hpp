@@ -165,6 +165,7 @@ Real landuse_slmo(int cat, int season);
 Real landuse_sfz0(int cat, int season);
 Real landuse_sfem(int cat, int season);
 Real landuse_therin(int cat, int season);
+Real landuse_albd(int cat, int season);   // ALBD (x 100)
 
 } // namespace cm1k::sfc
 
