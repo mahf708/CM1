@@ -7,7 +7,6 @@ import pytest
 
 from cm1x import adv, misc
 from cm1x.bc import bc2d
-from cm1x.grid import Grid
 from cm1x.init_terrain import terrain_metrics
 
 from fortran import requires_gfortran, run_driver
