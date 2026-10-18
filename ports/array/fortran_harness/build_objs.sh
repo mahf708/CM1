@@ -18,7 +18,7 @@ if [[ "$prec" == r8 ]]; then
   sed -i 's/\balog(/log(/g' sf_sfclayrev.F
 fi
 mkdir -p ../run
-make -j"$(nproc)" FC=gfortran \
+make -j"${CM1X_MAKE_JOBS:-$(nproc)}" FC=gfortran \
   "OPTS=-ffree-form -ffree-line-length-none -O2 -fallow-argument-mismatch $extra" >"$out/build.log" 2>&1 || true
 test -f kessler.o -a -f sound.o -a -f solve2.o || { tail -30 "$out/build.log"; exit 1; }
 touch "$out/.done"
