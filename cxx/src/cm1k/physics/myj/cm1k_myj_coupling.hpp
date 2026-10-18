@@ -50,7 +50,7 @@
 #include "physics/pbl/cm1k_pbl.hpp"
 #include "physics/sfc/cm1k_sfc.hpp"
 #include "physics/sfclay/cm1k_wrf_common.hpp"
-#include "physics/slab/cm1k_slab.hpp"
+#include "physics/slab/cm1k_slab_land.hpp"
 #include "share/cm1k_grid.hpp"
 #include "share/cm1k_namelist.hpp"
 
@@ -83,9 +83,8 @@ struct Carried {
   // MYJSFC state and outputs
   FArray3 mol, rmol, thz0, qz0, uz0, vz0, akhs, akms, zntmyj, z0base, th10, q10, u10e, v10e;
   FArray3 tshltr, qshltr, pshltr, chs, chs2, cqs2, cpmm, flhc, flqc, qgh, lh, psim, psih, fm, fh, ct, ustm;
-  // SLAB (as sfclay::WrfSurface): tslb (ib:ie,jb:je,1:num_soil_layers)
-  slab::SoilLayers soil;
-  FArray3 tslb, tmn, emiss, thc, capg, chklowq, gsw, glw, snowc;
+  // SLAB's arrays (tslb, tmn, emiss, thc, chklowq, ...)
+  slab::Land land;
   // MYJPBL: tke_myj, el_myj (ib:ie,jb:je,kb:ke+1), xkzh, xkzm
   // (ib:ie,jb:je,kb:ke), mixht, kpbl2d (2D)
   FArray3 tke_myj, el_myj, xkzh, xkzm, mixht, kpbl2d;

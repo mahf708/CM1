@@ -241,6 +241,35 @@ TEST_CASE("dyncore + MYNN 3 PBL: mynn3_dry from Model::init (no dump)", "[dyn][s
   run_case("mynn3_dry", 0.0, true, true);
 }
 
+TEST_CASE("dyncore + MYNN 2.5 PBL + MYNN surface layer + SLAB: mynn25_land_dry vs Fortran",
+          "[dyn][step][pbl][mynn][sfc][slab]") {
+  // ipbl=4, sfcmodel=6 over land (lu0=3, xland0=1, iz0tlnd=1: Chen-Zhang
+  // thermal roughness) with the SLAB land model after SFCLAY_mynn (tsk,
+  // tslb, the land hfx/qfx/lh; qsfc), horizturb=0, dry. Compares every
+  // dumped surface array, tslb, the MYNN carried state, hpbl and the PBL
+  // tendencies.
+  run_case("mynn25_land_dry", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + MYNN 2.5 PBL + SLAB: mynn25_land_dry from Model::init (no dump)",
+          "[dyn][step][init][pbl][mynn][sfc][slab]") {
+  // init_surface for sfcmodel=6 over land: LANDUSE.TBL (znt, mavail, emiss,
+  // thc), tmn0, the soil layers and tslb
+  run_case("mynn25_land_dry", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + MYNN 3 PBL + MYNN surface layer + SLAB + Kessler: mynn3_land_kessler vs Fortran",
+          "[dyn][step][pbl][mynn][sfc][slab][kessler]") {
+  // ipbl=5 (level 3), sfcmodel=6 over land (lu0=7, iz0tlnd=0) with SLAB
+  // (moist: SLAB's qfx/lh from qsg over land), horizturb=1, Kessler
+  run_case("mynn3_land_kessler", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + MYNN 3 PBL + SLAB + Kessler: mynn3_land_kessler from Model::init (no dump)",
+          "[dyn][step][init][pbl][mynn][sfc][slab][kessler]") {
+  run_case("mynn3_land_kessler", 0.0, true, true);
+}
+
 TEST_CASE("dyncore + MYNN PBL: restarted from a mid-run dump", "[dyn][step][pbl][mynn][sfc]") {
   // Needs consecutive dumps (local every-step references, e.g. of steps
   // 40..51, in CM1K_EXTRA_REF_DIR/<case>). Restarting from dump N, the first
@@ -250,7 +279,7 @@ TEST_CASE("dyncore + MYNN PBL: restarted from a mid-run dump", "[dyn][step][pbl]
   // kessler_tke restart test.)
   const char* e = std::getenv("CM1K_EXTRA_REF_DIR");
   if (!e) return;
-  for (const char* case_name : {"mynn25_kessler", "mynn3_dry"}) {
+  for (const char* case_name : {"mynn25_kessler", "mynn3_dry", "mynn25_land_dry", "mynn3_land_kessler"}) {
     const std::string ref = std::string(e) + "/" + case_name;
     if (!std::filesystem::exists(ref)) continue;
     int nchecked = 0;
@@ -441,8 +470,8 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   }
 
   // MYNN: cm1setup=2 with ipbl=4/5 and the MYNN surface layer (sfcmodel=6)
-  // over water; land (SLAB), other surface layers and options throw
-  for (const char* c : {"mynn25_kessler", "mynn3_dry"}) {
+  // over water or land (SLAB); other surface layers and options throw
+  for (const char* c : {"mynn25_kessler", "mynn3_dry", "mynn25_land_dry", "mynn3_land_kessler"}) {
     auto my = Namelist::from_file(cm1k::testing::case_namelist(c));
     REQUIRE_NOTHROW(DynConfig::from_namelist(my).check());
     const auto cfg = DynConfig::from_namelist(my);
@@ -452,9 +481,11 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
     REQUIRE_FALSE(cfg.mynn_opt.dosfcflx);
     for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
            {"sfcmodel", "1"}, {"sfcmodel", "2"}, {"sfcmodel", "0"}, {"ipbl", "2"}, {"ipbl", "1"},
-           {"ipbl", "0"}, {"cm1setup", "1"}, {"cm1setup", "4"}, {"lu0", "3"}, {"initsfc", "2"},
-           {"isftcflx", "4"}, {"iz0tlnd", "2"}, {"oceanmodel", "2"}, {"pertflx", "1"}, {"imove", "1"},
-           {"terrain_flag", ".true."}, {"horizturb", "2"}, {"tbc", "3"}}) {
+           {"ipbl", "0"}, {"cm1setup", "1"}, {"cm1setup", "4"}, {"initsfc", "2"}, {"isftcflx", "4"},
+           {"isftcflx", "5"}, {"iz0tlnd", "2"}, {"iz0tlnd", "4"}, {"oceanmodel", "2"}, {"pertflx", "1"},
+           {"imove", "1"}, {"terrain_flag", ".true."}, {"horizturb", "2"}, {"tbc", "3"},
+           // init_surface.F stops: lu_index must be 1..33 (0 too), tmn >= 100 K
+           {"lu0", "0"}, {"lu0", "34"}, {"tmn0", "50.0"}}) {
       auto y = my;
       y.set(k, v);
       INFO(c << ": " << k << " = " << v);
@@ -467,7 +498,9 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
     }
     for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
            {"horizturb", "0"}, {"horizturb", "1"}, {"idiss", "0"}, {"idiss", "1"}, {"isftcflx", "2"},
-           {"isftcflx", "3"}, {"iz0tlnd", "1"}, {"lu0", "0"}, {"season", "2"}, {"doimpl", "0"}}) {
+           {"isftcflx", "3"}, {"isftcflx", "0"}, {"iz0tlnd", "0"}, {"iz0tlnd", "1"}, {"iz0tlnd", "3"},
+           {"lu0", "16"}, {"lu0", "3"}, {"lu0", "24"}, {"xland0", "1.0"}, {"season", "2"},
+           {"doimpl", "0"}}) {
       auto y = my;
       y.set(k, v);
       INFO(c << ": " << k << " = " << v);

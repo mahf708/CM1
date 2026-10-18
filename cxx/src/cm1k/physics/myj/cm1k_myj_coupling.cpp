@@ -52,10 +52,6 @@ void Carried::allocate(const Bounds& b, const sfc::Options& so, int num_soil_lay
   chs = mk("chs"); chs2 = mk("chs2"); cqs2 = mk("cqs2"); cpmm = mk("cpmm"); flhc = mk("flhc"); flqc = mk("flqc");
   qgh = mk("qgh"); lh = mk("lh"); psim = mk("psim"); psih = mk("psih"); fm = mk("fm"); fh = mk("fh");
   ct = mk("ct"); ustm = mk("ustm");
-  soil = slab::SoilLayers::make(num_soil_layers);
-  tmn = mk("tmn"); emiss = mk("emiss"); thc = mk("thc"); capg = mk("capg"); chklowq = mk("chklowq");
-  gsw = mk("gsw"); glw = mk("glw"); snowc = mk("snowc");
-  tslb = FArray3("tslb", lo, {b.ie, b.je, num_soil_layers});
   tke_myj = FArray3("tke_myj", {b.ib, b.jb, b.kb}, {b.ie, b.je, b.ke + 1});
   el_myj = FArray3("el_myj", {b.ib, b.jb, b.kb}, {b.ie, b.je, b.ke + 1});
   xkzh = FArray3("xkzh", {b.ib, b.jb, b.kb}, {b.ie, b.je, b.ke});
@@ -63,17 +59,12 @@ void Carried::allocate(const Bounds& b, const sfc::Options& so, int num_soil_lay
   mixht = mk("mixht"); kpbl2d = mk("kpbl2d");
   // cm1.F
   tke_myj.fill(0.01);
-  // init_surface.F (initsfc=1) + getlanduse
-  if (so.sfcmodel == 7) {
-    const int cat = (so.lu0 == 0) ? 16 : so.lu0;
-    tmn.fill(so.tmn0);
-    emiss.fill(sfc::landuse_sfem(cat, so.season));
-    thc.fill(sfc::landuse_therin(cat, so.season) / 100.);
-  }
+  // SLAB: cm1.F allocation, init_surface.F (initsfc=1) + getlanduse
+  if (so.sfcmodel == 7) land.setup(so, b, num_soil_layers);
 }
 
 std::vector<std::pair<std::string, FArray3>> Carried::dumped_sfc() const {
-  return {{"mol", mol},       {"rmol", rmol},   {"tslb", tslb},     {"thz0", thz0}, {"qz0", qz0},
+  return {{"mol", mol},       {"rmol", rmol},   {"tslb", land.tslb},     {"thz0", thz0}, {"qz0", qz0},
           {"uz0", uz0},       {"vz0", vz0},     {"akhs", akhs},     {"akms", akms}, {"zntmyj", zntmyj},
           {"z0base", z0base}, {"th10", th10},   {"q10", q10},       {"u10e", u10e}, {"v10e", v10e}};
 }
@@ -92,7 +83,7 @@ void init(const Bounds& b, const sfc::SfcState& s, const Carried& cr) {
   Kokkos::parallel_for("myj_init_z0base", box2(b.ib, b.ie, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) {
     z0base(i, j, 1) = znt(i, j, 1);
   });
-  slab::init_tslb(cr.soil, b, s.tsk, cr.tmn, cr.tslb);
+  cr.land.init_soil(b, s.tsk);
 }
 
 void Work::allocate(const Bounds& b) {
@@ -133,12 +124,10 @@ void surface_layer(const Coupling& o, const wrfphys::WrfConst& c, const Grid& g,
   }
   // SLAB (ifsnow = 0, radiation switch .true.)
   if (update_sfc && o.testcase != 11) {
-    slab::Arrays a;
-    a.flhc = cr.flhc; a.flqc = cr.flqc; a.psfc = s.psfc; a.xland = s.xland; a.tmn = cr.tmn;
-    a.hfx = s.hfx; a.qfx = s.qfx; a.lh = cr.lh; a.tsk = s.tsk; a.qsfc = s.qsfc;
-    a.chklowq = cr.chklowq; a.gsw = cr.gsw; a.glw = cr.glw; a.capg = cr.capg; a.thc = cr.thc;
-    a.snowc = cr.snowc; a.emiss = cr.emiss; a.mavail = s.mavail; a.tslb = cr.tslb;
-    slab::slab(c, dt, 0, true, cr.soil, ni, nj, wa.d4, wa.qv, prs, a);
+    slab::Land::Surface a;
+    a.flhc = cr.flhc; a.flqc = cr.flqc; a.psfc = s.psfc; a.xland = s.xland; a.hfx = s.hfx; a.qfx = s.qfx;
+    a.lh = cr.lh; a.tsk = s.tsk; a.qsfc = s.qsfc; a.mavail = s.mavail;
+    cr.land.run(c, dt, ni, nj, wa.d4, wa.qv, prs, a);
   }
   // WRF parameters into CM1 arrays, the sfcmodel=7 block, thflux/qvflux
   {
@@ -177,7 +166,7 @@ void pbl(const Coupling& /*o*/, const Bounds& b, Real dt, const WrfArrays& wa, c
   in.dz = wa.d5; in.pmid = prs; in.pint = wa.d6; in.th = wa.d3; in.t = wa.d4; in.exner = wa.d7;
   in.qv = wa.qv; in.qcw = wa.qc; in.qci = wa.qi; in.u = wa.d1; in.v = wa.d2; in.ht = w.ht;
   PblFields f;
-  f.tsk = s.tsk; f.xland = s.xland; f.chklowq = cr.chklowq; f.elflx = cr.lh;
+  f.tsk = s.tsk; f.xland = s.xland; f.chklowq = cr.land.chklowq; f.elflx = cr.lh;
   f.qsfc = s.qsfc; f.thz0 = cr.thz0; f.qz0 = cr.qz0; f.uz0 = cr.uz0; f.vz0 = cr.vz0; f.ust = s.ust;
   f.ct = cr.ct; f.akhs = cr.akhs; f.akms = cr.akms; f.tke_myj = cr.tke_myj;
   f.pblh = s.hpbl; f.kpbl = cr.kpbl2d; f.mixht = cr.mixht; f.el_myj = cr.el_myj;

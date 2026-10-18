@@ -77,7 +77,7 @@ public:
   bool has_pbl() const { return m_use_pbl; }
   pbl::Tendencies& pbl_tendencies() { return m_pbl; }
   // MYNN (ipbl=4/5 with sfcmodel=6): the arrays the scheme and its surface
-  // layer carry across steps (qke, tsq, ..., mol, rmol, ...), registered
+  // layer carry across steps (qke, tsq, ..., mol, rmol, ..., and SLAB's tslb), registered
   // fields under their dump names (qke3d is CM1's advected qke).
   bool has_mynn() const { return m_use_mynn; }
   pbl_mynn::Carried& mynn() { return m_mynn; }

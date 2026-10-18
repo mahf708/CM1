@@ -27,6 +27,9 @@
 //     init_surface and the bbc=3 prelude of sfc_and_turb (sfc_prelude);
 //     param.F sets isfcflx = 1 and requires pertflx = 0; lu0 = 1..33,
 //     tmn0 >= 100 K
+//   * sfcmodel = 6 (the MYNN surface layer, physics/sfc_mynn, with SLAB over
+//     land) with the MYNN PBL (cm1setup = 2, ipbl = 4, 5): lu0 = 1..33,
+//     tmn0 >= 100 K (checked in pbl_mynn::Coupling)
 //   * sfcmodel = 7 (the MYJ surface layer + SLAB, physics/myj) with the
 //     MYJ PBL (cm1setup = 2, ipbl = 6); lu0 = 1..33, tmn0 >= 100 K
 //   * cecd = 1, 2, 3; set_znt = 0/1, set_ust = 0/1, set_flx = 0/1;

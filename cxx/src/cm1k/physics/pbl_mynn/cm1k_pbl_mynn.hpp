@@ -56,7 +56,8 @@
 // In the full model (cm1setup=2 with sfcmodel=6, Model::step) the scheme
 // runs through cm1k_mynn_coupling.hpp (surface layer, PBL call, the qke
 // advection in Dyncore::solve2); tests/dynamics checks whole runs
-// (cases mynn25_kessler, mynn3_dry) bit for bit against the Fortran.
+// (cases mynn25_kessler, mynn3_dry over water; mynn25_land_dry,
+// mynn3_land_kessler over land with SLAB) bit for bit against the Fortran.
 
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
