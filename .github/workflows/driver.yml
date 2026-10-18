@@ -1,0 +1,165 @@
+# The common Python driver (ports/driver) and its notebook.
+#
+# Jobs:
+#   refs       Fortran CM1 (double precision) dumps of supercell_kessler
+#              (cxx/scripts/make_refs.sh); cached, uploaded as `driver-refs`.
+#   notebook   builds the cm1k Python module (OpenMP), installs cm1x (checked
+#              out at CM1X_REF_SHA) with numpy, jax and torch, then executes
+#              ports/driver/supercell_backends.ipynb: every backend runs the case
+#              for 30 minutes and is compared with the Fortran dumps.  The
+#              executed notebook (ipynb and html) is uploaded as `driver-notebook`
+#              and its comparison table goes to the job summary.
+name: driver
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      cm1x_ref:
+        description: "cm1x commit or branch to check out (default: CM1X_REF_SHA)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: driver-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # cm1x (ports/array) from the array-port branch (claude/project-thread-p9tdpk),
+  # the same commit as crosscheck.yml
+  CM1X_REF_SHA: 29efb6444692a88a2863be1e5c08d54799481094
+  # as crosscheck.yml: one glibc libm code path on every runner, and numpy on
+  # glibc's exp/log/pow, so cm1k and cm1x:numpy are bitwise against Fortran
+  GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX512F,-AVX2,-FMA,-FMA4
+  NPY_DISABLE_CPU_FEATURES: AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4
+  OMPI_ALLOW_RUN_AS_ROOT: 1
+  OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+  OMP_PROC_BIND: "false"
+
+jobs:
+  refs:
+    name: Fortran supercell dumps
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore cached references
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: refs
+          key: driver-refs-v1-${{ hashFiles('src/**', 'cxx/cases/supercell_kessler/**', 'cxx/scripts/make_refs.sh') }}
+
+      - name: Install Fortran toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gfortran libnetcdff-dev libopenmpi-dev
+
+      - name: Build Fortran CM1 and write reference dumps
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: JOBS=4 cxx/scripts/make_refs.sh refs supercell_kessler
+
+      - name: Show manifest
+        run: |
+          cat refs/MANIFEST.txt
+          du -sh refs/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driver-refs
+          path: refs
+          if-no-files-found: error
+          retention-days: 5
+          compression-level: 6
+
+  notebook:
+    name: supercell on every backend (notebook)
+    needs: refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPRESS: "true"
+      OMP_NUM_THREADS: 4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout submodules (EKAT, Kokkos)
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule update --init --recursive --depth 1 cxx/externals/ekat
+
+      - name: Check out cm1x
+        run: |
+          ref="${{ inputs.cm1x_ref }}"
+          ref=${ref:-$CM1X_REF_SHA}
+          git fetch --no-tags --depth=1 origin "$ref"
+          git worktree add "$RUNNER_TEMP/cm1x" FETCH_HEAD
+          echo "CM1X_ROOT=$RUNNER_TEMP/cm1x" >> "$GITHUB_ENV"
+          echo "cm1x at $(git -C "$RUNNER_TEMP/cm1x" rev-parse HEAD)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install toolchain, cm1x, jax, torch and Jupyter
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++ cmake ninja-build ccache libopenmpi-dev openmpi-bin
+          python -m pip install -U pip
+          pip install numpy pybind11 jax matplotlib nbconvert nbclient ipykernel
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e "$CM1X_ROOT/ports/array"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-driver-${{ github.sha }}
+          restore-keys: |
+            ccache-driver-
+            ccache-crosscheck-
+
+      - name: Build the cm1k Python module (OpenMP)
+        run: |
+          ccache -z
+          cmake -S cxx -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCM1K_ENABLE_PYTHON=ON -DCM1K_ENABLE_TESTS=OFF -DCM1K_ENABLE_FORTRAN_BRIDGE=OFF \
+            -DKokkos_ENABLE_OPENMP=ON \
+            -DPython_EXECUTABLE="$(command -v python)" \
+            -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
+          cmake --build build --target _cm1k -j4
+          ccache -s
+          echo "PYTHONPATH=$GITHUB_WORKSPACE/build/python" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: driver-refs
+          path: refs
+
+      - name: Execute the notebook
+        env:
+          CM1_REF_DIR: ${{ github.workspace }}/refs/supercell_kessler
+          CM1_REPORT: ${{ github.workspace }}/nb/report.md
+        run: |
+          status=0
+          python ports/driver/run_notebook.py ports/driver/supercell_backends.ipynb nb || status=$?
+          if [ -f nb/report.md ]; then
+            cat nb/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $status
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: driver-notebook
+          path: nb
+          if-no-files-found: ignore
+          retention-days: 30
