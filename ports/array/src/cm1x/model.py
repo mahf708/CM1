@@ -33,6 +33,7 @@ from .backend import get_backend, is_array, torch_kernel_options
 from .misc import dtsmall
 from .mp_driver import mp_driver
 from .namelist import read_namelist
+from .options import check_unported
 from .solve1 import solve1
 from .solve2 import solve2
 from .solve3 import solve3
@@ -120,6 +121,7 @@ class Model:
         self.cfg = cfg = read_namelist(
             namelist_path, dp=fortran_dp, overrides=overrides
         )
+        check_unported(cfg)
         self.bk = bk = get_backend(backend, dtype)
         self.jit = bool(jit)
         self.jit_options = dict(jit_options or {})

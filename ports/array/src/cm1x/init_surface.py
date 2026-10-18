@@ -54,6 +54,12 @@ def init_surface(bk, g, cfg):
     if int(_opt(cfg, "oceanmodel", 1)) not in (0, 1):
         raise NotImplementedError("init_surface: oceanmodel not ported")
     lu = getlanduse(int(cfg.season), int(cfg.lu0))
+    if int(_opt(cfg, "testcase", 0)) == 13:
+        raise NotImplementedError("init_surface: testcase=13 roughness not ported")
+    znt = lu["znt"]
+    if int(_opt(cfg, "set_znt", 0)) == 1:
+        # init_surface.F special case: the given roughness length everywhere
+        znt = max(1.0e-12, float(cfg.cnst_znt))
     shp = g.s_shape[1:]
     z = bk.zeros(shp)
     return {
@@ -63,5 +69,5 @@ def init_surface(bk, g, cfg):
         "xland": z + lu["xland"],
         "xice": z,
         "xsnow": z,
-        "znt": z + lu["znt"],
+        "znt": z + znt,
     }

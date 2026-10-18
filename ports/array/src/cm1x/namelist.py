@@ -11,12 +11,26 @@ module storage, which CM1 relies on).
 A few derived settings that ``param.F`` computes right after reading are applied
 too (``ni,nj,nk``, ``imove=0 => umove=vmove=0``, ``ngxy``, ``ngz``, and the
 moisture-array indices for the Kessler scheme ``ptype=1``).
+
+Like CM1 (gfortran's namelist read stops the model), a name that is not a
+variable of its namelist group, or a group CM1 does not read, is an error,
+and so is looking up a name that is neither a namelist variable nor a
+variable of CM1's module ``input`` (``cm1_input.MODULE_VARS``) nor one of
+cm1x's own knobs (``CM1X_KNOBS``): a misspelled option never reads as 0.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+
+from .cm1_input import MODULE_VARS, NAMELIST_GROUPS
+
+# cm1x-only settings (not in CM1): accepted as overrides and lookups
+CM1X_KNOBS = frozenset({"nfall_max", "satadj_maxiter"})
+
+_GROUP_OF = {n: g for g, names in NAMELIST_GROUPS.items() for n in names}
+KNOWN = frozenset(_GROUP_OF) | MODULE_VARS | CM1X_KNOBS
 
 # assigned in cm1.F before the namelist is read (single-precision build)
 DEFAULTS = {
@@ -35,6 +49,30 @@ DEFAULTS = {
     "ngz": 1,
     "terrain_flag": False,
     "procfiles": False,
+    # also assigned in cm1.F before param reads the namelist
+    "cflmax": 0.0,
+    "ksmax": 0.0,
+    "nudgeobc": 0,
+    "alphobc": 60.0,
+    "top_cd": 0.0,
+    "side_cd": 0.0,
+    "ramp_sgs": 0,
+    "ramp_time": 0.0,
+    "t2p_avg": 1,
+    "dotimeavg": False,
+    "restart_format": 1,
+    "restart_filetype": 1,
+    "restart_reset_frqtim": True,
+    "interp_on_restart": False,
+    "run_time": -999.0,
+    "hurr_rad": 1.0e30,
+    "dolsw": False,
+    "dohifrq": False,
+    "iusetke": False,
+    "do_adapt_move": False,
+    "cuparam": 0,
+    "idoles": False,
+    "idopbl": False,
 }
 
 
@@ -54,8 +92,10 @@ class Config:
         try:
             return self._v[name.lower()]
         except KeyError:
-            if name.startswith("__"):
-                raise AttributeError(name) from None
+            if name.startswith("__") or name.lower() not in KNOWN:
+                raise AttributeError(
+                    f"{name!r} is not a CM1 namelist or module-input variable"
+                ) from None
             return 0  # Fortran module default (zero-initialised storage)
 
     def __setattr__(self, name, value):
@@ -172,11 +212,18 @@ def parse_namelist(text: str) -> dict:
     for gm in re.finditer(r"&(\w+)(.*?)(?:^\s*/|/\s*$|&end)", body, re.S | re.M | re.I):
         gname = gm.group(1).lower()
         content = gm.group(2)
+        if gname not in NAMELIST_GROUPS:
+            raise ValueError(f"namelist group &{gname} is not read by CM1")
         g = groups.setdefault(gname, {})
         # split on "name =" (optionally name(idx) =)
         parts = re.split(r"(?:^|,|\s)\s*([A-Za-z_]\w*(?:\([^)]*\))?)\s*=", content)
         # parts = [junk, name1, vals1, name2, vals2, ...]
         for name, vals in zip(parts[1::2], parts[2::2]):
+            base = name.split("(")[0].lower()
+            if base not in NAMELIST_GROUPS[gname]:
+                where = _GROUP_OF.get(base)
+                hint = f" (it belongs to &{where})" if where else ""
+                raise ValueError(f"&{gname}: unknown namelist variable {name!r}{hint}")
             v = _parse_values(vals.strip().rstrip(","))
             g[name.lower()] = v[0] if len(v) == 1 else v
     return groups
@@ -198,5 +245,7 @@ def read_namelist(path, dp: bool = False, overrides: dict | None = None) -> Conf
     for g in groups.values():
         flat.update(g)
     for k, v in (overrides or {}).items():
+        if k.lower() not in KNOWN:
+            raise ValueError(f"override {k!r} is not a CM1 namelist variable")
         flat[k.lower()] = v
     return Config(flat, groups)
