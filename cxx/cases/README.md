@@ -12,7 +12,7 @@ diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lat
 except the `*_openbc*` cases),
 free-slip top and bottom, a warm bubble (`iinit = 1`) with no random
 perturbations (`irandp = 0`), and the time-split compressible solver
-(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*`, `pbl2_*`, `ysu_*` and `mynn*` cases (see the table).
+(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*`, `pbl2_*`, `ysu_*`, `mynn*` and `myj_*` cases (see the table).
 
 | Case | Grid (nx×ny×nz, dx, dz) | Length | Dumps | What it exercises |
 |---|---|---|---|---|
@@ -32,6 +32,8 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `ysu_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | YSU with the MM5 surface layer (`sfcmodel = 2`) over water (`lu0 = 16`), horizontal Smagorinsky turbulence (`horizturb = 1`), `idiss = 1`, Kessler microphysics (YSU's qc tendency) |
 | `mynn25_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_kessler` with the MYNN-EDMF level-2.5 PBL (`ipbl = 4`: prognostic `qke`, advected in each RK stage, mass flux, subgrid clouds, its own dissipative heating, so `param.F` resets `idiss` to 0) and the MYNN surface layer (`sfcmodel = 6`) over water (`lu0 = 16`, so SLAB only diagnoses `qsfc`); also dumps the MYNN carried arrays (`qke`, `qke3d`, `tsq`, `el_pbl`, `cldfra_bl`, ...), `mol`, `rmol`, `zol`, `ustm`, `qcpten`, `qipten`, `xkzh`, `xkzm` |
 | `mynn3_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_dry` with the MYNN-EDMF level-3 PBL (`ipbl = 5`: `tsq`, `qsq`, `cov` prognostic) and the MYNN surface layer (`sfcmodel = 6`, `isftcflx = 1`) over water (`xland0 = 2`, `lu0 = 16`), dry, no horizontal turbulence; dumps as `mynn25_kessler` |
+| `myj_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `mynn25_kessler` with the MYJ PBL (`ipbl = 6`: prognostic `tke_myj`, not advected, `l_inf = 0`; `idiss = 1` keeps `turbparam_horiz`'s dissipation and the surface term) and the MYJ surface layer (`sfcmodel = 7`, `isftcflx = 1`) over water (`lu0 = 16`, SLAB only diagnoses `qsfc`); also dumps `mol`, `rmol`, `tslb`, the MYJ surface state (`thz0`, `qz0`, `uz0`, `vz0`, `akhs`, `akms`, `zntmyj`, `z0base`, `th10`, `q10`, `u10e`, `v10e`), `hpbl`, the PBL tendencies incl. `qipten`, `xkzh`, `xkzm`, `tke_myj`, `el_myj`, `mixht` |
+| `myj_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `ysu_dry` with the MYJ PBL (`ipbl = 6`) and surface layer (`sfcmodel = 7`, `isftcflx = 0`) over warm water (`xland0 = 2`, `lu0 = 16`, `tsk0 = 305 K`), `horizturb = 0`, `idiss = 1`, dry; dumps as `myj_kessler`. (Over land CM1's MYJ roughness `zntmyj` stays 0 and the Fortran run is NaN within 10 steps, so the case runs over water.) |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 

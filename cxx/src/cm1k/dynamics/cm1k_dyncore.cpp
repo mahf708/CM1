@@ -127,6 +127,9 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   // MYNN (ipbl=4/5, sfcmodel=6)
   c.mynn_opt = pbl_mynn::Coupling::from_namelist(nl);
   c.mynn = c.pbl && c.mynn_opt.active();
+  // MYJ (ipbl=6, sfcmodel=7)
+  c.myj_opt = myj::Coupling::from_namelist(nl);
+  c.myj = c.pbl && c.myj_opt.pbl_active();
   // param.F: dissipative heating is computed within ipbl=3,4,5
   if ((c.ipbl == 3 || c.ipbl == 4 || c.ipbl == 5) && c.idiss >= 1 && c.cm1setup != 4) c.idiss = 0;
   return c;
@@ -147,6 +150,7 @@ void DynConfig::check() const {
     turb_opt.check();
   }
   mynn_opt.check();    // ipbl=4/5 <-> sfcmodel=6, MYNN options, water only (no SLAB)
+  myj_opt.check();     // ipbl=6 <-> sfcmodel=7
   if (idiff != 0 && idiff != 1) unsupported("idiff=" + std::to_string(idiff) + " (only 0, 1)");
   if (idiff == 1 && difforder != 2 && difforder != 6)
     unsupported("difforder=" + std::to_string(difforder) + " with idiff=1 (only 2, 6)");
@@ -173,8 +177,9 @@ void DynConfig::check() const {
   // (bbc=3 adds the surface-layer term, from physics/sfc).
   // With ipbl=2 dissten is set by turbparam_vert/turbparam_horiz, with
   // ipbl=1 by turbparam_horiz and ysudiss.
-  // (ipbl=4,5: idiss=0, MYNN's dissipative heating is part of thpten)
-  if (idiss != 0 && ipbl != 0 && ipbl != 1 && ipbl != 2) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
+  // (ipbl=4,5: idiss=0, MYNN's dissipative heating is part of thpten;
+  // ipbl=6: as ipbl=1 without ysudiss, turbparam_horiz only)
+  if (idiss != 0 && ipbl != 0 && ipbl != 1 && ipbl != 2 && ipbl != 6) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
   if (rterm != 0) unsupported("rterm");
   if (adapt_dt != 0) unsupported("adapt_dt");
   // surface layer: sfcmodel=0, or sfcmodel=1 (bbc=3, isfcflx=0/1) with the
@@ -307,7 +312,7 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     cvm = s3("cvm");
     ts.allocate(B);
     m_tw.allocate(B);
-    if (m_cfg.sfc_opt.wrf() || m_cfg.pbl_opt.ipbl == 1) {
+    if (m_cfg.sfc_opt.wrf() || m_cfg.pbl_opt.ipbl == 1 || m_cfg.myj) {
       auto& w = m_ww;
       w.d1 = s3("wrf_dum1"); w.d2 = s3("wrf_dum2"); w.d3 = s3("wrf_dum3"); w.d4 = s3("wrf_dum4");
       w.d5 = s3("wrf_dum5"); w.d6 = s3("wrf_dum6"); w.d7 = s3("wrf_dum7");
@@ -321,6 +326,7 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     }
   }
   if (m_cfg.mynn) m_mw.allocate(B);   // psi tables (init_physics.F), inputs, qke tendency
+  if (m_cfg.myj) m_myw.allocate(B);   // psi tables (init_physics.F: MYJSFCINIT), column workspace
 
   if (m_cfg.diff2()) m_d2.allocate(B);
 
@@ -437,6 +443,15 @@ void Dyncore::sfc_and_turb(double rtime, int nstep) {
       if (!m_has_mynn) throw std::runtime_error("cm1k dyncore: the MYNN PBL needs set_mynn()");
       pbl_mynn::surface_layer(m_cfg.mynn_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, nstep, u3d, v3d, th3d, pp3d,
                               q3d, m_cfg.nqv, s.prs, s.rho, rf, m_sfc, m_mc, m_mw);
+    } else if (m_cfg.myj) {
+      // MYJ surface layer (sfcmodel=7)
+      if (!m_has_myj) throw std::runtime_error("cm1k dyncore: the MYJ PBL needs set_myj()");
+      sfc::sfc_prelude(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, m_sfc);
+      wrf_inputs();
+      const auto& w = m_ww;
+      myj::surface_layer(m_cfg.myj_opt, w.c, m_g, m_dt, nstep, update_sfc,
+                         {w.d1, w.d2, w.d3, w.d4, w.d5, w.d6, w.d7, w.qv, w.qc, w.qi}, s.prs, rf, m_sfc, m_myc,
+                         m_myw);
     } else if (so.wrf()) {
       if (!m_has_wsfc) throw std::runtime_error("cm1k dyncore: sfcmodel=2,3 needs set_wrf_surface()");
       sfc::sfc_prelude(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, m_sfc);
@@ -510,6 +525,11 @@ void Dyncore::set_pbl(const pbl::Tendencies& t) {
   m_has_pbl = true;
 }
 
+void Dyncore::set_myj(const myj::Carried& c) {
+  m_myc = c;   // shallow: the views are shared with the caller
+  m_has_myj = true;
+}
+
 void Dyncore::set_mynn(const pbl_mynn::Carried& c) {
   m_mc = c;   // shallow: the views are shared with the caller
   m_has_mynn = true;
@@ -554,6 +574,13 @@ void Dyncore::pbl(double /*rtime*/) {
     pbl_mynn::pbl(m_cfg.mynn_opt, m_g, m_b, m_dt, m_nstep, u3d, v3d, w3d, th3d, pp3d, q3d, m_cfg.nqv, m_cfg.nqc,
                   /*nqi=*/0, s.prs, s.rho, m_mc, m_mw);
     break;
+  case 6: {   // domyj (MYJ)
+    if (!m_has_myj) throw std::runtime_error("cm1k dyncore: the MYJ PBL needs set_myj()");
+    const auto& w = m_ww;
+    myj::pbl(m_cfg.myj_opt, m_g.b, m_dt, {w.d1, w.d2, w.d3, w.d4, w.d5, w.d6, w.d7, w.qv, w.qc, w.qi}, s.prs,
+             m_sfc, m_pt, m_myc, m_myw);
+    break;
+  }
   default:
     unsupported("ipbl=" + std::to_string(m_cfg.pbl_opt.ipbl));
   }

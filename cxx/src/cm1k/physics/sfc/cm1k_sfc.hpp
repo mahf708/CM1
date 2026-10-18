@@ -27,6 +27,8 @@
 //     init_surface and the bbc=3 prelude of sfc_and_turb (sfc_prelude);
 //     param.F sets isfcflx = 1 and requires pertflx = 0; lu0 = 1..33,
 //     tmn0 >= 100 K
+//   * sfcmodel = 7 (the MYJ surface layer + SLAB, physics/myj) with the
+//     MYJ PBL (cm1setup = 2, ipbl = 6); lu0 = 1..33, tmn0 >= 100 K
 //   * cecd = 1, 2, 3; set_znt = 0/1, set_ust = 0/1, set_flx = 0/1;
 //     pertflx = 0/1; cnstce, cnstcd, cnst_znt, cnst_ust, cnst_shflx, cnst_lhflx
 //   * initsfc = 1 (tsk0, lu0 -> LANDUSE.TBL), season = 1, 2
@@ -78,8 +80,11 @@ struct Options {
   // the MYNN surface layer (sfcmodel=6: physics/sfc_mynn, run by
   // pbl_mynn::surface_layer; the arrays and init_surface are these)
   bool mynn() const { return sfcmodel == 6; }
+  // the MYJ surface layer (sfcmodel=7: physics/myj, run by
+  // myj::surface_layer; the arrays and init_surface are these)
+  bool myj() const { return sfcmodel == 7; }
   // any ported surface layer (the surface arrays exist and are dumped)
-  bool has_layer() const { return active() || wrf() || mynn(); }
+  bool has_layer() const { return active() || wrf() || mynn() || myj(); }
   static Options from_namelist(const Namelist& nl);
   void check() const;   // throws std::runtime_error for anything not ported
 };

@@ -109,11 +109,11 @@ void Options::check() const {
   // with or without the horizontal Smagorinsky scheme (horizturb=1), see
   // physics/pbl
   const bool les = (cm1setup == 1);
-  // (also the MYNN PBL, ipbl=4/5, whose turb.F path is the same here)
-  const bool pbl2 = (cm1setup == 2 && (ipbl == 1 || ipbl == 2 || ipbl == 4 || ipbl == 5));
+  // (also the MYNN PBL, ipbl=4/5, and MYJ, ipbl=6, whose turb.F path is the same here)
+  const bool pbl2 = (cm1setup == 2 && (ipbl == 1 || ipbl == 2 || ipbl == 4 || ipbl == 5 || ipbl == 6));
   if (!les && !pbl2)
     fail("cm1setup=" + std::to_string(cm1setup) + " with ipbl=" + std::to_string(ipbl) +
-         " is not ported (only cm1setup=1 LES, or cm1setup=2 with ipbl=1, 2, 4, 5)");
+         " is not ported (only cm1setup=1 LES, or cm1setup=2 with ipbl=1, 2, 4, 5, 6)");
   if (les && sgsmodel != 1) fail("sgsmodel=" + std::to_string(sgsmodel) + " is not ported (only 1, TKE)");
   if (les && ipbl != 0) fail("ipbl>0 with cm1setup=1 is not ported");
   if (les && horizturb != 0) fail("horizturb=1 with cm1setup=1 is not ported");
@@ -127,9 +127,9 @@ void Options::check() const {
   if (ramp_sgs < 0) fail("ramp_sgs must be >= 0");
   // surface layers: sfcmodel=1 (physics/sfc), and with a PBL scheme also the
   // WRF/MM5 ones, sfcmodel=2,3 (physics/sfclay), and MYNN's, sfcmodel=6
-  // (physics/sfc_mynn)
-  if (!((sfcmodel >= 0 && sfcmodel <= 3) || sfcmodel == 6))
-    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0..3, 6)");
+  // (physics/sfc_mynn), and MYJ's, sfcmodel=7 (physics/myj)
+  if (!((sfcmodel >= 0 && sfcmodel <= 3) || sfcmodel == 6 || sfcmodel == 7))
+    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0..3, 6, 7)");
   if (les && sfcmodel > 1) fail("sfcmodel=" + std::to_string(sfcmodel) + " with the LES is not ported (only 0 and 1)");
   if (dosfcflx && sfcmodel < 1) fail("surface fluxes need a surface layer (sfcmodel>=1)");
   if (bbc != 1 && bbc != 3) fail("bbc=" + std::to_string(bbc) + " is not ported (only 1 free slip, 3 semi-slip)");

@@ -121,8 +121,8 @@ Options Options::from_namelist(const Namelist& nl) {
 void Options::check() const {
   auto fail = [](const std::string& m) { throw std::runtime_error("cm1k sfc: " + m); };
   auto is01 = [](int v) { return v == 0 || v == 1; };
-  if (!((sfcmodel >= 0 && sfcmodel <= 3) || sfcmodel == 6))
-    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0, 1, 2, 3, 6)");
+  if (!((sfcmodel >= 0 && sfcmodel <= 3) || sfcmodel == 6 || sfcmodel == 7))
+    fail("sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0, 1, 2, 3, 6, 7)");
   if (sfcmodel == 0) {
     // param.F stops for these
     if (isfcflx != 0) fail("isfcflx=1 requires sfcmodel=1..7");
@@ -169,6 +169,15 @@ void Options::check() const {
     if (!(cm1setup == 1 && ipbl == 0) && !(cm1setup == 2 && ipbl == 2))
       fail("sfcmodel=1 with cm1setup=" + std::to_string(cm1setup) + " and ipbl=" + std::to_string(ipbl) +
            " is not ported (only cm1setup=1 with ipbl=0, or cm1setup=2 with ipbl=2)");
+  } else if (sfcmodel == 7) {
+    // the MYJ surface layer (physics/myj, myj::surface_layer) with the MYJ
+    // PBL; its own options in myj::Coupling
+    if (!(cm1setup == 2 && ipbl == 6))
+      fail("sfcmodel=7 is only ported with cm1setup=2 and the MYJ PBL (ipbl=6)");
+    if (pertflx != 0) fail("pertflx=1 can only be used with sfcmodel=1");   // param.F stops
+    if (set_flx != 0 || set_ust != 0) fail("set_flx/set_ust are not ported with sfcmodel=7");
+    if (lu0 < 1 || lu0 > 33) fail("lu_index must be between 1 and 33 with sfcmodel=7");   // init_surface.F stops
+    if (tmn0 < 100.0) fail("tmn is less than 100 K");   // init_surface.F stops
   } else {
     // the WRF/MM5 surface layers with YSU (ipbl=1) or the simple PBL scheme
     if (!(cm1setup == 2 && (ipbl == 1 || ipbl == 2)))
