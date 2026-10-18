@@ -107,6 +107,8 @@
           call dump3('rmol',rmol,ibl,iel,jbl,jel,1,1)
           call dump3('zol',zol,ibl,iel,jbl,jel,1,1)
           call dump3('ustm',ustm,ibl,iel,jbl,jel,1,1)
+          ! and the SLAB soil temperatures (SLAB runs after it)
+          call dump3('tslb',tslb,ibl,iel,jbl,jel,1,num_soil_layers)
         endif
         if( use_pbl .and. (ipbl.eq.4 .or. ipbl.eq.5) )then
           ! MYNN PBL (ipbl=4: level 2.5, ipbl=5: level 3): hpbl, the PBL

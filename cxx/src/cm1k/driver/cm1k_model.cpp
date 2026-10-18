@@ -48,7 +48,7 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     // MYNN: carried arrays (zero at start, cm1.F), aliasing the surface and
     // PBL arrays CM1 shares with it
     m_use_mynn = cfg.mynn && m_sfc_opt.mynn();
-    if (m_use_mynn) m_mynn.allocate(b, m_sfc, m_pbl);
+    if (m_use_mynn) m_mynn.allocate(b, m_sfc, m_pbl, m_sfc_opt);
   }
   build_registry();
 }
@@ -175,6 +175,7 @@ void Model::init() {
   init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
   if (m_sfc_opt.has_layer()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
   if (m_sfc_opt.wrf()) sfclay::init_soil(m_grid.b, m_wsfc);                 // tslb
+  if (m_use_mynn) m_mynn.init_soil(m_grid.b, m_sfc);                       // tslb (sfcmodel=6)
   m_nstep = 0;
   m_mtime = 0;
   m_dyn.reset();            // the dynamical core is set up again from the new grid

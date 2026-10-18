@@ -146,7 +146,7 @@ void DynConfig::check() const {
     pbl_opt.check();   // throws for every PBL option that is not ported (ipbl=2, 4, 5)
     turb_opt.check();
   }
-  mynn_opt.check();    // ipbl=4/5 <-> sfcmodel=6, MYNN options, water only (no SLAB)
+  mynn_opt.check();    // ipbl=4/5 <-> sfcmodel=6, MYNN options, lu0, tmn0
   if (idiff != 0 && idiff != 1) unsupported("idiff=" + std::to_string(idiff) + " (only 0, 1)");
   if (idiff == 1 && difforder != 2 && difforder != 6)
     unsupported("difforder=" + std::to_string(difforder) + " with idiff=1 (only 2, 6)");
@@ -435,8 +435,8 @@ void Dyncore::sfc_and_turb(double rtime, int nstep) {
     if (m_cfg.mynn) {
       // MYNN surface layer (sfcmodel=6)
       if (!m_has_mynn) throw std::runtime_error("cm1k dyncore: the MYNN PBL needs set_mynn()");
-      pbl_mynn::surface_layer(m_cfg.mynn_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, nstep, u3d, v3d, th3d, pp3d,
-                              q3d, m_cfg.nqv, s.prs, s.rho, rf, m_sfc, m_mc, m_mw);
+      pbl_mynn::surface_layer(m_cfg.mynn_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, nstep, m_dt, update_sfc, u3d,
+                              v3d, th3d, pp3d, q3d, m_cfg.nqv, s.prs, s.rho, rf, m_sfc, m_mc, m_mw);
     } else if (so.wrf()) {
       if (!m_has_wsfc) throw std::runtime_error("cm1k dyncore: sfcmodel=2,3 needs set_wrf_surface()");
       sfc::sfc_prelude(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, m_sfc);
