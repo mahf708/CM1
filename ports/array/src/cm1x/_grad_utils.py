@@ -148,6 +148,9 @@ def initial_state(m, tha, dqv=None):
         rvh=b["rvh"],
         cg=cg,
         g=g,
+        gz=b.get("gz"),
+        dzdx=b.get("dzdx"),
+        dzdy=b.get("dzdy"),
     )
     s = dict(s0)
     for k in _GETSET_KEYS:

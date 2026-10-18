@@ -19,6 +19,8 @@ Small grid (12 x 12 x 16) of the reference namelists:
   kessler_periodic   periodic, 5th-order advection, Kessler
   supercell_kessler  open radiative BCs (irbc=4), WENO5 scalars, prognostic
                      TKE (sgsmodel=1), imove=1, Kessler
+  kessler_hill       terrain-following coordinate (itern=3 hill), open x
+                     BCs, prognostic TKE, Kessler
 
 "dry" below means the kessler_periodic case without the vapour excess: no
 condensation happens, so only the dynamics (and the inactive microphysics
@@ -46,6 +48,7 @@ REF = Path(__file__).resolve().parents[2] / "reference"
 CASES = {
     "kessler_periodic": REF / "kessler_periodic" / "namelist.input",
     "supercell_kessler": REF / "supercell_kessler" / "namelist.input",
+    "kessler_hill": REF / "kessler_hill" / "namelist.input",
 }
 GRID = dict(nx=12, ny=12, nz=16)
 QVAMP = 0.5
@@ -166,6 +169,7 @@ TORCH_CASES = [
     pytest.param("kessler_periodic", False, 2, 1e-4, 1e-8, id="dry-2steps"),
     pytest.param("kessler_periodic", True, 3, 1e-5, 1e-6, id="kessler-3steps"),
     pytest.param("supercell_kessler", True, 2, 1e-5, 1e-6, id="supercell-2steps"),
+    pytest.param("kessler_hill", True, 2, 1e-5, 1e-6, id="terrain-2steps"),
 ]
 
 
@@ -266,6 +270,7 @@ JAX_SLOW = [
     pytest.param("kessler_periodic", False, 2, 1e-4, 1e-8, id="dry-2steps"),
     pytest.param("kessler_periodic", True, 3, 1e-5, 1e-6, id="kessler-3steps"),
     pytest.param("supercell_kessler", True, 2, 1e-5, 1e-6, id="supercell-2steps"),
+    pytest.param("kessler_hill", True, 2, 1e-5, 1e-6, id="terrain-2steps"),
 ]
 
 

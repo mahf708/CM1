@@ -15,6 +15,24 @@ pip install -e ports/array[test]     # plus jax and/or torch if wanted
 pytest ports/array                    # every test runs on each installed backend
 ```
 
+### Terrain (`terrain_flag = .true.`)
+
+The terrain-following (Gal-Chen) coordinate is ported on the psolver=3 path:
+`init_terrain` (itern 1-3), the metrics of param.F (`init_terrain.terrain_metrics`),
+the 3-D base state and its terrain surface branch (base.F), `bcwsfc`, and the
+terrain branches of advection (flux form, WENO, pdef / pdefweno, `getdivx`,
+`getdiv`), the acoustic solver (`sound`, `ssopenbc*` with open radiative BCs),
+Rayleigh damping (irdamp=1) and the prognostic-TKE LES closure (sgsmodel=1:
+`calcdef`, `turbs`, `turbt`, `turbu`, `turbv`, `turbw`), with Kessler. Per-routine
+harnesses `drv_terrain`, `drv_adv_terrain`, `drv_sound_terrain`,
+`drv_base_terrain`, `drv_turb_terrain`; whole-model cases
+`ports/reference/nh_mountain_waves` (2-D x-z mountain waves, `CM1X_REF_DIR_NHMW`,
+`CM1X_REF_DIR_NHMW_LONG`) and `ports/reference/kessler_hill` (moist 3-D hill
+with TKE, `CM1X_REF_DIR_KH`, `CM1X_REF_DIR_KH_LONG`); see
+`tests/test_model_terrain.py`. Raises `NotImplementedError`: itern=4 (terrain read
+from `perts.dat`), imove=1 with terrain; everything not ported without terrain
+(e.g. rigid-wall advection, surface fluxes, PBL schemes) stays unported with it.
+
 ## Porting conventions (binding for every module)
 
 1. **One Python function per Fortran subroutine**, same name, in the module named
