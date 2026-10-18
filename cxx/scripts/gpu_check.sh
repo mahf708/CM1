@@ -65,7 +65,7 @@ if [ -f "$build/CTestTestfile.cmake" ]; then
     echo "#### ctest (information only)"
     echo
     echo '```'
-    grep -E "Test +#|tests passed|tests failed" "$out/ctest.log"
+    grep -E "Test +#|tests passed|tests failed" "$out/ctest.log" || tail -n 20 "$out/ctest.log"
     echo '```'
   } | tee -a "$report"
 fi

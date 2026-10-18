@@ -37,7 +37,7 @@ CUDA_IMAGE = os.environ.get("CM1K_CUDA_IMAGE", "nvidia/cuda:12.6.3-devel-ubuntu2
 image = (
     modal.Image.from_registry(CUDA_IMAGE, add_python="3.12")
     .apt_install("libopenmpi-dev", "openmpi-bin", "libgomp1")
-    .pip_install("numpy")
+    .pip_install("numpy", "cmake")  # cmake: ctest
     .add_local_dir(
         WS,
         remote_path=str(WS),
