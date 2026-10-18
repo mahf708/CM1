@@ -125,6 +125,9 @@ def solve1(
     irdamp = int(_opt(cfg, "irdamp", 1))
     rdalpha = float(_opt(cfg, "rdalpha", 3.3333333333e-3))
     ptype = int(_opt(cfg, "ptype", 1))
+    # cm1.F: tsmall/qsmall (1e-12/1e-24 with -DDP, see namelist.DP_DEFAULTS)
+    tsmall = float(_opt(cfg, "tsmall", TSMALL))
+    qsmall = float(_opt(cfg, "qsmall", QSMALL))
 
     uten1 = bk.zeros(g.u_shape) if uten1 is None else bk.copy(uten1)
     vten1 = bk.zeros(g.v_shape) if vten1 is None else bk.copy(vten1)
@@ -266,7 +269,7 @@ def solve1(
 
     # ---- pressure tendency for mass conservation (eqtset=2, moist) --------
     rdt = 1.0 / dt
-    tem = 0.0001 * TSMALL
+    tem = 0.0001 * tsmall
     th1 = thten1[S]
     qv1 = qten[nqv][S]
     thnew = tha[S] + dt * th1
@@ -274,7 +277,7 @@ def solve1(
     pinew = (
         rho[S] * (th0[S] + thnew) * (c.rd + c.rv * qvnew) * c.rp00
     ) ** c.rddcv - pi0[S]
-    cond = (xp.abs(dt * th1) > tem) | (xp.abs(dt * qv1) > QSMALL)
+    cond = (xp.abs(dt * th1) > tem) | (xp.abs(dt * qv1) > qsmall)
     pt = xp.where(cond, (pinew - ppi[S]) * rdt, xp.zeros_like(pinew))
     ppten = bk.set(ppten, S, pt)
 
