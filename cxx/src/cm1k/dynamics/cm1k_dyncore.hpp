@@ -5,6 +5,7 @@
 #include "dynamics/cm1k_diff2.hpp"
 #include "dynamics/cm1k_openbc.hpp"
 #include "dynamics/cm1k_sound.hpp"
+#include "physics/myj/cm1k_myj_coupling.hpp"
 #include "physics/pbl/cm1k_pbl.hpp"
 #include "physics/pbl_gfs/cm1k_pbl_gfs.hpp"
 #include "physics/pbl_mynn/cm1k_mynn_coupling.hpp"
@@ -60,6 +61,10 @@ struct DynConfig {
   // physics/pbl_mynn/cm1k_mynn_coupling.hpp
   bool mynn = false;
   pbl_mynn::Coupling mynn_opt;
+  // MYJ (cm1setup=2, ipbl=6 with the MYJ surface layer sfcmodel=7):
+  // physics/myj/cm1k_myj_coupling.hpp
+  bool myj = false;
+  myj::Coupling myj_opt;
 
   // explicit diffusion: 6th order inside advection, or diff2.F
   bool diff6() const { return idiff >= 1 && difforder == 6; }
@@ -124,7 +129,8 @@ public:
   // cm1setup=2 (ipbl>=1) runs the mesoscale sequence of sfc_and_turb
   // instead: surface layer (sfc::sfc_prelude with gethpbl2 for ipbl=2, then
   // sfcmodel=1's getcecd/sfcflux/sfcdiags or sfclay::wrf_surface_layer; or
-  // the MYNN surface layer sfcmodel=6, pbl_mynn::surface_layer), calcnm,
+  // the MYNN surface layer sfcmodel=6, pbl_mynn::surface_layer; or the MYJ
+  // surface layer sfcmodel=7, myj::surface_layer), calcnm,
   // calcdef, turbparam_horiz (horizturb=1), turbparam_vert (ipbl=2),
   // gettau (ipbl=2 or horizturb=1), then the PBL scheme through pbl() below.
   bool pbl_enabled() const { return m_cfg.pbl; }
@@ -146,6 +152,9 @@ public:
   // ipbl=3: GFS-EDMF's diffusivities xkzh, xkzm (in the dumps), owned by
   // the Model. Call after setup().
   void set_gfs(const pbl_gfs::Carried& c);
+  // MYJ's carried arrays (DynConfig::myj), owned by the Model (most are in
+  // the dumps). Call after setup().
+  void set_myj(const myj::Carried& c);
   // solve2.F: qke advection for the MYNN PBL, one RK stage (public: it
   // launches device lambdas)
   void advect_qke(int nrk, Real dttmp);
@@ -169,7 +178,9 @@ public:
   //     z = zf, znt = mznt with sfcmodel=4 (else znt); u*, wspd, hpbl and
   //     xkzh/xkzm (set_gfs) from the scheme; its dissipative heating is
   //     part of thpten, dissten = its TKE dissipation)
-  //   6, ...: not ported yet. A new scheme adds its case
+  //   6: myj::pbl (MYJ; its surface layer sfcmodel=7 runs in sfc_and_turb;
+  //     carried arrays in myj::Carried, set with set_myj())
+  //   7, ...: not ported yet. A new scheme adds its case
   //     here (inputs: u3d/v3d/w3d/th3d/pp3d/q3d, s.prs, s.rho, rr, rf, the
   //     surface state m_sfc), any extra outputs or carried arrays to
   //     pbl::Tendencies (allocated from DynConfig::pbl_opt), its options to
@@ -233,6 +244,9 @@ private:
   pbl_mynn::Carried m_mc;   // MYNN (DynConfig::mynn)
   pbl_mynn::Work m_mw;
   bool m_has_mynn = false;
+  myj::Carried m_myc;       // MYJ (DynConfig::myj)
+  myj::Work m_myw;
+  bool m_has_myj = false;
   int m_nstep = 0;          // model step at sfc_and_turb (MYNN initflag, SFCLAY_mynn itimestep)
   Real m_cgs1 = 0, m_cgs2 = 0, m_cgs3 = 0, m_cgt1 = 0, m_cgt2 = 0, m_cgt3 = 0;
 

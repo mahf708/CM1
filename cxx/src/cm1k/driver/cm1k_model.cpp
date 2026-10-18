@@ -52,6 +52,9 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     // PBL arrays CM1 shares with it
     m_use_mynn = cfg.mynn && m_sfc_opt.mynn();
     if (m_use_mynn) m_mynn.allocate(b, m_sfc, m_pbl, m_sfc_opt);
+    // MYJ: carried arrays (cm1.F initial values: tke_myj = 0.01, the rest 0)
+    m_use_myj = cfg.myj && m_sfc_opt.myj();
+    if (m_use_myj) m_myj.allocate(b, m_sfc_opt);
   }
   build_registry();
 }
@@ -97,6 +100,13 @@ void Model::build_registry() {
     m_reg.add("qipten", m_pbl.qipten);
     for (auto& [name, a] : m_mynn.dumped_pbl()) m_reg.add(name, a);
   }
+  if (m_use_myj) {
+    for (auto& [name, a] : m_myj.dumped_sfc()) m_reg.add(name, a);
+    m_reg.add("hpbl", m_sfc.hpbl);
+    for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
+    m_reg.add("qipten", m_pbl.qipten);
+    for (auto& [name, a] : m_myj.dumped_pbl()) m_reg.add(name, a);
+  }
 }
 
 std::vector<std::string> Model::pbl_field_names() const {
@@ -112,6 +122,14 @@ std::vector<std::string> Model::pbl_field_names() const {
     for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
     n.push_back("qipten");
     for (auto& [name, a] : m_mynn.dumped_pbl()) n.push_back(name);
+  }
+  if (m_use_myj) {
+    // src/cm1dump_state.inc: sfcmodel=7, then ipbl=6 blocks
+    for (auto& [name, a] : m_myj.dumped_sfc()) n.push_back(name);
+    n.push_back("hpbl");
+    for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
+    n.push_back("qipten");
+    for (auto& [name, a] : m_myj.dumped_pbl()) n.push_back(name);
   }
   // src/cm1dump_state.inc: sfcmodel=4, then ipbl=3 blocks
   if (m_sfc_opt.gfdl())
@@ -194,6 +212,7 @@ void Model::init() {
   if (m_sfc_opt.has_layer()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
   if (m_sfc_opt.wrf()) sfclay::init_soil(m_grid.b, m_wsfc);                 // tslb
   if (m_use_mynn) m_mynn.init_soil(m_grid.b, m_sfc);                       // tslb (sfcmodel=6)
+  if (m_use_myj) myj::init(m_grid.b, m_sfc, m_myj);   // MYJSFCINIT ust, z0base, tslb
   if (m_sfc_opt.gfdl()) m_gsfc.init_soil(m_grid.b);                          // tslb (sfcmodel=4)
   m_nstep = 0;
   m_mtime = 0;
@@ -209,6 +228,7 @@ Dyncore& Model::dyncore() {
     if (m_sfc_opt.wrf()) m_dyn->set_wrf_surface(m_wsfc);
     if (m_use_pbl) m_dyn->set_pbl(m_pbl);
     if (m_use_mynn) m_dyn->set_mynn(m_mynn);
+    if (m_use_myj) m_dyn->set_myj(m_myj);
     if (m_sfc_opt.gfdl()) m_dyn->set_gfdl_surface(m_gsfc);
     if (m_use_pbl && m_ipbl == 3) m_dyn->set_gfs(m_gfs);
   }

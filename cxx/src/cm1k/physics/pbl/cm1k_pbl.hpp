@@ -32,6 +32,8 @@
 //   * ipbl = 4, 5 (MYNN-EDMF, physics/pbl_mynn) with the MYNN surface layer
 //     sfcmodel = 6 (physics/sfc_mynn) over water; the glue is
 //     physics/pbl_mynn/cm1k_mynn_coupling.hpp
+//   * ipbl = 6 (MYJ, physics/myj) with the MYJ surface layer sfcmodel = 7;
+//     the glue is physics/myj/cm1k_myj_coupling.hpp
 //   * imoist = 0, or 1 with ptype = 1 (Kessler: qv, qc; no qi)
 //   * no terrain (zs = 0), axisymm = 0
 //
@@ -41,12 +43,14 @@
 //     (sfcmodel=1: sfc::sfc_layer, with gethpbl2 for ipbl=2; sfcmodel=2,3:
 //     sfc::sfc_prelude, wrfphys::pbl_prep/pbl_moist,
 //     sfclay::wrf_surface_layer incl. SLAB; sfcmodel=6:
-//     pbl_mynn::surface_layer); turb::sfc_bcs; turb::calcnm;
+//     pbl_mynn::surface_layer; sfcmodel=7: sfc::sfc_prelude,
+//     pbl_prep/pbl_moist, myj::surface_layer incl. SLAB); turb::sfc_bcs; turb::calcnm;
 //     turb::calcdef; turbparam_horiz (horizturb=1); turbparam_vert
 //     (ipbl=2); turb::gettau (ipbl=2 or horizturb=1); then Dyncore::pbl,
 //     the dispatch hook: ipbl=2 -> br09, ipbl=1 -> pbl_ysu::ysu (+
 //     ysu_dissten for idiss=1), ipbl=3 -> pbl_gfs::gfsedmf, ipbl=4/5 ->
-//     pbl_mynn::pbl, followed by
+//     pbl_mynn::pbl, ipbl=6 -> myj::pbl (its surface layer sfcmodel=7:
+//     myj::surface_layer), followed by
 //     bcs(upten), bcs(vpten).
 //   Dyncore::solve2 (ipbl=4/5): the qke advection of every RK stage.
 //   Dyncore::solve1: turb::dissheat (idiss=1); add_theta_tendency;
@@ -54,7 +58,7 @@
 //
 // Not ported: budgets (tdiag/udiag/vdiag/qdiag td_pbl...), the nstep=1 print
 // of turbparam_vert, output_dissten, YSU's xkzh/xkzm outputs (computed, not
-// stored), the other PBL schemes (MYJ: ipbl = 6) and
+// stored), the other PBL schemes and
 // cm1setup = 4.
 
 #include "physics/sfc/cm1k_sfc.hpp"

@@ -385,6 +385,34 @@ TEST_CASE("dyncore + GFS-EDMF PBL + MM5 surface layer + SLAB + Kessler: gfs_sfcl
   run_case("gfs_sfclay_land", 0.0, true, true);
 }
 
+TEST_CASE("dyncore + MYJ PBL + MYJ surface layer + Kessler: myj_kessler vs Fortran",
+          "[dyn][step][pbl][myj][sfc][kessler]") {
+  // cm1setup=2, ipbl=6 (MYJ: MYJPBL with the TKE it carries, no advection),
+  // sfcmodel=7 over water (MYJSFC with isftcflx=1, then SLAB's qsfc),
+  // horizturb=1, idiss=1 (turbparam_horiz's dissten + the surface term),
+  // Kessler. Compares every dumped surface array, the MYJ carried state
+  // (tke_myj, el_myj, thz0, ..., akhs, akms, zntmyj), hpbl, xkzh/xkzm and
+  // the PBL tendencies (dump N holds those of state N-1).
+  run_case("myj_kessler", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + MYJ PBL + Kessler: myj_kessler from Model::init (no dump)",
+          "[dyn][step][init][pbl][myj][sfc][kessler]") {
+  // init_physics (MYJSFCINIT: tables, ust = 0.1), init_surface (z0base,
+  // tslb), tke_myj = 0.01
+  run_case("myj_kessler", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + MYJ PBL + MYJ surface layer: myj_dry vs Fortran", "[dyn][step][pbl][myj][sfc]") {
+  // ipbl=6, sfcmodel=7 over warm water (tsk0=305) with isftcflx=0,
+  // horizturb=0 (no gettau), idiss=1, dry
+  run_case("myj_dry", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + MYJ PBL: myj_dry from Model::init (no dump)", "[dyn][step][init][pbl][myj][sfc]") {
+  run_case("myj_dry", 0.0, true, true);
+}
+
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
   run_case("dry_bubble", 1e-12, true);
 }
@@ -545,6 +573,43 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
            {"idiss", "0"}, {"isftcflx", "1"}, {"iz0tlnd", "1"}, {"lu0", "16"}, {"lu0", "18"},
            {"season", "2"}, {"set_znt", "1"}, {"isfcflx", "0"}}) {
       auto y = ys;
+      y.set(k, v);
+      INFO(k << " = " << v);
+      REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());
+    }
+  }
+
+  // MYJ: cm1setup=2, ipbl=6 with the MYJ surface layer (sfcmodel=7)
+  for (const char* c : {"myj_kessler", "myj_dry"}) {
+    auto mj = Namelist::from_file(cm1k::testing::case_namelist(c));
+    INFO(c);
+    REQUIRE_NOTHROW(DynConfig::from_namelist(mj).check());
+    const auto cfg = DynConfig::from_namelist(mj);
+    REQUIRE(cfg.pbl);
+    REQUIRE(cfg.myj);
+    REQUIRE_FALSE(cfg.mynn);
+    REQUIRE(cfg.bbc == 3);
+    REQUIRE(cfg.sfc_opt.isfcflx == 1);   // param.F: sfcmodel=2..7
+    REQUIRE(cfg.myj_opt.dosfcflx);       // init_surface.F: sfcmodel=7, ipbl=6
+    REQUIRE(cfg.sfc_opt.dosfcflx);
+    REQUIRE(cfg.pbl_opt.l_inf == 0.0);   // param.F: ipbl=6
+    REQUIRE(cfg.idiss == mj.geti("idiss", 0));   // not reset for ipbl=6
+    for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+           {"sfcmodel", "0"}, {"sfcmodel", "1"}, {"sfcmodel", "2"}, {"sfcmodel", "3"}, {"sfcmodel", "6"},
+           {"ipbl", "0"}, {"ipbl", "1"}, {"ipbl", "2"}, {"ipbl", "3"}, {"ipbl", "4"}, {"cm1setup", "1"},
+           {"cm1setup", "4"}, {"pertflx", "1"}, {"lu0", "34"}, {"tmn0", "50.0"}, {"oceanmodel", "2"},
+           {"set_flx", "1"}, {"initsfc", "2"}, {"imove", "1"}, {"terrain_flag", ".true."}, {"horizturb", "2"},
+           {"tbc", "3"}}) {
+      auto y = mj;
+      y.set(k, v);
+      INFO(k << " = " << v);
+      REQUIRE_THROWS(DynConfig::from_namelist(y).check());
+    }
+    for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+           {"horizturb", "0"}, {"horizturb", "1"}, {"idiss", "0"}, {"idiss", "1"}, {"isftcflx", "0"},
+           {"isftcflx", "1"}, {"isftcflx", "2"}, {"lu0", "3"}, {"lu0", "16"}, {"season", "2"}, {"set_znt", "1"},
+           {"isfcflx", "0"}, {"doimpl", "0"}}) {
+      auto y = mj;
       y.set(k, v);
       INFO(k << " = " << v);
       REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());

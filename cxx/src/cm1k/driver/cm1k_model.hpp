@@ -2,6 +2,7 @@
 #define CM1K_MODEL_HPP
 
 #include "physics/pbl/cm1k_pbl.hpp"
+#include "physics/myj/cm1k_myj_coupling.hpp"
 #include "physics/pbl_gfs/cm1k_pbl_gfs.hpp"
 #include "physics/pbl_mynn/cm1k_mynn_coupling.hpp"
 #include "physics/sfc/cm1k_sfc.hpp"
@@ -63,7 +64,7 @@ public:
   Grid& grid() { return m_grid; }
   BaseState& base() { return m_base; }
   State& state() { return m_state; }
-  // Surface layer (allocated only for sfcmodel=1,2,3,4,6; its dumped arrays
+  // Surface layer (allocated only for sfcmodel=1,2,3,4,6,7; its dumped arrays
   // are registered fields then).
   bool has_surface() const { return m_sfc_opt.has_layer(); }
   sfc::SfcState& surface() { return m_sfc; }
@@ -82,7 +83,7 @@ public:
   bool has_gfs() const { return m_use_pbl && m_ipbl == 3; }
   pbl_gfs::Carried& gfs() { return m_gfs; }
   // PBL tendencies (allocated only for use_pbl, i.e. cm1setup=2 with
-  // ipbl>=1; for ipbl=1,2,3,4,5 they and the surface layer's hpbl are
+  // ipbl>=1; for ipbl=1,2,3,4,5,6 they and the surface layer's hpbl are
   // registered fields, as src/cm1dump_state.inc dumps them).
   bool has_pbl() const { return m_use_pbl; }
   pbl::Tendencies& pbl_tendencies() { return m_pbl; }
@@ -91,9 +92,14 @@ public:
   // fields under their dump names (qke3d is CM1's advected qke).
   bool has_mynn() const { return m_use_mynn; }
   pbl_mynn::Carried& mynn() { return m_mynn; }
-  // Names of the PBL fields in the dumps (empty without ipbl=1,2,3,4,5);
-  // with MYNN also its carried arrays and the sfcmodel=6 ones, with
-  // GFS-EDMF xkzh, xkzm, with sfcmodel=4 the GFDL ones.
+  // MYJ (ipbl=6 with sfcmodel=7): the arrays the scheme and its surface
+  // layer carry across steps (tke_myj, el_myj, thz0, ..., the SLAB soil
+  // temperatures), the dumped ones registered under their dump names.
+  bool has_myj() const { return m_use_myj; }
+  myj::Carried& myj() { return m_myj; }
+  // Names of the PBL fields in the dumps (empty without ipbl=1,2,3,4,5,6);
+  // with MYNN (MYJ) also its carried arrays and the sfcmodel=6 (7) ones,
+  // with GFS-EDMF xkzh, xkzm, with sfcmodel=4 the GFDL ones.
   std::vector<std::string> pbl_field_names() const;
   // The dynamical core (set up on the first step()).
   Dyncore& dyncore();
@@ -121,6 +127,8 @@ private:
   pbl::Tendencies m_pbl;
   bool m_use_mynn = false;
   pbl_mynn::Carried m_mynn;
+  bool m_use_myj = false;
+  myj::Carried m_myj;
   FieldRegistry m_reg;
 
   int m_nstep = 0;
