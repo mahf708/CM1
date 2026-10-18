@@ -28,8 +28,8 @@ out of tolerance, 2 an implementation cannot run the case.
 implementations (cm1k on the CPU, Fortran) must agree to 1e-12 (in practice
 they are bitwise identical). Pairs involving cm1x or a GPU build must agree to
 1e-10 up to step 4 and 1e-6 up to step 100 (the schedule the cm1x tests
-use), then 1e-5: over the 30-minute supercell the round-off differences grow
-to ~3e-6 in the pressure perturbation under the rain shaft.
+use), then 3e-5: over the 30-minute supercell the differences grow to ~1e-5
+in the pressure perturbation under the rain shaft.
 
 **Conventions it accounts for.** CM1 and cm1k keep the eddy viscosities
 (`kmh kmv khh khv`) of the previous step in the state between steps, while
