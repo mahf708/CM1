@@ -19,6 +19,7 @@
 #include "share/cm1k_state.hpp"
 
 #include <memory>
+#include <vector>
 
 namespace cm1k {
 
@@ -43,6 +44,8 @@ struct DynConfig {
   // derived (param.F)
   bool idoles = false, dohturb = false, dovturb = false;
   int numq = 0, nqv = 0, nqc = 0, nql1 = -2, nql2 = -2, iice = 0;
+  int nqs1 = -2, nqs2 = -2;
+  std::vector<Real> qmag;   // qmag[n-1] (param.F; solve2.F weps = qmag(n)*epsilon)
   // subgrid turbulence (sgsmodel=1 with cm1setup=1): physics/turb options
   bool turb = false;
   turb::Options turb_opt;

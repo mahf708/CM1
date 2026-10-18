@@ -3,6 +3,7 @@
 #include "dynamics/cm1k_adv.hpp"
 #include "dynamics/cm1k_rdamp_cor.hpp"
 #include "init/cm1k_init.hpp"
+#include "share/cm1k_moist.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -113,9 +114,10 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
 
   // moisture indices (param.F)
   c.numq = 0;
-  if (c.imoist == 1) {
-    if (c.ptype == 0) { c.numq = 1; c.nqv = 1; }   // water vapor only
-    if (c.ptype == 1) { c.numq = 3; c.nqv = 1; c.nqc = 2; c.nql1 = 2; c.nql2 = 3; c.iice = 0; }
+  if (c.imoist == 1 && MoistLayout::known(c.ptype)) {
+    const MoistLayout ml = MoistLayout::make(1, c.ptype);
+    c.numq = ml.numq; c.nqv = ml.nqv; c.nqc = ml.nqc; c.nql1 = ml.nql1; c.nql2 = ml.nql2;
+    c.iice = ml.iice; c.nqs1 = ml.nqs1; c.nqs2 = ml.nqs2; c.qmag = ml.qmag;
   }
   // subgrid turbulence (LES): only sgsmodel=1 is ported (physics/turb)
   c.turb = (c.idoles && c.sgsmodel >= 1);
@@ -157,8 +159,8 @@ void DynConfig::check() const {
   if (diff2() && idiss != 0) unsupported("idiss=1 with difforder=2 (dissipation rate of diff2def)");
   if (diff2() && (bbc < 1 || bbc > 2 || tbc < 1 || tbc > 2))
     unsupported("difforder=2 with bbc/tbc other than 1, 2");
-  if (imoist == 1 && ptype != 0 && ptype != 1)
-    unsupported("ptype=" + std::to_string(ptype) + " with imoist=1 (only 0 = qv only, 1 = Kessler)");
+  if (imoist == 1 && !MoistLayout::known(ptype))
+    unsupported("ptype=" + std::to_string(ptype) + " with imoist=1 (only 0 = qv only, 1 = Kessler, 3 = Thompson, 5 = Morrison)");
   if (irdamp != 0 && irdamp != 1) unsupported("irdamp=" + std::to_string(irdamp));
   if (hrdamp != 0 && hrdamp != 1) unsupported("hrdamp=" + std::to_string(hrdamp));
   if (icor == 1 && betaplane != 0) unsupported("betaplane=1");
@@ -829,8 +831,15 @@ void Dyncore::solve2() {
           for (int n = nql1 + 1; n <= nql2; ++n) dum2_(i, j, k) = dum2_(i, j, k) + q3d_(i, j, k, n);
         });
       }
-      if (cfg.iice == 1) unsupported("ice microphysics");
-      Kokkos::parallel_for("dum3", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) { dum3_(i, j, k) = 0.0; });
+      if (cfg.iice == 1) {
+        const int nqs1 = cfg.nqs1, nqs2 = cfg.nqs2;
+        Kokkos::parallel_for("dum3", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+          dum3_(i, j, k) = q3d_(i, j, k, nqs1);
+          for (int n = nqs1 + 1; n <= nqs2; ++n) dum3_(i, j, k) = dum3_(i, j, k) + q3d_(i, j, k, n);
+        });
+      } else {
+        Kokkos::parallel_for("dum3", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) { dum3_(i, j, k) = 0.0; });
+      }
       if (cfg.eqtset == 2) {
         Kokkos::parallel_for("buoy_m2", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
           const Real qv = Kokkos::fmax(q3d_(i, j, k, nqv), 0.0);
@@ -998,7 +1007,7 @@ void Dyncore::solve2() {
         });
         AdvsArgs aa;
         aa.wflag = 1; aa.pdef = (nrk == nrkmax) ? 1 : 0; aa.pdefweno = (n == cfg.nqv) ? 0 : 1;
-        aa.weps = 1.0e-2 * phys::epsilon;   // qmag(n)*epsilon, qmag = 1.0e-2 for Kessler
+        aa.weps = cfg.qmag[n - 1] * phys::epsilon;   // cm1r20.1: qmag(n)*epsilon
         aa.diffit = (cfg.idiff == 1 && cfg.difforder == 6) ? 1 : 0;
         aa.hadvorder = cfg.hadvordrs; aa.vadvorder = cfg.vadvordrs;
         auto qan = FArray3(Kokkos::subview(qa.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm});

@@ -1,4 +1,5 @@
 #include "cm1k_grid.hpp"
+#include "cm1k_moist.hpp"
 
 #include <algorithm>
 
@@ -47,10 +48,11 @@ Bounds Bounds::from_namelist(const Namelist& nl) {
     b.ibt = b.ib; b.iet = b.ie; b.jbt = b.jb; b.jet = b.je; b.kbt = b.kb; b.ket = b.ke + 1;
   }
 
-  // numq for the microphysics options cm1k supports (see param.F).
+  // numq for the microphysics options cm1k supports (param.F; MoistLayout).
+  // Unported ptypes keep numq = 1 here; the physics options reject them.
   const int ptype = nl.geti("ptype", 0);
   b.numq = 1;
-  if (imoist == 1 && ptype == 1) b.numq = 3;   // Kessler: qv, qc, qr
+  if (imoist == 1 && MoistLayout::known(ptype)) b.numq = MoistLayout::make(1, ptype).numq;
   b.nrain = 1;
   if (nl.geti("imove", 0) == 1) b.nrain = 2;   // param.F: ground- and domain-relative swaths
   return b;
