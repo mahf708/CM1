@@ -16,6 +16,7 @@ import warnings
 from . import constants as C
 from . import bc as _bc
 from .grid import Grid
+from .misc import level_sums, qp_sum
 
 __all__ = ["init3d", "getset"]
 
@@ -233,7 +234,7 @@ def getset(
     with warnings.catch_warnings():  # jax without x64 keeps float32
         warnings.simplefilter("ignore")
         w = xp.astype(w, xp.float64)
-    mass1 = xp.sum(xp.sum(w, axis=(1, 2)))
+    mass1 = qp_sum(bk, level_sums(bk, w))  # CM1's summation order
 
     ppx = bk.set(bk.zeros(shp_s), (K, J, I), ppi[K, J, I])
     ppx = _bc.bcs(bk, g, ppx, cfg)

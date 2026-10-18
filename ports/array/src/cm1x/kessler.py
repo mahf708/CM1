@@ -278,7 +278,13 @@ def satadj(
 
         c = (qv0, qc0, tnew, prsi, nit, tnew, qvs, act0)
         nfree = maxiter - 1 if maxiter == 100 else maxiter
-        c = bk.fori_loop(nfree, lambda it, c: sweep(False, c), c)
+        # eagerly: stop once no point is active (the sweeps are then no-ops)
+        c = bk.fori_loop(
+            nfree,
+            lambda it, c: sweep(False, c),
+            c,
+            until=lambda c: ~xp.any(c[7]),
+        )
         if maxiter == 100:
             c = sweep(True, c)
         qvnew, qcnew, tnew, pnew, nit, tlast, qvs, active = c

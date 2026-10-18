@@ -46,6 +46,9 @@ class Backend:
     xp: Any
     dtype: Any
     device: Any = None
+    # torch only: compile the hot routines separately (``Backend.kernel``);
+    # a tuple of (option, value) pairs for torch.compile, or None (off)
+    kernels: Any = None
 
     # --- creation ---------------------------------------------------------
     def zeros(self, shape, dtype=None):
@@ -97,7 +100,7 @@ class Backend:
         return self.xp.asarray(x, dtype=f64 or self.dtype, device=self.device)
 
     # --- control flow / compilation ---------------------------------------
-    def fori_loop(self, n, body, carry, max_n=None):
+    def fori_loop(self, n, body, carry, max_n=None, until=None):
         """``for i in range(n): carry = body(i, carry)``; return ``carry``.
 
         ``n`` may be a 0-d integer-valued array (e.g. a sub-step count that
@@ -113,7 +116,13 @@ class Backend:
         ``max_n`` (static int >= n): with a traced ``n``, run ``max_n``
         masked iterations instead (``carry`` is kept where ``i >= n``), a
         fixed-trip ``lax.fori_loop`` that reverse-mode AD can differentiate;
-        same result as long as ``n <= max_n``."""
+        same result as long as ``n <= max_n``.
+
+        ``until`` (optional ``until(carry) -> 0-d bool array``): when run
+        eagerly the loop stops early once it is true.  Only for loops whose
+        ``body`` returns a carry for which ``until`` holds unchanged (e.g.
+        masked iterations with nothing left active), so the result is the
+        same; ignored under a jax trace or torch.compile (fixed trip count)."""
         if self.name == "jax" and (_jax_tracing(n) or _jax_tracing(carry)):
             import jax
 
@@ -148,7 +157,14 @@ class Backend:
             return jax.lax.while_loop(cond, step, (i0, carry))[1]
         if not isinstance(n, int):
             n = int(self.to_numpy(n))
+        if until is not None and self.name == "torch":
+            import torch
+
+            if torch.compiler.is_compiling():
+                until = None
         for i in range(n):
+            if until is not None and bool(until(carry)):
+                break
             carry = body(i, carry)
         return carry
 
@@ -196,6 +212,23 @@ class Backend:
             return torch.compile(fn, **options)
         return fn
 
+    def kernel(self, fn, traced=()):
+        """``fn`` as a separately compiled routine: with ``kernels`` set on
+        torch (``Model(..., backend="torch", jit=True)``) a cached
+        ``torch.compile`` of ``fn`` (inductor, ``dynamic=False``,
+        ``fullgraph=True``); ``fn`` itself otherwise (numpy, jax, eager
+        torch, or when already inside a torch.compile trace).
+
+        ``traced`` names keyword arguments that are passed as Python floats
+        (time steps, thresholds) but used only in array arithmetic: they are
+        handed to the compiled routine as 0-d arrays, so that a new value is
+        a new input instead of a recompile.  Every other non-array argument
+        (ints, flags, ``bk``, ``g``, ``cfg``) is a compile-time constant: one
+        compiled variant per distinct combination."""
+        if self.kernels is None or self.name != "torch":
+            return fn
+        return _torch_kernel(self, fn, tuple(traced))
+
     def materialize(self, tree):
         """Evaluate a lazy backend's pending work on ``tree`` (a dict / list
         tree of arrays) and return it; identity for eager backends.  dask:
@@ -213,6 +246,69 @@ class Backend:
         if self.name == "torch":
             return x.clone()
         return self.xp.asarray(x, copy=True)
+
+
+# torch.compile settings for Backend.kernel (``Model(..., jit_options=...)``
+# entries override them).  Inductor's C++ vectorization adds ~60% compile time
+# here for no measurable speed-up (the kernels are memory bound and full of
+# offset slices), hence ``cpp.vec_isa_ok=False``.
+TORCH_KERNEL_DEFAULTS = {
+    "dynamic": False,
+    "fullgraph": True,
+    "options": {"cpp.vec_isa_ok": False},
+}
+_TORCH_KERNELS: dict = {}
+
+
+def torch_kernel_options(jit_options=None) -> tuple:
+    """Hashable torch.compile options for ``Backend.kernels``: the defaults
+    above updated with ``jit_options`` (``options`` dicts are merged)."""
+    o = {
+        k: (dict(v) if isinstance(v, dict) else v)
+        for k, v in TORCH_KERNEL_DEFAULTS.items()
+    }
+    for k, v in (jit_options or {}).items():
+        if k == "options" and isinstance(v, dict):
+            o["options"].update(v)
+        else:
+            o[k] = v
+    if not o.get("options"):
+        o.pop("options", None)
+    return tuple(
+        (k, tuple(sorted(v.items())) if isinstance(v, dict) else v)
+        for k, v in sorted(o.items())
+    )
+
+
+def _torch_kernel(bk, fn, traced):
+    key = (fn, traced, bk.kernels)
+    w = _TORCH_KERNELS.get(key)
+    if w is not None:
+        return w
+    import torch
+    import torch._dynamo
+
+    # one compiled variant per distinct set of static arguments (RK stage,
+    # flags, ...): allow more than dynamo's default of 8 per routine
+    cfg = torch._dynamo.config
+    for name in ("recompile_limit", "cache_size_limit"):
+        if hasattr(cfg, name):
+            setattr(cfg, name, max(getattr(cfg, name), 64))
+    opts = {k: (dict(v) if k == "options" else v) for k, v in bk.kernels}
+    compiled = torch.compile(fn, **opts)
+
+    def w(*args, **kw):
+        if torch.compiler.is_compiling():
+            return fn(*args, **kw)
+        for k in traced:
+            v = kw.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                kw[k] = torch.tensor(float(v), dtype=torch.float64, device=bk.device)
+        return compiled(*args, **kw)
+
+    w.__wrapped__ = fn
+    _TORCH_KERNELS[key] = w
+    return w
 
 
 def _jax_tracing(tree) -> bool:

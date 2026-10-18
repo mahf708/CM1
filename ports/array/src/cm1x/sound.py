@@ -294,6 +294,206 @@ def _make_terrain_uv_fpk(
     return f
 
 
+def _fwd2(c2prev, x):  # k = 3..nk: cof2(k) (k = nk: w(nk))
+    dd, aa, r1 = x
+    c2 = (dd - aa * c2prev) * r1
+    return c2, c2
+
+
+def _bwd(wnext, x):  # k = nk-1..2: w(k) = cof1(k) w(k+1) + cof2(k)
+    c1, c2 = x
+    w = c1 * wnext + c2
+    return w, w
+
+
+def _small_step(bk, g, bcfg, *, last, c, inv, dts, temx, temy, tavg):
+    """One acoustic step of ``sound`` (sound.F, inside ``do nloop``):
+    ``c`` = (u3d, v3d, w3d, pp3d, ppd, rru, rrv, rrw, dum1, dum2, fpk) ->
+    the same tuple after the step; ``inv`` holds the loop invariants built by
+    ``sound``.  ``last``: final step (no pressure halo update, time averages
+    divided by nloop, i.e. multiplied by ``tavg``)."""
+    xp = bk.xp
+    ni, nj, nk = g.ni, g.nj, g.nk
+    Ii, Ip = slice(3, ni + 3), slice(3, ni + 4)
+    Ji, Jp = slice(3, nj + 3), slice(3, nj + 4)
+    K = slice(1, nk + 1)
+    Kw, Kwm = slice(2, nk + 1), slice(1, nk)
+    w3d_rows = (slice(2, nk + 1), Ji, Ii)
+    wbc = inv["wbc"]
+    ebc = inv["ebc"]
+    sbc = inv["sbc"]
+    nbc = inv["nbc"]
+    uh = inv["uh"]
+    vh = inv["vh"]
+    uten = inv["uten"]
+    vten = inv["vten"]
+    radbcw = inv["radbcw"]
+    radbce = inv["radbce"]
+    radbcs = inv["radbcs"]
+    radbcn = inv["radbcn"]
+    dtu_k = inv["dtu_k"]
+    dtv_k = inv["dtv_k"]
+    uten_r = inv["uten_r"]
+    vten_r = inv["vten_r"]
+    tu1 = inv["tu1"]
+    tv2 = inv["tv2"]
+    ufp = inv["ufp"]
+    vfp = inv["vfp"]
+    uhi = inv["uhi"]
+    vhj = inv["vhj"]
+    thv_u = inv["thv_u"]
+    thv_v = inv["thv_v"]
+    rdx = inv["rdx"]
+    rdy = inv["rdy"]
+    smeps = inv["smeps"]
+    zero = inv["zero"]
+    ppten_i = inv["ppten_i"]
+    ppterm_i = inv["ppterm_i"]
+    dpx_m = inv["dpx_m"]
+    dpx_p = inv["dpx_p"]
+    dpy_m = inv["dpy_m"]
+    dpy_p = inv["dpy_p"]
+    beta = inv["beta"]
+    alph = inv["alph"]
+    kdiv = inv["kdiv"]
+    pk1_i = inv["pk1_i"]
+    pk2_i = inv["pk2_i"]
+    qk_i = inv["qk_i"]
+    m_w = inv["m_w"]
+    wten_w = inv["wten_w"]
+    r1_w = inv["r1_w"]
+    aa_w = inv["aa_w"]
+    cof1_w = inv["cof1_w"]
+    tmo = inv["tmo"]  # terrain metrics (None without terrain_flag)
+    terrain_uv_fpk = inv["terrain_uv_fpk"]
+    u3d, v3d, w3d, pp3d, ppd, rru, rrv, rrw, dum1, dum2, fpk = c
+    # --- open boundaries: boundary-normal velocities (bc.F ssopenbc*)
+    if wbc == 2:
+        u3d = _bc.ssopenbcw(
+            bk,
+            g,
+            bcfg,
+            uh=uh,
+            radbcw=radbcw,
+            u3d=u3d,
+            uten=uten,
+            dts=dts,
+            terrain=tmo,
+        )
+    if ebc == 2:
+        u3d = _bc.ssopenbce(
+            bk,
+            g,
+            bcfg,
+            uh=uh,
+            radbce=radbce,
+            u3d=u3d,
+            uten=uten,
+            dts=dts,
+            terrain=tmo,
+        )
+    if sbc == 2:
+        v3d = _bc.ssopenbcs(
+            bk,
+            g,
+            bcfg,
+            vh=vh,
+            radbcs=radbcs,
+            v3d=v3d,
+            vten=vten,
+            dts=dts,
+            terrain=tmo,
+        )
+    if nbc == 2:
+        v3d = _bc.ssopenbcn(
+            bk,
+            g,
+            bcfg,
+            vh=vh,
+            radbcn=radbcn,
+            v3d=v3d,
+            vten=vten,
+            dts=dts,
+            terrain=tmo,
+        )
+
+    if terrain_uv_fpk is not None:
+        u3d, v3d, w3d, dum1, dum2, fpk_i, fpk = terrain_uv_fpk(
+            u3d, v3d, w3d, ppd, pp3d, fpk
+        )
+    else:
+        # --- integrate u, v forward (k=1..nk, j=1..nj+1, i=1..ni+1)
+        pc = ppd[K, Jp, Ip]
+        u3d = bk.set(
+            u3d,
+            (K, Jp, Ip),
+            u3d[K, Jp, Ip]
+            + dtu_k * (uten_r - tu1 * (pc - ppd[K, Jp, 2 : ni + 3]) * ufp * thv_u),
+        )
+        v3d = bk.set(
+            v3d,
+            (K, Jp, Ip),
+            v3d[K, Jp, Ip]
+            + dtv_k * (vten_r - tv2 * (pc - ppd[K, 2 : nj + 3, Ip]) * vfp * thv_v),
+        )
+
+        # --- forcing for the pressure equation
+        ul, ur = u3d[K, Ji, Ii], u3d[K, Ji, 4 : ni + 4]
+        vl, vr = v3d[K, Ji, Ii], v3d[K, 4 : nj + 4, Ii]
+        div = (ur - ul) * rdx * uhi + (vr - vl) * rdy * vhj
+        div = xp.where(xp.abs(div) < smeps, zero, div)
+        w_lo, w_hi = w3d[K, Ji, Ii], w3d[2 : nk + 2, Ji, Ii]
+        fpk_i = (
+            dts * (ppten_i - ppterm_i * div)
+            + (
+                -(ul * dpx_m + ur * dpx_p) * temx * uhi
+                - (vl * dpy_m + vr * dpy_p) * temy * vhj
+            )
+            + beta * (w_lo * (pk1_i + qk_i) + w_hi * (pk2_i - qk_i))
+        )
+        fpk = bk.set(fpk, (K, Ji, Ii), fpk_i)
+
+    # --- vertically implicit solve for w (k = 2..nk), Thomas algorithm
+    pp = pp3d[:, Ji, Ii]
+    fp = fpk[:, Ji, Ii]
+    fwk = dts * wten_w + beta * (-m_w * (pp[Kw] - pp[Kwm]))
+    dd = w3d[w3d_rows] + fwk + alph * (-m_w * ((pp[Kw] + fp[Kw]) - (pp[Kwm] + fp[Kwm])))
+    cof2_2 = dd[0] * r1_w[0]
+    wnk, cof2_w = bk.scan(_fwd2, cof2_2, (dd[1:], aa_w[1:], r1_w[1:]))
+    cof2_w = xp.concat([cof2_2[None], cof2_w[:-1]], axis=0)  # k=2..nk-1
+    _, wcol = bk.scan(_bwd, wnk, (cof1_w, cof2_w), reverse=True)
+    w3d = bk.set(w3d, w3d_rows, xp.concat([wcol, wnk[None]], axis=0))
+    dum1 = bk.set(dum1, (slice(2, nk), Ji, Ii), cof1_w)
+    dum2 = bk.set(dum2, (slice(2, nk), Ji, Ii), cof2_w)
+
+    # --- new pp, divergence damping
+    w_lo, w_hi = w3d[K, Ji, Ii], w3d[2 : nk + 2, Ji, Ii]
+    if tmo is not None:  # w1 = 0 at k = 1, w2 = 0 at k = nk
+        w_lo = xp.concat([xp.zeros_like(w_lo[:1]), w_lo[1:]], axis=0)
+        w_hi = xp.concat([w_hi[:-1], xp.zeros_like(w_hi[:1])], axis=0)
+    ppold = pp3d[K, Ji, Ii]
+    ppnew = ppold + fpk_i + alph * (w_lo * (pk1_i + qk_i) + w_hi * (pk2_i - qk_i))
+    ppnew = xp.where(xp.abs(ppnew) < smeps, zero, ppnew)
+    d1 = kdiv * (ppnew - ppold)
+    pp3d = bk.set(pp3d, (K, Ji, Ii), ppnew)
+    dum1 = bk.set(dum1, (K, Ji, Ii), d1)
+    ppd = bk.set(ppd, (K, Ji, Ii), ppnew + d1)
+    if not last:
+        ppd = _bc.bcp(bk, g, ppd, bcfg)
+
+    # --- time-averaged velocities
+    R = (K, Jp, Ip)
+    if not last:
+        rru = bk.set(rru, R, rru[R] + u3d[R])
+        rrv = bk.set(rrv, R, rrv[R] + v3d[R])
+        rrw = bk.set(rrw, R, rrw[R] + w3d[R])
+    else:
+        rru = bk.set(rru, R, (rru[R] + u3d[R]) * tavg)
+        rrv = bk.set(rrv, R, (rrv[R] + v3d[R]) * tavg)
+        rrw = bk.set(rrw, R, (rrw[R] + w3d[R] * alph) * tavg)
+    return u3d, v3d, w3d, pp3d, ppd, rru, rrv, rrw, dum1, dum2, fpk
+
+
 def sound(
     bk,
     g,
@@ -570,157 +770,10 @@ def sound(
     r1_w = xp.concat([r1_2[None], r1_w], axis=0)  # k = 2..nk
     cof1_w = xp.concat([cof1_2[None], cof1_w[:-1]], axis=0)  # k = 2..nk-1
     wten_w = wten_i[Kw]
-    w3d_rows = (slice(2, nk + 1), Ji, Ii)
 
-    def _fwd2(c2prev, x):  # k = 3..nk: cof2(k) (k = nk: w(nk))
-        dd, aa, r1 = x
-        c2 = (dd - aa * c2prev) * r1
-        return c2, c2
-
-    def _bwd(wnext, x):  # k = nk-1..2: w(k) = cof1(k) w(k+1) + cof2(k)
-        c1, c2 = x
-        w = c1 * wnext + c2
-        return w, w
-
-    def small_step(last, c):
-        u3d, v3d, w3d, pp3d, ppd, rru, rrv, rrw, dum1, dum2, fpk = c
-        # --- open boundaries: boundary-normal velocities (bc.F ssopenbc*)
-        if wbc == 2:
-            u3d = _bc.ssopenbcw(
-                bk,
-                g,
-                bcfg,
-                uh=uh,
-                radbcw=radbcw,
-                u3d=u3d,
-                uten=uten,
-                dts=dts,
-                terrain=tmo,
-            )
-        if ebc == 2:
-            u3d = _bc.ssopenbce(
-                bk,
-                g,
-                bcfg,
-                uh=uh,
-                radbce=radbce,
-                u3d=u3d,
-                uten=uten,
-                dts=dts,
-                terrain=tmo,
-            )
-        if sbc == 2:
-            v3d = _bc.ssopenbcs(
-                bk,
-                g,
-                bcfg,
-                vh=vh,
-                radbcs=radbcs,
-                v3d=v3d,
-                vten=vten,
-                dts=dts,
-                terrain=tmo,
-            )
-        if nbc == 2:
-            v3d = _bc.ssopenbcn(
-                bk,
-                g,
-                bcfg,
-                vh=vh,
-                radbcn=radbcn,
-                v3d=v3d,
-                vten=vten,
-                dts=dts,
-                terrain=tmo,
-            )
-
-        if terr:
-            u3d, v3d, w3d, dum1, dum2, fpk_i, fpk = _terrain_uv_fpk(
-                u3d, v3d, w3d, ppd, pp3d, fpk
-            )
-        else:
-            u3d, v3d, fpk_i, fpk = _flat_uv_fpk(u3d, v3d, w3d, ppd, fpk)
-
-        # --- vertically implicit solve for w (k = 2..nk), Thomas algorithm
-        pp = pp3d[:, Ji, Ii]
-        fp = fpk[:, Ji, Ii]
-        fwk = dts * wten_w + beta * (-m_w * (pp[Kw] - pp[Kwm]))
-        dd = (
-            w3d[w3d_rows]
-            + fwk
-            + alph * (-m_w * ((pp[Kw] + fp[Kw]) - (pp[Kwm] + fp[Kwm])))
-        )
-        cof2_2 = dd[0] * r1_w[0]
-        wnk, cof2_w = bk.scan(_fwd2, cof2_2, (dd[1:], aa_w[1:], r1_w[1:]))
-        cof2_w = xp.concat([cof2_2[None], cof2_w[:-1]], axis=0)  # k=2..nk-1
-        _, wcol = bk.scan(_bwd, wnk, (cof1_w, cof2_w), reverse=True)
-        w3d = bk.set(w3d, w3d_rows, xp.concat([wcol, wnk[None]], axis=0))
-        dum1 = bk.set(dum1, (slice(2, nk), Ji, Ii), cof1_w)
-        dum2 = bk.set(dum2, (slice(2, nk), Ji, Ii), cof2_w)
-
-        # --- new pp, divergence damping
-        w_lo, w_hi = w3d[K, Ji, Ii], w3d[2 : nk + 2, Ji, Ii]
-        if terr:  # w1 = 0 at k = 1, w2 = 0 at k = nk
-            w_lo = xp.concat([xp.zeros_like(w_lo[:1]), w_lo[1:]], axis=0)
-            w_hi = xp.concat([w_hi[:-1], xp.zeros_like(w_hi[:1])], axis=0)
-        ppold = pp3d[K, Ji, Ii]
-        ppnew = ppold + fpk_i + alph * (w_lo * (pk1_i + qk_i) + w_hi * (pk2_i - qk_i))
-        ppnew = xp.where(xp.abs(ppnew) < smeps, zero, ppnew)
-        d1 = kdiv * (ppnew - ppold)
-        pp3d = bk.set(pp3d, (K, Ji, Ii), ppnew)
-        dum1 = bk.set(dum1, (K, Ji, Ii), d1)
-        ppd = bk.set(ppd, (K, Ji, Ii), ppnew + d1)
-        if not last:
-            ppd = _bc.bcp(bk, g, ppd, bcfg)
-
-        # --- time-averaged velocities
-        R = (K, Jp, Ip)
-        if not last:
-            rru = bk.set(rru, R, rru[R] + u3d[R])
-            rrv = bk.set(rrv, R, rrv[R] + v3d[R])
-            rrw = bk.set(rrw, R, rrw[R] + w3d[R])
-        else:
-            tavg = 1.0 / float(nloop)
-            rru = bk.set(rru, R, (rru[R] + u3d[R]) * tavg)
-            rrv = bk.set(rrv, R, (rrv[R] + v3d[R]) * tavg)
-            rrw = bk.set(rrw, R, (rrw[R] + w3d[R] * alph) * tavg)
-        return u3d, v3d, w3d, pp3d, ppd, rru, rrv, rrw, dum1, dum2, fpk
-
-    def _flat_uv_fpk(u3d, v3d, w3d, ppd, fpk):
-        # --- integrate u, v forward (k=1..nk, j=1..nj+1, i=1..ni+1)
-        pc = ppd[K, Jp, Ip]
-        u3d = bk.set(
-            u3d,
-            (K, Jp, Ip),
-            u3d[K, Jp, Ip]
-            + dtu_k * (uten_r - tu1 * (pc - ppd[K, Jp, 2 : ni + 3]) * ufp * thv_u),
-        )
-        v3d = bk.set(
-            v3d,
-            (K, Jp, Ip),
-            v3d[K, Jp, Ip]
-            + dtv_k * (vten_r - tv2 * (pc - ppd[K, 2 : nj + 3, Ip]) * vfp * thv_v),
-        )
-
-        # --- forcing for the pressure equation
-        ul, ur = u3d[K, Ji, Ii], u3d[K, Ji, 4 : ni + 4]
-        vl, vr = v3d[K, Ji, Ii], v3d[K, 4 : nj + 4, Ii]
-        div = (ur - ul) * rdx * uhi + (vr - vl) * rdy * vhj
-        div = xp.where(xp.abs(div) < smeps, zero, div)
-        w_lo, w_hi = w3d[K, Ji, Ii], w3d[2 : nk + 2, Ji, Ii]
-        fpk_i = (
-            dts * (ppten_i - ppterm_i * div)
-            + (
-                -(ul * dpx_m + ur * dpx_p) * temx * uhi
-                - (vl * dpy_m + vr * dpy_p) * temy * vhj
-            )
-            + beta * (w_lo * (pk1_i + qk_i) + w_hi * (pk2_i - qk_i))
-        )
-        fpk = bk.set(fpk, (K, Ji, Ii), fpk_i)
-        return u3d, v3d, fpk_i, fpk
-
+    terrain_uv_fpk = None
     if terr:
-        _terrain_uv_fpk = _make_terrain_uv_fpk(
+        terrain_uv_fpk = _make_terrain_uv_fpk(
             bk,
             g,
             cfg,
@@ -744,6 +797,81 @@ def sound(
             pk2=pk2,
             dum1=dum1,
             dum2=dum2,
+        )
+
+    # loop invariants of the acoustic steps (arrays, and Python numbers that
+    # are the same for every step / RK stage)
+    inv = dict(
+        wbc=wbc,
+        ebc=ebc,
+        sbc=sbc,
+        nbc=nbc,
+        uh=uh,
+        vh=vh,
+        uten=uten,
+        vten=vten,
+        radbcw=radbcw,
+        radbce=radbce,
+        radbcs=radbcs,
+        radbcn=radbcn,
+        dtu_k=dtu_k,
+        dtv_k=dtv_k,
+        uten_r=uten_r,
+        vten_r=vten_r,
+        tu1=tu1,
+        tv2=tv2,
+        ufp=ufp,
+        vfp=vfp,
+        uhi=uhi,
+        vhj=vhj,
+        thv_u=thv_u,
+        thv_v=thv_v,
+        rdx=rdx,
+        rdy=rdy,
+        smeps=smeps,
+        zero=zero,
+        ppten_i=ppten_i,
+        ppterm_i=ppterm_i,
+        dpx_m=dpx_m,
+        dpx_p=dpx_p,
+        dpy_m=dpy_m,
+        dpy_p=dpy_p,
+        beta=beta,
+        alph=alph,
+        kdiv=kdiv,
+        pk1_i=pk1_i,
+        pk2_i=pk2_i,
+        qk_i=qk_i,
+        m_w=m_w,
+        wten_w=wten_w,
+        r1_w=r1_w,
+        aa_w=aa_w,
+        cof1_w=cof1_w,
+        tmo=tmo,
+        terrain_uv_fpk=terrain_uv_fpk,
+    )
+    # one acoustic step; a separately compiled routine with torch jit=True
+    # (not with terrain: its step is a closure over the metrics, see
+    # _make_terrain_uv_fpk, and runs eagerly between the compiled routines)
+    step = (
+        _small_step
+        if terr
+        else bk.kernel(_small_step, traced=("dts", "temx", "temy", "tavg"))
+    )
+    tavg = 1.0 / float(nloop)
+
+    def small_step(last, c):
+        return step(
+            bk,
+            g,
+            bcfg,
+            last=last,
+            c=c,
+            inv=inv,
+            dts=dts,
+            temx=temx,
+            temy=temy,
+            tavg=tavg,
         )
 
     # acoustic steps 1..nloop-1 are identical; the last one differs (no
