@@ -60,6 +60,7 @@ import importlib
 from .turbtend import _cat
 
 PBL_SCHEMES = {
+    1: "cm1x.pbl_ysu",  # YSU (bl_ysu.F)
     2: "cm1x.pbl",  # CM1 simple scheme (Bryan and Rotunno 2009)
 }
 

@@ -136,6 +136,21 @@ filled on the interior; the core applies bcs to upten/vpten and adds them in
 solve1. `tests/test_model_dumps_pbl.py` compares every array a CM1 dump holds
 (`CM1X_DUMP_DIR_PBL`, layout `<case>/step_NNNNNN`).
 
+### YSU (ipbl=1)
+
+`pbl_ysu.py` ports `bl_ysu.F` (`bl_ysu_run`, `tridin_ysu`/`tridi2n`) as turb.F
+calls it through `ysu_wrapper`, every column at once: the three bulk-Richardson
+searches of the PBL height in closed form (first level above the critical
+Richardson number), the values at the PBL top as `take_along_axis` gathers, the
+per-column branches as `xp.where`, and the tridiagonal solves through
+`bk.scan`; plus turb.F's `ysudiss` (idiss=1). Harness `drv_ysu` (ysu_wrapper
+row by row on convective, stable land/water, neutral, calm and cloudy
+columns; `tests/test_pbl_ysu.py`): <=5e-13 of each field's maximum on numpy,
+jax and torch (numpy ~1e-14; the differences are pow/exp ulps), reverse-mode
+gradients finite. Not ported (as in CM1's call): ysu_topdown_pblmix=.true.
+(`NotImplementedError`), the BEP urban terms, ctopo/uox/vox, qmix; the xkzh/xkzm
+outputs are returned as diagnostics.
+
 ## Performance
 
 `Model(nml, backend="jax", jit=True)` compiles the whole time step into one
