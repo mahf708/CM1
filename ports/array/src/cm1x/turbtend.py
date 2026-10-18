@@ -138,6 +138,43 @@ def _stack(xp, levels):
     return xp.stack(levels, axis=0)
 
 
+def _cat(xp, *parts):
+    return xp.concat(parts, axis=0)
+
+
+def _tridiag(bk, cfa, cfb, cfc, cfd):
+    """Thomas algorithm on level-stacked coefficients (axis 0 = the n
+    unknowns, bottom to top), exactly CM1's recurrences::
+
+        tem = 1/cfb(1);  d1(1) = -cfc(1) tem;  d2(1) = cfd(1) tem
+        tem = 1/(cfa(k) d1(k-1) + cfb(k));  d1(k) = -cfc(k) tem
+        d2(k) = (cfd(k) - cfa(k) d2(k-1)) tem          (k = 2..n)
+        x(n) = d2(n);  x(k) = d1(k) x(k+1) + d2(k)     (k = n-1..1)
+
+    (``cfa[0]`` and ``cfc[-1]`` are not used.)  Both sweeps run through
+    ``Backend.scan``.  Returns ``x`` stacked like the inputs."""
+    xp = bk.xp
+    tem = 1.0 / cfb[0]
+    c0 = (-cfc[0] * tem, cfd[0] * tem)
+
+    def fwd(c, x):
+        a, b, cc, d = x
+        tem = 1.0 / (a * c[0] + b)
+        n = (-cc * tem, (d - a * c[1]) * tem)
+        return n, n
+
+    (_, xn), (d1, d2) = bk.scan(fwd, c0, (cfa[1:], cfb[1:], cfc[1:], cfd[1:]))
+    d1 = _cat(xp, c0[0][None], d1[:-1])
+    d2 = _cat(xp, c0[1][None], d2[:-1])
+
+    def bwd(xnext, x):
+        v = x[0] * xnext + x[1]
+        return v, v
+
+    _, xs = bk.scan(bwd, xn, (d1, d2), reverse=True)
+    return _cat(xp, xs, xn[None])
+
+
 # ---------------------------------------------------------------------------
 # turbs / turbsz
 
@@ -194,50 +231,46 @@ def turbsz(
             * lev(mf, nk)
             * lev(rf, nk)
         )
-    d1 = [None] * (nk + 1)
-    d2 = [None] * (nk + 1)
-    k = 1
-    r2 = lev(dum8, k)
-    cfc = tema * r2
-    cfb = 1.0 - cfc
-    cfd = (
-        lev(s, k)
-        + temb * (-r2 * lev(s, k) + r2 * lev(s, k + 1))
-        + temc * dzb * lev(mh, 1) * lev(rr, 1)
+
+    def L(a, k0, k1):  # levels k0..k1 (Fortran) over j, i
+        return Reg(g, (k0, k1), J, I)(a)
+
+    zz = xp.zeros_like(L(s, 1, 1))
+    # k = 1
+    r2 = L(dum8, 1, 1)
+    cfc1 = tema * r2
+    cfb1 = 1.0 - cfc1
+    cfd1 = (
+        L(s, 1, 1)
+        + temb * (-r2 * L(s, 1, 1) + r2 * L(s, 2, 2))
+        + temc * dzb * L(mh, 1, 1) * L(rr, 1, 1)
     )
-    tem = 1.0 / cfb
-    d1[1] = -cfc * tem
-    d2[1] = cfd * tem
-    for k in range(2, nk):
-        r1 = lev(dum7, k)
-        r2 = lev(dum8, k)
-        cfa = tema * r1
-        cfc = tema * r2
-        cfb = 1.0 - cfa - cfc
-        cfd = lev(s, k) + temb * (
-            r1 * lev(s, k - 1) - (r1 + r2) * lev(s, k) + r2 * lev(s, k + 1)
-        )
-        tem = 1.0 / (cfa * d1[k - 1] + cfb)
-        d1[k] = -cfc * tem
-        d2[k] = (cfd - cfa * d2[k - 1]) * tem
-    k = nk
-    r1 = lev(dum7, k)
+    # k = 2..nk-1
+    r1 = L(dum7, 2, nk - 1)
+    r2 = L(dum8, 2, nk - 1)
     cfa = tema * r1
-    cfb = 1.0 - cfa
-    cfd = (
-        lev(s, k)
-        + temb * (r1 * lev(s, k - 1) - r1 * lev(s, k))
-        - temc * dzt * lev(mh, nk) * lev(rr, nk)
+    cfc = tema * r2
+    cfb = 1.0 - cfa - cfc
+    cfd = L(s, 2, nk - 1) + temb * (
+        r1 * L(s, 1, nk - 2) - (r1 + r2) * L(s, 2, nk - 1) + r2 * L(s, 3, nk)
     )
-    tem = 1.0 / (cfa * d1[k - 1] + cfb)
-    dz_ = [None] * (nk + 2)
-    tz = [None] * (nk + 1)
-    dz_[k] = (cfd - cfa * d2[k - 1]) * tem
-    tz[k] = lev(rho, k) * (dz_[k] - lev(s, k)) * rdt
-    for k in range(nk - 1, 0, -1):
-        dz_[k] = d1[k] * dz_[k + 1] + d2[k]
-        tz[k] = lev(rho, k) * (dz_[k] - lev(s, k)) * rdt
-    return _stack(xp, tz[1:])
+    # k = nk
+    r1 = L(dum7, nk, nk)
+    cfan = tema * r1
+    cfbn = 1.0 - cfan
+    cfdn = (
+        L(s, nk, nk)
+        + temb * (r1 * L(s, nk - 1, nk - 1) - r1 * L(s, nk, nk))
+        - temc * dzt * L(mh, nk, nk) * L(rr, nk, nk)
+    )
+    dz_ = _tridiag(
+        bk,
+        _cat(xp, zz, cfa, cfan),
+        _cat(xp, cfb1, cfb, cfbn),
+        _cat(xp, cfc1, cfc, zz),
+        _cat(xp, cfd1, cfd, cfdn),
+    )
+    return L(rho, 1, nk) * (dz_ - L(s, 1, nk)) * rdt
 
 
 def turbs(
@@ -430,45 +463,58 @@ def turbt(
         rdt = 1.0 / dt
         tema = -1.0 * dt * vialpha * rdz * rdz
         temb = dt * vibeta * rdz * rdz
-        d1, d2 = {}, {}
-        k = 2
-        rrf = lev(mf, k) / lev(rf, k)
-        r2 = (lev(kmv, k) + lev(kmv, k + 1)) * lev(mh, k) * lev(rho, k) * rrf
-        cfc = tema * r2
-        cfb = 1.0 - cfc
-        cfd = lev(t, k) + temb * (r2 * lev(t, k + 1) - r2 * lev(t, k))
-        tem = 1.0 / cfb
-        d1[k] = -cfc * tem
-        d2[k] = cfd * tem
-        for k in range(3, nk):
-            rrf = lev(mf, k) / lev(rf, k)
-            r1 = (
-                (lev(kmv, k - 1) + lev(kmv, k)) * lev(mh, k - 1) * lev(rho, k - 1) * rrf
-            )
-            r2 = (lev(kmv, k) + lev(kmv, k + 1)) * lev(mh, k) * lev(rho, k) * rrf
-            cfa = tema * r1
-            cfc = tema * r2
-            cfb = 1.0 - cfa - cfc
-            cfd = lev(t, k) + temb * (
-                r2 * lev(t, k + 1) - (r1 + r2) * lev(t, k) + r1 * lev(t, k - 1)
-            )
-            tem = 1.0 / (cfa * d1[k - 1] + cfb)
-            d1[k] = -cfc * tem
-            d2[k] = (cfd - cfa * d2[k - 1]) * tem
-        k = nk
-        rrf = lev(mf, k) / lev(rf, k)
-        r1 = (lev(kmv, k - 1) + lev(kmv, k)) * lev(mh, k - 1) * lev(rho, k - 1) * rrf
+
+        def L(a, k0, k1):
+            return Reg(g, (k0, k1), J, I)(a)
+
+        zz = xp.zeros_like(L(t, 2, 2))
+        # k = 2
+        rrf = L(mf, 2, 2) / L(rf, 2, 2)
+        r2 = (L(kmv, 2, 2) + L(kmv, 3, 3)) * L(mh, 2, 2) * L(rho, 2, 2) * rrf
+        cfc2 = tema * r2
+        cfb2 = 1.0 - cfc2
+        cfd2 = L(t, 2, 2) + temb * (r2 * L(t, 3, 3) - r2 * L(t, 2, 2))
+        # k = 3..nk-1
+        rrf = L(mf, 3, nk - 1) / L(rf, 3, nk - 1)
+        r1 = (
+            (L(kmv, 2, nk - 2) + L(kmv, 3, nk - 1))
+            * L(mh, 2, nk - 2)
+            * L(rho, 2, nk - 2)
+            * rrf
+        )
+        r2 = (
+            (L(kmv, 3, nk - 1) + L(kmv, 4, nk))
+            * L(mh, 3, nk - 1)
+            * L(rho, 3, nk - 1)
+            * rrf
+        )
         cfa = tema * r1
-        cfb = 1.0 - cfa
-        cfd = lev(t, k) + temb * (-r1 * lev(t, k) + r1 * lev(t, k - 1))
-        tem = 1.0 / (cfa * d1[k - 1] + cfb)
-        dz_ = {k: (cfd - cfa * d2[k - 1]) * tem}
-        tzd = {k: lev(rf, k) * (dz_[k] - lev(t, k)) * rdt}
-        for k in range(nk - 1, 1, -1):
-            dz_[k] = d1[k] * dz_[k + 1] + d2[k]
-            tzd[k] = lev(rf, k) * (dz_[k] - lev(t, k)) * rdt
-        tz = [tzd[k] for k in range(2, nk + 1)]
-    tz = _stack(xp, tz)
+        cfc = tema * r2
+        cfb = 1.0 - cfa - cfc
+        cfd = L(t, 3, nk - 1) + temb * (
+            r2 * L(t, 4, nk) - (r1 + r2) * L(t, 3, nk - 1) + r1 * L(t, 2, nk - 2)
+        )
+        # k = nk
+        rrf = L(mf, nk, nk) / L(rf, nk, nk)
+        r1 = (
+            (L(kmv, nk - 1, nk - 1) + L(kmv, nk, nk))
+            * L(mh, nk - 1, nk - 1)
+            * L(rho, nk - 1, nk - 1)
+            * rrf
+        )
+        cfan = tema * r1
+        cfbn = 1.0 - cfan
+        cfdn = L(t, nk, nk) + temb * (-r1 * L(t, nk, nk) + r1 * L(t, nk - 1, nk - 1))
+        dz_ = _tridiag(
+            bk,
+            _cat(xp, zz, cfa, cfan),
+            _cat(xp, cfb2, cfb, cfbn),
+            _cat(xp, cfc2, cfc, zz),
+            _cat(xp, cfd2, cfd, cfdn),
+        )
+        tz = L(rf, 2, nk) * (dz_ - L(t, 2, nk)) * rdt
+    if isinstance(tz, list):
+        tz = _stack(xp, tz)
     out = R(tten) + ((tx + ty) + tz) / R(rf)
     return {"tten": bk.set(bk.copy(tten), R.idx, out)}
 
@@ -497,10 +543,6 @@ def _uvz(bk, g, cfg, *, dt, ax, u, rho, rf, mh, mf, kmv, t13, w, uf_or_vf):
         r = Reg(g, (k, k), J, I)
         return (r(a, **sh) if m else r(a))[0]
 
-    def h1(a1):
-        r = Reg(g, (1, 1), J, I)
-        return (r.x(a1) if ax == "i" else r.y(a1))[0]
-
     if doimpl == 0:
         tem = rdz * 0.5
         tz = [
@@ -513,83 +555,77 @@ def _uvz(bk, g, cfg, *, dt, ax, u, rho, rf, mh, mf, kmv, t13, w, uf_or_vf):
     tema = -0.0625 * dt * vialpha * rdz * rdz
     temb = 0.0625 * dt * vibeta * rdz * rdz
     temc = 0.5 * dt * rdz
-    d1, d2, d7 = {}, {}, {}
 
-    def rr0(k):
-        return 1.0 / (0.5 * (lev(rho, k, True) + lev(rho, k)))
+    def L(a, k0, k1, m=False):
+        r = Reg(g, (k0, k1), J, I)
+        return r(a, **sh) if m else r(a)
 
-    def rcoef(k, kk, tem):
-        return (
-            (lev(kmv, kk, True) + lev(kmv, kk))
-            * (lev(mf, kk, True) + lev(mf, kk))
-            * (lev(rf, kk, True) + lev(rf, kk))
-            * tem
-        )
+    def mm(a, k0, k1):  # a(i-1) + a(i)  (or j-1, j)
+        return L(a, k0, k1, True) + L(a, k0, k1)
 
-    def expl(k):
-        return (
-            (lev(w, k) - lev(w, k, True))
-            * rdh
-            * h1(uf_or_vf)
-            * 0.25
-            * (lev(kmv, k, True) + lev(kmv, k))
-            * (lev(rf, k, True) + lev(rf, k))
-        )
+    def rcoef(k0, k1, tem):  # levels kk = k0..k1
+        return mm(kmv, k0, k1) * mm(mf, k0, k1) * mm(rf, k0, k1) * tem
 
-    k = 1
-    rru0 = rr0(k)
-    tem = (lev(mh, k, True) + lev(mh, k)) * rru0
-    r2 = rcoef(k, k + 1, tem)
-    cfc = tema * r2
-    cfb = 1.0 - cfc
-    cfd = (
-        lev(u, k)
-        + temb * (r2 * lev(u, k + 1) - r2 * lev(u, k))
-        - temc * lev(t13, 1) * (lev(mh, 1, True) + lev(mh, 1)) * rru0
+    r1d = Reg(g, (1, 1), J, I)
+    h1 = r1d.x(uf_or_vf) if ax == "i" else r1d.y(uf_or_vf)
+
+    def rr0(k0, k1):
+        return 1.0 / (0.5 * mm(rho, k0, k1))
+
+    zz = xp.zeros_like(L(u, 1, 1))
+    # k = 1
+    rru0 = rr0(1, 1)
+    tem = mm(mh, 1, 1) * rru0
+    r2 = rcoef(2, 2, tem)
+    cfc1 = tema * r2
+    cfb1 = 1.0 - cfc1
+    cfd1 = (
+        L(u, 1, 1)
+        + temb * (r2 * L(u, 2, 2) - r2 * L(u, 1, 1))
+        - temc * L(t13, 1, 1) * mm(mh, 1, 1) * rru0
     )
-    tem = 1.0 / cfb
-    d1[1] = -cfc * tem
-    d2[1] = cfd * tem
-    d7[1] = xp.zeros_like(d2[1])
-    for k in range(2, nk):
-        rru0 = rr0(k)
-        tem = (lev(mh, k, True) + lev(mh, k)) * rru0
-        r1 = rcoef(k, k, tem)
-        r2 = rcoef(k, k + 1, tem)
-        cfa = tema * r1
-        cfc = tema * r2
-        cfb = 1.0 - cfa - cfc
-        cfd = lev(u, k) + temb * (
-            r2 * lev(u, k + 1) - (r1 + r2) * lev(u, k) + r1 * lev(u, k - 1)
-        )
-        tem = 1.0 / (cfa * d1[k - 1] + cfb)
-        d1[k] = -cfc * tem
-        d2[k] = (cfd - cfa * d2[k - 1]) * tem
-        d7[k] = expl(k)
-    k = nk
-    rru0 = rr0(k)
-    tem = (lev(mh, k, True) + lev(mh, k)) * rru0
-    r1 = rcoef(k, k, tem)
+    # k = 2..nk-1
+    rru0 = rr0(2, nk - 1)
+    tem = mm(mh, 2, nk - 1) * rru0
+    r1 = rcoef(2, nk - 1, tem)
+    r2 = rcoef(3, nk, tem)
     cfa = tema * r1
-    cfb = 1.0 - cfa
-    cfd = (
-        lev(u, k)
-        + temb * (-r1 * lev(u, k) + r1 * lev(u, k - 1))
-        + temc * lev(t13, nk + 1) * (lev(mh, nk, True) + lev(mh, nk)) * rru0
+    cfc = tema * r2
+    cfb = 1.0 - cfa - cfc
+    cfd = L(u, 2, nk - 1) + temb * (
+        r2 * L(u, 3, nk) - (r1 + r2) * L(u, 2, nk - 1) + r1 * L(u, 1, nk - 2)
     )
-    tem = 1.0 / (cfa * d1[k - 1] + cfb)
-    d3 = {k: (cfd - cfa * d2[k - 1]) * tem}
-    tz = {}
-    tz[k] = (lev(rho, k, True) + lev(rho, k)) * (d3[k] - lev(u, k)) * rdt
-    d7[k] = expl(k)
-    tz[k] = tz[k] + (0.0 - d7[k]) * rdz * 0.5 * (lev(mh, k, True) + lev(mh, k))
-    for k in range(nk - 1, 0, -1):
-        d3[k] = d1[k] * d3[k + 1] + d2[k]
-        tz[k] = (lev(rho, k, True) + lev(rho, k)) * (d3[k] - lev(u, k)) * rdt
-        tz[k] = tz[k] + (d7[k + 1] - d7[k]) * rdz * 0.5 * (
-            lev(mh, k, True) + lev(mh, k)
-        )
-    return _stack(xp, [tz[k] for k in range(1, nk + 1)])
+    # k = nk
+    rru0 = rr0(nk, nk)
+    tem = mm(mh, nk, nk) * rru0
+    r1 = rcoef(nk, nk, tem)
+    cfan = tema * r1
+    cfbn = 1.0 - cfan
+    cfdn = (
+        L(u, nk, nk)
+        + temb * (-r1 * L(u, nk, nk) + r1 * L(u, nk - 1, nk - 1))
+        + temc * L(t13, nk + 1, nk + 1) * mm(mh, nk, nk) * rru0
+    )
+    d3 = _tridiag(
+        bk,
+        _cat(xp, zz, cfa, cfan),
+        _cat(xp, cfb1, cfb, cfbn),
+        _cat(xp, cfc1, cfc, zz),
+        _cat(xp, cfd1, cfd, cfdn),
+    )
+    # explicit part d7(k), k = 2..nk (d7(1) = 0; 0 above k = nk)
+    d7 = (
+        (L(w, 2, nk) - L(w, 2, nk, True))
+        * rdh
+        * h1
+        * 0.25
+        * mm(kmv, 2, nk)
+        * mm(rf, 2, nk)
+    )
+    d7lo = _cat(xp, zz, d7)  # k = 1..nk
+    d7hi = _cat(xp, d7, zz)  # k+1
+    tz = mm(rho, 1, nk) * (d3 - L(u, 1, nk)) * rdt
+    return tz + (d7hi - d7lo) * rdz * 0.5 * mm(mh, 1, nk)
 
 
 def turbu(
@@ -775,51 +811,63 @@ def turbw(
         tema = -1.0 * dt * vialpha * rdz * rdz
         temb = dt * vibeta * rdz * rdz
         temc = dt * rdz
-        d1, d2 = {}, {}
-        k = 2
-        rrf = lev(mf, k) / lev(rf, k)
-        r2 = (lev(kmh, k) + lev(kmh, k + 1)) * lev(mh, k) * lev(rho, k) * rrf
-        cfc = tema * r2
-        cfb = 1.0 - cfc
-        cfd = (
-            lev(w, k)
-            + temb * (r2 * lev(w, k + 1) - r2 * lev(w, k))
-            - temc * lev(t33, k - 1) * rrf
+
+        def L(a, k0, k1):
+            return Reg(g, (k0, k1), J, I)(a)
+
+        zz = xp.zeros_like(L(w, 2, 2))
+        # k = 2
+        rrf = L(mf, 2, 2) / L(rf, 2, 2)
+        r2 = (L(kmh, 2, 2) + L(kmh, 3, 3)) * L(mh, 2, 2) * L(rho, 2, 2) * rrf
+        cfc2 = tema * r2
+        cfb2 = 1.0 - cfc2
+        cfd2 = (
+            L(w, 2, 2)
+            + temb * (r2 * L(w, 3, 3) - r2 * L(w, 2, 2))
+            - temc * L(t33, 1, 1) * rrf
         )
-        tem = 1.0 / cfb
-        d1[k] = -cfc * tem
-        d2[k] = cfd * tem
-        for k in range(3, nk):
-            rrf = lev(mf, k) / lev(rf, k)
-            r1 = (
-                (lev(kmh, k - 1) + lev(kmh, k)) * lev(mh, k - 1) * lev(rho, k - 1) * rrf
-            )
-            r2 = (lev(kmh, k) + lev(kmh, k + 1)) * lev(mh, k) * lev(rho, k) * rrf
-            cfa = tema * r1
-            cfc = tema * r2
-            cfb = 1.0 - cfa - cfc
-            cfd = lev(w, k) + temb * (
-                r2 * lev(w, k + 1) - (r1 + r2) * lev(w, k) + r1 * lev(w, k - 1)
-            )
-            tem = 1.0 / (cfa * d1[k - 1] + cfb)
-            d1[k] = -cfc * tem
-            d2[k] = (cfd - cfa * d2[k - 1]) * tem
-        k = nk
-        rrf = lev(mf, k) / lev(rf, k)
-        r1 = (lev(kmh, k - 1) + lev(kmh, k)) * lev(mh, k - 1) * lev(rho, k - 1) * rrf
+        # k = 3..nk-1
+        rrf = L(mf, 3, nk - 1) / L(rf, 3, nk - 1)
+        r1 = (
+            (L(kmh, 2, nk - 2) + L(kmh, 3, nk - 1))
+            * L(mh, 2, nk - 2)
+            * L(rho, 2, nk - 2)
+            * rrf
+        )
+        r2 = (
+            (L(kmh, 3, nk - 1) + L(kmh, 4, nk))
+            * L(mh, 3, nk - 1)
+            * L(rho, 3, nk - 1)
+            * rrf
+        )
         cfa = tema * r1
-        cfb = 1.0 - cfa
-        cfd = (
-            lev(w, k)
-            + temb * (-r1 * lev(w, k) + r1 * lev(w, k - 1))
-            + temc * lev(t33, k) * rrf
+        cfc = tema * r2
+        cfb = 1.0 - cfa - cfc
+        cfd = L(w, 3, nk - 1) + temb * (
+            r2 * L(w, 4, nk) - (r1 + r2) * L(w, 3, nk - 1) + r1 * L(w, 2, nk - 2)
         )
-        tem = 1.0 / (cfa * d1[k - 1] + cfb)
-        d3 = {k: (cfd - cfa * d2[k - 1]) * tem}
-        tzd = {k: lev(rf, k) * (d3[k] - lev(w, k)) * rdt}
-        for k in range(nk - 1, 1, -1):
-            d3[k] = d1[k] * d3[k + 1] + d2[k]
-            tzd[k] = lev(rf, k) * (d3[k] - lev(w, k)) * rdt
-        tz = _stack(xp, [tzd[k] for k in range(2, nk + 1)])
+        # k = nk
+        rrf = L(mf, nk, nk) / L(rf, nk, nk)
+        r1 = (
+            (L(kmh, nk - 1, nk - 1) + L(kmh, nk, nk))
+            * L(mh, nk - 1, nk - 1)
+            * L(rho, nk - 1, nk - 1)
+            * rrf
+        )
+        cfan = tema * r1
+        cfbn = 1.0 - cfan
+        cfdn = (
+            L(w, nk, nk)
+            + temb * (-r1 * L(w, nk, nk) + r1 * L(w, nk - 1, nk - 1))
+            + temc * L(t33, nk, nk) * rrf
+        )
+        d3 = _tridiag(
+            bk,
+            _cat(xp, zz, cfa, cfan),
+            _cat(xp, cfb2, cfb, cfbn),
+            _cat(xp, cfc2, cfc, zz),
+            _cat(xp, cfd2, cfd, cfdn),
+        )
+        tz = L(rf, 2, nk) * (d3 - L(w, 2, nk)) * rdt
     out = R(wten) + ((tx + ty) + tz) / R(rf)
     return {"wten": bk.set(bk.copy(wten), R.idx, out)}

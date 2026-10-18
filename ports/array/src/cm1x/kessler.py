@@ -252,12 +252,10 @@ def satadj(
         t1 = (lhv - C.rv * tnew) / cvml
         d1 = t1 * 17.67 * 243.5
 
-        qvnew, qcnew = qv0, qc0
-        tlast = tnew
-        pnew = prsi
-        active = act0
         nit = xp.zeros(qv0.shape, dtype=xp.int32, device=bk.device)
-        for it in range(maxiter):
+
+        def sweep(last, c):
+            qvnew, qcnew, tnew, pnew, nit, tlast, qvs, active = c
             dqv = (qvs - qvnew) / (1.0 + d1 * qvs / ((tnew - 29.65) ** 2))
             dqv = xp.minimum(dqv, qcnew)
             dqv = xp.where((qvnew + dqv) < 1.0e-20, 1.0e-20 - qvnew, dqv)
@@ -271,12 +269,19 @@ def satadj(
             pnew = xp.where(active, p_n, pnew)
             nit = xp.where(active, nit + 1, nit)
             again = active & (xp.abs(tnew - tlast) > converge)
-            if it + 1 == 100:  # Fortran gives up at n = 100
+            if last:  # Fortran gives up at n = 100
                 again = xp.zeros_like(again)
             tlast = xp.where(again, tnew, tlast)
             qvs_n = _esat_qvs(xp, tnew, prsi, pnew)
             qvs = xp.where(again, qvs_n, qvs)
-            active = again
+            return qvnew, qcnew, tnew, pnew, nit, tlast, qvs, again
+
+        c = (qv0, qc0, tnew, prsi, nit, tnew, qvs, act0)
+        nfree = maxiter - 1 if maxiter == 100 else maxiter
+        c = bk.fori_loop(nfree, lambda it, c: sweep(False, c), c)
+        if maxiter == 100:
+            c = sweep(True, c)
+        qvnew, qcnew, tnew, pnew, nit, tlast, qvs, active = c
 
         pp_n = (pnew * C.rp00) ** C.rovcp - pi0i
         th_n = tnew / (pi0i + pp_n) - th0i
@@ -327,6 +332,15 @@ def satadj(
 # ---------------------------------------------------------------------------
 
 
+def _traced(bk, x):
+    """True inside a jax trace (jit/grad), where values are not concrete."""
+    if bk.name != "jax":
+        return False
+    import jax
+
+    return isinstance(x, jax.core.Tracer)
+
+
 def k_fallout(bk, g, cfg=None, *, rho, qr3d, vr=None):
     """kessler.F ``k_fallout``: rain terminal velocity on the interior.
     ``vr`` (optional) supplies the halo values; returns {"vr": ...}."""
@@ -368,9 +382,15 @@ def fallout(
     ``rain`` is ``[nrain, j, i]`` and ``prate`` ``[j, i]`` (with halos).
     Columns are vectorised: a Python loop runs ``nfall_max`` sub-steps and a
     column is updated only for its first ``nfall`` of them.  ``nfall_max``
-    defaults to the domain maximum of ``nfall`` (computed eagerly; under
-    ``jax.jit`` pass a static int >= that maximum).  The fill of ``vq`` below
-    the precipitation edge is a downward recurrence (loop over k).
+    defaults to the domain maximum of ``nfall`` (a data-dependent trip count:
+    ``Backend.fori_loop`` runs it as a Python loop eagerly and as
+    ``lax.while_loop`` under ``jax.jit``); a static int >= that maximum gives
+    the same result with a fixed-trip loop (needed for reverse-mode AD under
+    jit).  A static bound is checked eagerly (ValueError if exceeded); under
+    a jax trace it cannot be (the extra sub-steps are masked no-ops, but a
+    too-small bound silently truncates the sedimentation).  The fill of
+    ``vq`` below the precipitation edge is a downward recurrence (loop over
+    k).
 
     Returns dict with rain, prate, q3d, vq, train.  (zh and mf are unused,
     as in the Fortran.)
@@ -397,18 +417,24 @@ def fallout(
     v = xp.stack(lev, axis=0)
 
     if nfall_max is None:
-        nfall_max = int(bk.to_numpy(xp.max(nfall)))
+        nfall_max = xp.max(nfall)  # 0-d array: Backend.fori_loop handles it
+    elif not _traced(bk, nfall):  # eager: the static bound must hold
+        nmax = int(bk.to_numpy(xp.max(nfall)))
+        if nmax > int(nfall_max):
+            raise ValueError(
+                f"fallout: max nfall = {nmax} exceeds the static nfall_max = "
+                f"{int(nfall_max)}"
+            )
     dtfall = dt / nfall
 
     ru, rv = _hw(g, ruh, rvh)
     ru, rv = ru[0], rv[0]  # [1, ni], [nj, 1]
     rr1 = rr[K.start, J, I]
     v1 = v[0]
-    pr = prate[J, I]
-    rn = rain[:, J, I]
-    bud = xp.zeros_like(pr)
     zk = xp.zeros_like(q[:1])
-    for n in range(int(nfall_max)):
+
+    def substep(n, c):
+        q, rn, pr, bud = c
         active = nfall > n
         rq = r * v * xp.maximum(xp.zeros_like(q), q)
         rqp = xp.concat([rq[1:], zk], axis=0)
@@ -419,6 +445,13 @@ def fallout(
         pr = xp.where(active, rq1, pr)
         b = dtfall * rr1 * v1 * xp.maximum(xp.zeros_like(pr), q[0]) * ru * rv
         bud = xp.where(active, bud + b, bud)
+        return q, rn, pr, bud
+
+    pr = prate[J, I]
+    carry = (q, rain[:, J, I], pr, xp.zeros_like(pr))
+    if isinstance(nfall_max, (int, float)):
+        nfall_max = int(nfall_max)
+    q, rn, pr, bud = bk.fori_loop(nfall_max, substep, carry)
 
     return {
         "rain": bk.set(bk.copy(rain), (slice(None), J, I), rn),

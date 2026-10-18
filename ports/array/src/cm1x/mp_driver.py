@@ -11,7 +11,7 @@ from . import constants as C
 from .kessler import fallout, geterain, k_fallout, kessler, satadj
 from .pdef import pdefq
 
-_DEFAULTS = dict(ptype=1, efall=0, axisymm=0, qsmall=1.0e-14)
+_DEFAULTS = dict(ptype=1, efall=0, axisymm=0, qsmall=1.0e-14, nfall_max=0)
 
 
 def _opt(cfg, name):
@@ -78,6 +78,11 @@ def mp_driver(
     xp = bk.xp
     S = (g.K, g.J, g.I)
     qsmall = float(_opt(cfg, "qsmall"))
+    if nfall_max is None and int(_opt(cfg, "nfall_max") or 0) > 0:
+        # static sedimentation sub-step bound (e.g. Model(...,
+        # overrides={"nfall_max": 4})): fixed-trip loop, reverse-mode AD
+        # works under jax.jit
+        nfall_max = int(_opt(cfg, "nfall_max"))
 
     def z(a, shape):
         return bk.zeros(shape) if a is None else bk.copy(a)

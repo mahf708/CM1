@@ -186,13 +186,17 @@ def parse_namelist(text: str) -> dict:
 DP_DEFAULTS = {"smeps": 1.0e-60, "tsmall": 1.0e-12, "qsmall": 1.0e-24}
 
 
-def read_namelist(path, dp: bool = False) -> Config:
+def read_namelist(path, dp: bool = False, overrides: dict | None = None) -> Config:
     """Read a CM1 namelist.input file into a ``Config``.
 
     ``dp=True`` uses the thresholds of a ``-DDP`` CM1 build (see cm1.F).
+    ``overrides`` ({name: value}, e.g. ``{"nx": 80, "ny": 80}``) replace
+    namelist values before the derived settings are computed.
     """
     groups = parse_namelist(Path(path).read_text())
     flat = dict(DP_DEFAULTS) if dp else {}
     for g in groups.values():
         flat.update(g)
+    for k, v in (overrides or {}).items():
+        flat[k.lower()] = v
     return Config(flat, groups)

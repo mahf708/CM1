@@ -263,10 +263,18 @@ def turb_constants(
     return out
 
 
-def turbfac_of(cfg, rtime):
-    """sfc_and_turb: turbfac = clip((rtime-0)/ramp_time, 0, 1) (Python float)."""
-    tf = (float(rtime) - 0.0) / float(_opt(cfg, "ramp_time", 0.0))
-    return min(1.0, max(0.0, tf))
+def turbfac_of(cfg, rtime, bk=None):
+    """sfc_and_turb: turbfac = clip((rtime-0)/ramp_time, 0, 1).
+
+    A Python float for a Python-number ``rtime``; for a 0-d array ``rtime``
+    (a compiled step) the same arithmetic on arrays, cast to ``bk.dtype``."""
+    if isinstance(rtime, (int, float)):
+        tf = (float(rtime) - 0.0) / float(_opt(cfg, "ramp_time", 0.0))
+        return min(1.0, max(0.0, tf))
+    xp = bk.xp
+    tf = (rtime - 0.0) / float(_opt(cfg, "ramp_time", 0.0))
+    tf = xp.minimum(xp.maximum(tf, xp.zeros_like(tf)), xp.ones_like(tf))
+    return xp.astype(tf, bk.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +868,7 @@ def sfc_and_turb(
             g,
             cfg,
             cm0=cm0,
-            turbfac=turbfac_of(cfg, rtime),
+            turbfac=turbfac_of(cfg, rtime, bk),
             cme=cme,
             csm=csm,
             ce1=ce1,

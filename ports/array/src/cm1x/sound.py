@@ -284,7 +284,45 @@ def sound(
     wten_i = wten[:, Ji, Ii]
     zero = bk.asarray(0.0)
 
-    for n in range(1, nloop + 1):
+    # --- loop-invariant coefficients of the vertically implicit w solve
+    # (Thomas algorithm over k = 2..nk; only the right-hand side dd changes
+    # between acoustic steps).  Python index k == Fortran k (ngz = 1).
+    Kw = slice(2, nk + 1)  # k = 2..nk
+    Kwm = slice(1, nk)  # k-1
+    m_w = mm[Kw, Ji, Ii]
+    bb_w = 1.0 - asq * (
+        +m_w
+        * (-(pk1[Kw, Ji, Ii] + qk[Kw, Ji, Ii]) + (pk2[Kwm, Ji, Ii] - qk[Kwm, Ji, Ii]))
+    )
+    cc_w = -asq * (-m_w * (pk2[Kw, Ji, Ii] - qk[Kw, Ji, Ii]))  # used for k < nk
+    aa_w = -asq * (+m_w * (pk1[Kwm, Ji, Ii] + qk[Kwm, Ji, Ii]))  # used for k > 2
+    r1_2 = 1.0 / bb_w[0]
+    cof1_2 = -cc_w[0] * r1_2
+
+    def _fwd1(c1prev, x):  # k = 3..nk: r1(k), cof1(k)
+        aa, bb, cc = x
+        r1 = 1.0 / (aa * c1prev + bb)
+        c1 = -cc * r1
+        return c1, (r1, c1)
+
+    _, (r1_w, cof1_w) = bk.scan(_fwd1, cof1_2, (aa_w[1:], bb_w[1:], cc_w[1:]))
+    r1_w = xp.concat([r1_2[None], r1_w], axis=0)  # k = 2..nk
+    cof1_w = xp.concat([cof1_2[None], cof1_w[:-1]], axis=0)  # k = 2..nk-1
+    wten_w = wten_i[Kw]
+    w3d_rows = (slice(2, nk + 1), Ji, Ii)
+
+    def _fwd2(c2prev, x):  # k = 3..nk: cof2(k) (k = nk: w(nk))
+        dd, aa, r1 = x
+        c2 = (dd - aa * c2prev) * r1
+        return c2, c2
+
+    def _bwd(wnext, x):  # k = nk-1..2: w(k) = cof1(k) w(k+1) + cof2(k)
+        c1, c2 = x
+        w = c1 * wnext + c2
+        return w, w
+
+    def small_step(last, c):
+        u3d, v3d, w3d, pp3d, ppd, rru, rrv, rrw, dum1, dum2, fpk = c
         # --- open boundaries: boundary-normal velocities (bc.F ssopenbc*)
         if wbc == 2:
             u3d = _bc.ssopenbcw(
@@ -337,54 +375,19 @@ def sound(
         # --- vertically implicit solve for w (k = 2..nk), Thomas algorithm
         pp = pp3d[:, Ji, Ii]
         fp = fpk[:, Ji, Ii]
-        cof1, cof2 = {}, {}
-        wnk = None
-        for k in range(2, nk + 1):
-            m = mm[k, Ji, Ii]
-            bb = 1.0 - asq * (
-                +m
-                * (
-                    -(pk1[k, Ji, Ii] + qk[k, Ji, Ii])
-                    + (pk2[k - 1, Ji, Ii] - qk[k - 1, Ji, Ii])
-                )
-            )
-            fwk = dts * wten_i[k] + beta * (-m * (pp[k] - pp[k - 1]))
-            dd = (
-                w3d[k, Ji, Ii]
-                + fwk
-                + alph * (-m * ((pp[k] + fp[k]) - (pp[k - 1] + fp[k - 1])))
-            )
-            if k == 2:
-                cc = -asq * (-m * (pk2[k, Ji, Ii] - qk[k, Ji, Ii]))
-                r1 = 1.0 / bb
-                cof1[k] = -cc * r1
-                cof2[k] = dd * r1
-            else:
-                aa = -asq * (+m * (pk1[k - 1, Ji, Ii] + qk[k - 1, Ji, Ii]))
-                r1 = 1.0 / (aa * cof1[k - 1] + bb)
-                if k < nk:
-                    cc = -asq * (-m * (pk2[k, Ji, Ii] - qk[k, Ji, Ii]))
-                    cof1[k] = -cc * r1
-                    cof2[k] = (dd - aa * cof2[k - 1]) * r1
-                else:
-                    wnk = (dd - aa * cof2[k - 1]) * r1
-        wcol = [None] * (nk + 1)
-        wcol[nk] = wnk
-        for k in range(nk - 1, 1, -1):
-            wcol[k] = cof1[k] * wcol[k + 1] + cof2[k]
-        w3d = bk.set(
-            w3d, (slice(2, nk + 1), Ji, Ii), xp.stack(wcol[2 : nk + 1], axis=0)
+        fwk = dts * wten_w + beta * (-m_w * (pp[Kw] - pp[Kwm]))
+        dd = (
+            w3d[w3d_rows]
+            + fwk
+            + alph * (-m_w * ((pp[Kw] + fp[Kw]) - (pp[Kwm] + fp[Kwm])))
         )
-        dum1 = bk.set(
-            dum1,
-            (slice(2, nk), Ji, Ii),
-            xp.stack([cof1[k] for k in range(2, nk)], axis=0),
-        )
-        dum2 = bk.set(
-            dum2,
-            (slice(2, nk), Ji, Ii),
-            xp.stack([cof2[k] for k in range(2, nk)], axis=0),
-        )
+        cof2_2 = dd[0] * r1_w[0]
+        wnk, cof2_w = bk.scan(_fwd2, cof2_2, (dd[1:], aa_w[1:], r1_w[1:]))
+        cof2_w = xp.concat([cof2_2[None], cof2_w[:-1]], axis=0)  # k=2..nk-1
+        _, wcol = bk.scan(_bwd, wnk, (cof1_w, cof2_w), reverse=True)
+        w3d = bk.set(w3d, w3d_rows, xp.concat([wcol, wnk[None]], axis=0))
+        dum1 = bk.set(dum1, (slice(2, nk), Ji, Ii), cof1_w)
+        dum2 = bk.set(dum2, (slice(2, nk), Ji, Ii), cof2_w)
 
         # --- new pp, divergence damping
         w_lo, w_hi = w3d[K, Ji, Ii], w3d[2 : nk + 2, Ji, Ii]
@@ -395,12 +398,12 @@ def sound(
         pp3d = bk.set(pp3d, (K, Ji, Ii), ppnew)
         dum1 = bk.set(dum1, (K, Ji, Ii), d1)
         ppd = bk.set(ppd, (K, Ji, Ii), ppnew + d1)
-        if n < nloop:
+        if not last:
             ppd = _bc.bcp(bk, g, ppd, bcfg)
 
         # --- time-averaged velocities
         R = (K, Jp, Ip)
-        if n < nloop:
+        if not last:
             rru = bk.set(rru, R, rru[R] + u3d[R])
             rrv = bk.set(rrv, R, rrv[R] + v3d[R])
             rrw = bk.set(rrw, R, rrw[R] + w3d[R])
@@ -409,6 +412,14 @@ def sound(
             rru = bk.set(rru, R, (rru[R] + u3d[R]) * tavg)
             rrv = bk.set(rrv, R, (rrv[R] + v3d[R]) * tavg)
             rrw = bk.set(rrw, R, (rrw[R] + w3d[R] * alph) * tavg)
+        return u3d, v3d, w3d, pp3d, ppd, rru, rrv, rrw, dum1, dum2, fpk
+
+    # acoustic steps 1..nloop-1 are identical; the last one differs (no
+    # pressure halo update, time averages divided by nloop)
+    carry = (u3d, v3d, w3d, pp3d, ppd, rru, rrv, rrw, dum1, dum2, fpk)
+    carry = bk.fori_loop(nloop - 1, lambda n, c: small_step(False, c), carry)
+    carry = small_step(True, carry)
+    u3d, v3d, w3d, pp3d, ppd, rru, rrv, rrw, dum1, dum2, fpk = carry
 
     if nrk == nrkmax:
         ppx = bk.set(ppx, (K, Ji, Ii), dum1[K, Ji, Ii])

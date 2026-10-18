@@ -1,0 +1,498 @@
+{
+ "env": {
+  "python": "3.13.16",
+  "platform": "Linux-6.18.44-fc-v139-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "ncpu": 4,
+  "numpy": "2.5.3",
+  "jax": "0.11.2",
+  "jaxlib": "0.11.2",
+  "torch": "2.14.1+cu130",
+  "dask": "2026.8.0",
+  "array_api_strict": "2.6.1",
+  "torch_threads": 4
+ },
+ "command": "python ports/array/bench/sweep.py --backends numpy,jax,torch --modes eager,jit --grids 20,40,40x40x80,80 --steps 5 --threads 0,1 --skip torch:jit,jax:eager:80x80x80,jax:eager:40x40x80 --timeout 1800",
+ "results": [
+  {
+   "backend": "numpy",
+   "mode": "eager",
+   "grid": [
+    20,
+    20,
+    20
+   ],
+   "points": 8000,
+   "steps": 5,
+   "init_s": 0.15469805999964592,
+   "first_step_s": 0.10103752299983171,
+   "compile_s": null,
+   "step_s": 0.08294841199949587,
+   "step_min_s": 0.08066362599947752,
+   "threads": null,
+   "points_per_s": 96445.48710647554,
+   "max_w": 0.1191091858166973,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "eager",
+   "grid": [
+    20,
+    20,
+    20
+   ],
+   "points": 8000,
+   "steps": 5,
+   "init_s": 12.187876793000214,
+   "first_step_s": 30.460947775999557,
+   "compile_s": null,
+   "step_s": 2.2052152840005874,
+   "step_min_s": 2.0460497200001555,
+   "threads": null,
+   "points_per_s": 3627.7637190536852,
+   "max_w": 0.11910918581669686,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "eager",
+   "grid": [
+    20,
+    20,
+    20
+   ],
+   "points": 8000,
+   "steps": 5,
+   "init_s": 12.728417197999988,
+   "first_step_s": 31.20959857899925,
+   "compile_s": null,
+   "step_s": 2.2308607129998563,
+   "step_min_s": 2.0651357469996583,
+   "threads": 1,
+   "points_per_s": 3586.0598348349304,
+   "max_w": 0.11910918581669686,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "jit",
+   "grid": [
+    20,
+    20,
+    20
+   ],
+   "points": 8000,
+   "steps": 5,
+   "init_s": 12.60465541099984,
+   "first_step_s": 21.4969404200001,
+   "compile_s": 21.47469550599999,
+   "step_s": 0.02224491400011175,
+   "step_min_s": 0.019912546999876213,
+   "threads": null,
+   "points_per_s": 359632.76818961004,
+   "max_w": 0.11910918581635178,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "jit",
+   "grid": [
+    20,
+    20,
+    20
+   ],
+   "points": 8000,
+   "steps": 5,
+   "init_s": 11.915234195000266,
+   "first_step_s": 21.608031487000517,
+   "compile_s": 21.58566803099984,
+   "step_s": 0.022363456000675797,
+   "step_min_s": 0.019998378999844135,
+   "threads": 1,
+   "points_per_s": 357726.46230342257,
+   "max_w": 0.11910918581635178,
+   "finite": true
+  },
+  {
+   "backend": "torch",
+   "mode": "eager",
+   "grid": [
+    20,
+    20,
+    20
+   ],
+   "points": 8000,
+   "steps": 5,
+   "init_s": 1.4475948460003565,
+   "first_step_s": 0.1600923160003731,
+   "compile_s": null,
+   "step_s": 0.15475262900054076,
+   "step_min_s": 0.13226483600010397,
+   "threads": null,
+   "points_per_s": 51695.40609208032,
+   "max_w": 0.11910918581669652,
+   "finite": true
+  },
+  {
+   "backend": "torch",
+   "mode": "eager",
+   "grid": [
+    20,
+    20,
+    20
+   ],
+   "points": 8000,
+   "steps": 5,
+   "init_s": 0.03847792200031108,
+   "first_step_s": 0.15477273699980287,
+   "compile_s": null,
+   "step_s": 0.13249363000068115,
+   "step_min_s": 0.128715148000083,
+   "threads": 1,
+   "points_per_s": 60380.26129979888,
+   "max_w": 0.11910918581669652,
+   "finite": true
+  },
+  {
+   "backend": "numpy",
+   "mode": "eager",
+   "grid": [
+    40,
+    40,
+    40
+   ],
+   "points": 64000,
+   "steps": 5,
+   "init_s": 0.21807498299949657,
+   "first_step_s": 0.6706259330003377,
+   "compile_s": null,
+   "step_s": 0.5819994739995309,
+   "step_min_s": 0.5706741229996624,
+   "threads": null,
+   "points_per_s": 109965.73512375989,
+   "max_w": 0.11911336696804586,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "eager",
+   "grid": [
+    40,
+    40,
+    40
+   ],
+   "points": 64000,
+   "steps": 5,
+   "init_s": 14.638656469000125,
+   "first_step_s": 35.15035607899972,
+   "compile_s": null,
+   "step_s": 3.141090998999971,
+   "step_min_s": 3.094794804999765,
+   "threads": null,
+   "points_per_s": 20375.086242447505,
+   "max_w": 0.11911336696804754,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "eager",
+   "grid": [
+    40,
+    40,
+    40
+   ],
+   "points": 64000,
+   "steps": 5,
+   "init_s": 14.03267420100019,
+   "first_step_s": 35.248770797999896,
+   "compile_s": null,
+   "step_s": 3.029474422999556,
+   "step_min_s": 2.9378632589996414,
+   "threads": 1,
+   "points_per_s": 21125.776641029388,
+   "max_w": 0.11911336696804754,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "jit",
+   "grid": [
+    40,
+    40,
+    40
+   ],
+   "points": 64000,
+   "steps": 5,
+   "init_s": 13.75968408999961,
+   "first_step_s": 22.525591337999685,
+   "compile_s": 22.401565046999167,
+   "step_s": 0.12402629100051854,
+   "step_min_s": 0.11630499300008523,
+   "threads": null,
+   "points_per_s": 516019.6236113553,
+   "max_w": 0.11911336696804622,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "jit",
+   "grid": [
+    40,
+    40,
+    40
+   ],
+   "points": 64000,
+   "steps": 5,
+   "init_s": 14.155104575000223,
+   "first_step_s": 22.53988354500052,
+   "compile_s": 22.419133479000266,
+   "step_s": 0.12075006600025517,
+   "step_min_s": 0.11631072999989556,
+   "threads": 1,
+   "points_per_s": 530020.4142320283,
+   "max_w": 0.11911336696804622,
+   "finite": true
+  },
+  {
+   "backend": "torch",
+   "mode": "eager",
+   "grid": [
+    40,
+    40,
+    40
+   ],
+   "points": 64000,
+   "steps": 5,
+   "init_s": 1.5222157309999602,
+   "first_step_s": 0.4430886570007715,
+   "compile_s": null,
+   "step_s": 0.35606192700015526,
+   "step_min_s": 0.31913593300032517,
+   "threads": null,
+   "points_per_s": 179744.01402363947,
+   "max_w": 0.11911336696804688,
+   "finite": true
+  },
+  {
+   "backend": "torch",
+   "mode": "eager",
+   "grid": [
+    40,
+    40,
+    40
+   ],
+   "points": 64000,
+   "steps": 5,
+   "init_s": 0.11973193200083188,
+   "first_step_s": 0.6658855160003441,
+   "compile_s": null,
+   "step_s": 0.5829418559997066,
+   "step_min_s": 0.5426096700002745,
+   "threads": 1,
+   "points_per_s": 109787.96485670813,
+   "max_w": 0.11911336696804688,
+   "finite": true
+  },
+  {
+   "backend": "numpy",
+   "mode": "eager",
+   "grid": [
+    40,
+    40,
+    80
+   ],
+   "points": 128000,
+   "steps": 5,
+   "init_s": 0.3191024979996655,
+   "first_step_s": 1.5009662439997555,
+   "compile_s": null,
+   "step_s": 1.2841461719999643,
+   "step_min_s": 1.247478771000715,
+   "threads": null,
+   "points_per_s": 99677.126164422,
+   "max_w": 0.11911336696805404,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "jit",
+   "grid": [
+    40,
+    40,
+    80
+   ],
+   "points": 128000,
+   "steps": 5,
+   "init_s": 14.478496253999765,
+   "first_step_s": 24.612021642999935,
+   "compile_s": 24.395769384999767,
+   "step_s": 0.21625225800016779,
+   "step_min_s": 0.20267303400032688,
+   "threads": null,
+   "points_per_s": 591901.3340424898,
+   "max_w": 0.11911336696805441,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "jit",
+   "grid": [
+    40,
+    40,
+    80
+   ],
+   "points": 128000,
+   "steps": 5,
+   "init_s": 14.696908249000444,
+   "first_step_s": 25.601863063000565,
+   "compile_s": 25.37293711700022,
+   "step_s": 0.228925946000345,
+   "step_min_s": 0.21288887500031706,
+   "threads": 1,
+   "points_per_s": 559132.7773733743,
+   "max_w": 0.11911336696805441,
+   "finite": true
+  },
+  {
+   "backend": "torch",
+   "mode": "eager",
+   "grid": [
+    40,
+    40,
+    80
+   ],
+   "points": 128000,
+   "steps": 5,
+   "init_s": 1.5252365830001509,
+   "first_step_s": 0.5935866689997056,
+   "compile_s": null,
+   "step_s": 0.4498847699996986,
+   "step_min_s": 0.447764792000271,
+   "threads": null,
+   "points_per_s": 284517.2998412143,
+   "max_w": 0.11911336696805361,
+   "finite": true
+  },
+  {
+   "backend": "torch",
+   "mode": "eager",
+   "grid": [
+    40,
+    40,
+    80
+   ],
+   "points": 128000,
+   "steps": 5,
+   "init_s": 0.18832791600016208,
+   "first_step_s": 1.4976296479999291,
+   "compile_s": null,
+   "step_s": 1.2539862200001153,
+   "step_min_s": 1.2336455200002092,
+   "threads": 1,
+   "points_per_s": 102074.48691101903,
+   "max_w": 0.11911336696805361,
+   "finite": true
+  },
+  {
+   "backend": "numpy",
+   "mode": "eager",
+   "grid": [
+    80,
+    80,
+    80
+   ],
+   "points": 512000,
+   "steps": 5,
+   "init_s": 1.6611405160001596,
+   "first_step_s": 6.4910542549996535,
+   "compile_s": null,
+   "step_s": 5.794181123999806,
+   "step_min_s": 5.428492709000238,
+   "threads": null,
+   "points_per_s": 88364.51416392022,
+   "max_w": 0.11911336696805414,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "jit",
+   "grid": [
+    80,
+    80,
+    80
+   ],
+   "points": 512000,
+   "steps": 5,
+   "init_s": 14.142629885000133,
+   "first_step_s": 24.244504624999536,
+   "compile_s": 23.367074200999923,
+   "step_s": 0.8774304239996127,
+   "step_min_s": 0.8681511920003686,
+   "threads": null,
+   "points_per_s": 583522.0502910508,
+   "max_w": 0.11911336696805447,
+   "finite": true
+  },
+  {
+   "backend": "jax",
+   "mode": "jit",
+   "grid": [
+    80,
+    80,
+    80
+   ],
+   "points": 512000,
+   "steps": 5,
+   "init_s": 13.184571079000307,
+   "first_step_s": 25.081836468999427,
+   "compile_s": 24.209466528998746,
+   "step_s": 0.8723699400006808,
+   "step_min_s": 0.8388532520002627,
+   "threads": 1,
+   "points_per_s": 586906.9720577493,
+   "max_w": 0.11911336696805447,
+   "finite": true
+  },
+  {
+   "backend": "torch",
+   "mode": "eager",
+   "grid": [
+    80,
+    80,
+    80
+   ],
+   "points": 512000,
+   "steps": 5,
+   "init_s": 1.7076833170003738,
+   "first_step_s": 1.858704468999349,
+   "compile_s": null,
+   "step_s": 1.760323241000151,
+   "step_min_s": 1.7204247460003899,
+   "threads": null,
+   "points_per_s": 290855.67245541816,
+   "max_w": 0.11911336696805423,
+   "finite": true
+  },
+  {
+   "backend": "torch",
+   "mode": "eager",
+   "grid": [
+    80,
+    80,
+    80
+   ],
+   "points": 512000,
+   "steps": 5,
+   "init_s": 0.6070188749999943,
+   "first_step_s": 5.473830523999823,
+   "compile_s": null,
+   "step_s": 5.309196471999712,
+   "step_min_s": 5.1217140170001585,
+   "threads": 1,
+   "points_per_s": 96436.4386777261,
+   "max_w": 0.11911336696805423,
+   "finite": true
+  }
+ ]
+}

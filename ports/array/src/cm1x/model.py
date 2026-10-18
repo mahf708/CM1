@@ -22,7 +22,7 @@ state.  imove (domain translation) changes only the base-state winds
 from __future__ import annotations
 
 from . import bc as _bc
-from .backend import get_backend
+from .backend import get_backend, is_array
 from .misc import dtsmall
 from .mp_driver import mp_driver
 from .namelist import read_namelist
@@ -52,16 +52,34 @@ class Model:
     """CM1 reference-case model on any array backend.
 
     Parameters: ``namelist_path`` (CM1 namelist.input), ``backend``
-    ('numpy', 'jax', 'torch'), ``dtype`` ('float64' or 'float32').
+    ('numpy', 'jax', 'torch'; also 'dask', 'array_api_strict'), ``dtype``
+    ('float64' or 'float32'), ``jit`` (compile the whole time step with
+    ``Backend.compile``: ``jax.jit`` on jax, ``torch.compile`` on torch, a
+    no-op elsewhere; ``jit_options`` are passed to the compiler),
+    ``overrides`` ({namelist name: value}, e.g. ``{"nx": 80, "ny": 80}``).
+    ``step(hooks=...)`` always runs eagerly.
     Attributes: ``cfg``, ``bk``, ``grid``, ``base``, ``state`` (dict of
     arrays keyed by Fortran name), ``nstep``, ``mtime`` (s), ``dt``.
     """
 
     def __init__(
-        self, namelist_path, backend="numpy", dtype="float64", fortran_dp=False
+        self,
+        namelist_path,
+        backend="numpy",
+        dtype="float64",
+        fortran_dp=False,
+        jit=False,
+        jit_options=None,
+        overrides=None,
     ):
-        self.cfg = cfg = read_namelist(namelist_path, dp=fortran_dp)
+        self.cfg = cfg = read_namelist(
+            namelist_path, dp=fortran_dp, overrides=overrides
+        )
         self.bk = bk = get_backend(backend, dtype)
+        self.jit = bool(jit)
+        self.jit_options = dict(jit_options or {})
+        # compiled step, shared by shallow copies (cm1x._grad_utils.clone)
+        self._jit_cache = {}
         self.grid, self.base, st = initialize(cfg, bk)
         g = self.grid
         self.dt = float(cfg.dtl)
@@ -142,13 +160,20 @@ class Model:
                 th3d=s["th3d"],
                 q3d=s["q3d"],
             )
+        # lazy backends (dask): compute the initial state once
+        self.base, self.state, self.dtu0, self.dtv0 = bk.materialize(
+            (self.base, self.state, self.dtu0, self.dtv0)
+        )
 
     # ------------------------------------------------------------------
-    def _sfc_and_turb(self, *, rtime, u3d, v3d, w3d, pp3d, th3d, q3d):
-        """cm1.F: ``sfc_and_turb`` on the new time level (LES path)."""
+    def _sfc_and_turb(self, s=None, b=None, *, rtime, u3d, v3d, w3d, pp3d, th3d, q3d):
+        """cm1.F: ``sfc_and_turb`` on the new time level (LES path).  Updates
+        the state dict ``s`` (default ``self.state``) in place."""
         from .turb import sfc_and_turb
 
-        bk, g, cfg, b, s = self.bk, self.grid, self.cfg, self.base, self.state
+        bk, g, cfg = self.bk, self.grid, self.cfg
+        s = self.state if s is None else s
+        b = self.base if b is None else b
         keys = (
             "kmh",
             "kmv",
@@ -207,8 +232,48 @@ class Model:
 
     # ------------------------------------------------------------------
     def step(self, hooks=None):
-        """Advance one time step (dt = dtl)."""
-        bk, g, cfg, b, s = self.bk, self.grid, self.cfg, self.base, self.state
+        """Advance one time step (dt = dtl).  With ``jit=True`` (and no
+        ``hooks``) the compiled step is used."""
+        mtime = self.mtime + self.dt
+        if self.jit and hooks is None:
+            fn = self._compiled_step()
+            barr = {k: v for k, v in self.base.items() if is_array(v)}
+            self.state = fn(
+                self.state,
+                barr,
+                self.dtu0,
+                self.dtv0,
+                self.bk.scalar(mtime),
+            )
+        else:
+            self.state = self._advance(
+                self.state, self.base, self.dtu0, self.dtv0, mtime, hooks=hooks
+            )
+        self.state = self.bk.materialize(self.state)
+        self.nstep += 1
+        self.mtime = mtime
+        return self
+
+    def _compiled_step(self):
+        """The whole time step as one compiled function
+        ``(state, base_arrays, dtu0, dtv0, mtime) -> state`` (Backend.compile:
+        jax.jit, torch.compile, or the plain function elsewhere)."""
+        if "step" not in self._jit_cache:
+            bstatic = {k: v for k, v in self.base.items() if not is_array(v)}
+
+            def fn(s, barr, dtu0, dtv0, mtime):
+                return self._advance(s, {**bstatic, **barr}, dtu0, dtv0, mtime)
+
+            self._jit_cache["step"] = self.bk.compile(fn, **self.jit_options)
+        return self._jit_cache["step"]
+
+    def _advance(self, s, b, dtu0, dtv0, mtime, hooks=None):
+        """Pure time step: returns the state dict after one step from ``s``
+        (``b`` = base dict, ``mtime`` = model time at the end of the step,
+        Python float or 0-d array).  On numpy/torch arrays of ``s`` may be
+        updated in place, as before."""
+        bk, g, cfg = self.bk, self.grid, self.cfg
+        s = dict(s)
         xp = bk.xp
         dt = self.dt
 
@@ -235,7 +300,7 @@ class Model:
             qtten=s["qtten"],
             qvten=s["qvten"],
             qcten=s["qcten"],
-            turb=self._turb_inputs() if self.les else None,
+            turb=self._turb_inputs(s, b) if self.les else None,
         )
 
         r2 = solve2(
@@ -265,8 +330,8 @@ class Model:
             rr0=b["rr0"],
             rf0=b["rf0"],
             rrf0=b["rrf0"],
-            dtu0=self.dtu0,
-            dtv0=self.dtv0,
+            dtu0=dtu0,
+            dtv0=dtv0,
             divx=s["divx"],
             rho=s["rho"],
             prs=s["prs"],
@@ -400,12 +465,12 @@ class Model:
             "qa",
         ):
             s[k] = r3[k]
-        self.nstep += 1
-        self.mtime += dt
         if self.les:
             s["tkea"], s["tke3d"] = r3["tkea"], r2["tke3d"]
             self._sfc_and_turb(
-                rtime=self.mtime,
+                s,
+                b,
+                rtime=mtime,
                 u3d=r2["u3d"],
                 v3d=r2["v3d"],
                 w3d=r2["w3d"],
@@ -413,10 +478,11 @@ class Model:
                 th3d=r3["th3d"],
                 q3d=r3["q3d"],
             )
-        return self
+        return s
 
-    def _turb_inputs(self):
-        b, s = self.base, self.state
+    def _turb_inputs(self, s=None, b=None):
+        s = self.state if s is None else s
+        b = self.base if b is None else b
         d = {k: b[k] for k in ("uh", "uf", "vh", "vf", "mh", "mf")}
         for k in (
             "rr",

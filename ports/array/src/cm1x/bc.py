@@ -304,15 +304,14 @@ def _rad_avg(bk, g, cfg, num, foo, dt, lo):
     xp = bk.xp
     tiny = bk.asarray(1.0e-10)
     zero, cmax = bk.asarray(0.0), bk.asarray(csmax)
-    acc = None
-    for k in range(g.nk):
-        f = foo[k]
-        c = num[k] / (dt * (xp.copysign(tiny, f) + f))
-        if lo:  # max(min(c, 0), -umax)
-            c = xp.maximum(xp.minimum(c, zero), -cmax)
-        else:  # min(max(c, 0), umax)
-            c = xp.minimum(xp.maximum(c, zero), cmax)
-        acc = c if acc is None else acc + c
+    f = foo[: g.nk]
+    c = num[: g.nk] / (dt * (xp.copysign(tiny, f) + f))
+    if lo:  # max(min(c, 0), -umax)
+        c = xp.maximum(xp.minimum(c, zero), -cmax)
+    else:  # min(max(c, 0), umax)
+        c = xp.minimum(xp.maximum(c, zero), cmax)
+    # sequential sum over k, as the Fortran
+    acc, _ = bk.scan(lambda a, ck: (a + ck, None), c[0], c[1:])
     return acc / float(g.nk)
 
 

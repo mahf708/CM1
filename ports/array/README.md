@@ -28,9 +28,14 @@ pytest ports/array                    # every test runs on each installed backen
    immutable; numpy/torch updates happen in place).
 3. **Backend only through `bk`.** `bk.xp` is the array-API namespace; `bk.dtype` the
    float type. No direct `import numpy` for computation (tests may use numpy).
-   No Python `if`/`for` on array *values* (keeps `jax.jit` working); loops over the
-   vertical are fine when the Fortran recurrence needs them (tridiagonal solves,
-   sedimentation), everything else vectorised over `[k, j, i]`.
+   No Python `if`/`for` on array *values* (keeps `jax.jit` working): a loop whose
+   trip count depends on the data goes through `bk.fori_loop(n, body, carry)`
+   (`n` may be a 0-d array; `lax.while_loop` under jit), a repeated identical
+   sub-step through `bk.fori_loop` with a static `n`, and a vertical recurrence
+   (tridiagonal solves, sequential sums) through `bk.scan` on level-stacked
+   coefficients computed vectorised over `[k, j, i]`. Eagerly these are plain
+   Python loops doing the same operations; under `jax.jit` they stay loops in the
+   compiled program instead of being unrolled.
 4. **Layout.** Arrays are `a[k, j, i]` and keep CM1's halos (3 in x/y, 1 in z), so
    Fortran index `i` is Python index `i + 2` and Fortran `k` is Python `k`
    (`cm1x.grid.fi`, `fk`). Shapes: `Grid.s_shape`, `u_shape`, `v_shape`, `w_shape`.
@@ -42,3 +47,14 @@ pytest ports/array                    # every test runs on each installed backen
    double precision by `fortran_harness/build_objs.sh`). Target: agreement to
    ~1e-12 relative in float64, on random-but-physical inputs, on every backend.
    Whole-model runs are checked against CM1's netCDF output for the reference case.
+
+## Performance
+
+`Model(nml, backend="jax", jit=True)` compiles the whole time step into one
+`jax.jit` function (state -> state); results equal the eager step to round-off
+(`tests/test_jit.py`). On 4 CPUs, supercell_kessler at 40^3 runs 0.12 s/step
+with jax.jit (~22 s compile) vs 0.58 s numpy and 0.36 s torch eager (4
+threads); 6.6x numpy at 80^3. `Model(..., overrides={"nfall_max": 4})` gives
+the sedimentation loop a static trip count so reverse-mode `jax.grad` works
+through the jitted step. Sweep and notes (torch.compile, dask,
+array-api-strict): `bench/sweep.py`, `bench/results_cpu.md`.
