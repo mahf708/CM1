@@ -8,16 +8,14 @@
 //   surface_layer()   turb.F: psfc (cgs1..3), the "variables for wrf
 //                     physics" block (k2=2), divx = qv, the bbc=3 block
 //                     (u1, v1, s1, t1 at k=1), the mynn_sf_j_loop
-//                     (SFCLAY_mynn, itimestep = nstep), then the
-//                     update_sfc branch: CM1 calls SLAB (src/slab.F), which
-//                     over water (xland > 1.5 in a whole j row) only
-//                     diagnoses qsfc = qv + qfx/flqc, exactly what the
-//                     non-updating branch does, so both are sfc_mynn::finish
-//                     (ch = ck, cq = ck, s10; thflux/qvflux with dosfcflx or
-//                     output_sfcflx = 1). SLAB over land changes tsk and the
-//                     fluxes: not ported here (the land-surface model is
-//                     ported with the YSU/MM5 work); Options::check throws
-//                     for land points.
+//                     (SFCLAY_mynn, itimestep = nstep), then turb.F
+//                     1019-1047: with update_sfc (and testcase /= 11) the
+//                     SLAB land model (src/slab.F, slab::Land: over land
+//                     tsk, tslb and the land hfx, qfx, lh from SFCLAY_mynn's
+//                     flhc, flqc; qsfc everywhere), else the qsfc diagnosis
+//                     qsfc = qv + qfx/flqc (what SLAB reduces to over
+//                     water); then sfc_mynn::finish (ch = ck, cq = ck, s10;
+//                     thflux/qvflux with dosfcflx or output_sfcflx = 1).
 //   pbl()             turb.F get_vars + the domynn block (initflag =
 //                     (nstep == 0)); the tendencies go to pbl::Tendencies
 //                     (thpten, qvpten, qcpten, qipten, upten, vpten), which
@@ -44,6 +42,7 @@
 #include "physics/pbl_mynn/cm1k_pbl_mynn.hpp"
 #include "physics/sfc/cm1k_sfc.hpp"
 #include "physics/sfc_mynn/cm1k_sfc_mynn.hpp"
+#include "physics/slab/cm1k_slab_land.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
 #include "share/cm1k_state.hpp"
@@ -61,12 +60,15 @@ struct Coupling {
   bool dosfcflx = false;          // init_surface.F (.false. for ipbl=4,5)
   int output_sfcflx = 0;          // namelist param9: thflux/qvflux are diagnosed then
   int lu0 = 16, initsfc = 1;      // init_surface.F (water: lu_index 16)
+  Real tmn0 = 297.28;             // init_surface.F: SLAB's deep soil temperature
+  int testcase = 0;               // turb.F: no SLAB for testcase = 11
 
   bool active() const { return pbl.active(); }
   static Coupling from_namelist(const Namelist& nl);
   // Throws for what is not ported: ipbl=4/5 without sfcmodel=6 (and
-  // sfcmodel=6 without ipbl=4/5), land points (SLAB), the options
-  // Options::check and sfc_mynn::Options::check reject.
+  // sfcmodel=6 without ipbl=4/5), the options Options::check and
+  // sfc_mynn::Options::check reject, and what init_surface.F stops for
+  // (lu0 outside 1..33, tmn0 < 100 K).
   void check() const;
 };
 
@@ -76,10 +78,15 @@ struct Carried {
   Surface sfc2d;          // MYNN PBL 2D in/out (kpbl, nupdraft, maxmf, ktop_plume own; the rest alias)
   State st;               // qke, qke_adv (= CM1's qke3d), tsq, qsq, cov, ...
   Tendencies td;          // upten..qipten alias pbl::Tendencies; xkzh, xkzm, dheat own
-  // Allocates the arrays of their own and sets the aliases.
-  void allocate(const Bounds& b, const sfc::SfcState& s, const pbl::Tendencies& pt);
-  // (name, array) as src/cm1dump_state.inc writes them (sfcmodel=6 block,
-  // then the ipbl=4/5 block without hpbl and the pbl::Tendencies arrays)
+  slab::Land land;        // SLAB: tslb, tmn, emiss, thc, ... (cm1.F, init_surface.F)
+  // Allocates the arrays of their own and sets the aliases; so: SLAB's
+  // tmn0, lu0, season (slab::Land::setup).
+  void allocate(const Bounds& b, const sfc::SfcState& s, const pbl::Tendencies& pt, const sfc::Options& so);
+  // init_surface.F: the initial soil temperatures (after sfc::init_surface)
+  void init_soil(const Bounds& b, const sfc::SfcState& s) const;
+  // (name, array) as src/cm1dump_state.inc writes them (sfcmodel=6 block
+  // incl. tslb, then the ipbl=4/5 block without hpbl and the pbl::Tendencies
+  // arrays)
   std::vector<std::pair<std::string, FArray3>> dumped_sfc() const;
   std::vector<std::pair<std::string, FArray3>> dumped_pbl() const;
 };
@@ -96,8 +103,10 @@ struct Work {
 // sfc_and_turb's surface part for sfcmodel=6 (see above), on the state
 // (ua, va, tha, ppi, qa, prs, rho, rf) at the start of a step.
 //   cgs1..3: param.F extrapolation coefficients to the surface
+//   dt: the time step (SLAB's deltsm); update_sfc: cm1.F's (.false. only in
+//   the startup pass)
 void surface_layer(const Coupling& o, const Constants& c, const Grid& g, const BaseState& base, Real cgs1,
-                   Real cgs2, Real cgs3, int nstep, const FArray3& ua, const FArray3& va, const FArray3& tha,
+                   Real cgs2, Real cgs3, int nstep, Real dt, bool update_sfc, const FArray3& ua, const FArray3& va, const FArray3& tha,
                    const FArray3& ppi, const FArray4& qa, int nqv, const FArray3& prs, const FArray3& rho,
                    const FArray3& rf, const sfc::SfcState& s, const Carried& cr, const Work& w);
 

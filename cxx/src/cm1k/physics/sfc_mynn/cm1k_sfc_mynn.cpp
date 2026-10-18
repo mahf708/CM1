@@ -654,15 +654,18 @@ void sfclay(const Options& o, const Constants& c, const PsiTables& t, int ni, in
 }
 
 void finish(int ni, int nj, bool dosfcflx, const Inputs& in, const FArray3& rf, const Fields& f,
-            const FArray3& cq, const FArray3& s10, const FArray3& thflux, const FArray3& qvflux) {
+            const FArray3& cq, const FArray3& s10, const FArray3& thflux, const FArray3& qvflux,
+            bool diag_qsfc) {
   const Fields F = f;
   const auto qv3d = in.qv3d;
   Kokkos::parallel_for("sfc_mynn_finish", box2(1, ni, 1, nj), KOKKOS_LAMBDA(int i, int j) {
-    const Real qx = qv3d(i, j, 1);
-    if (F.flqc(i, j, 1) != 0.) {
-      F.qsfc(i, j, 1) = qx + F.qfx(i, j, 1) / F.flqc(i, j, 1);
-    } else {
-      F.qsfc(i, j, 1) = qx;
+    if (diag_qsfc) {
+      const Real qx = qv3d(i, j, 1);
+      if (F.flqc(i, j, 1) != 0.) {
+        F.qsfc(i, j, 1) = qx + F.qfx(i, j, 1) / F.flqc(i, j, 1);
+      } else {
+        F.qsfc(i, j, 1) = qx;
+      }
     }
     F.ch(i, j, 1) = F.chs2(i, j, 1);
     cq(i, j, 1) = F.cqs2(i, j, 1);

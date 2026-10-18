@@ -127,6 +127,9 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   // MYNN (ipbl=4/5, sfcmodel=6)
   c.mynn_opt = pbl_mynn::Coupling::from_namelist(nl);
   c.mynn = c.pbl && c.mynn_opt.active();
+  // MYJ (ipbl=6, sfcmodel=7)
+  c.myj_opt = myj::Coupling::from_namelist(nl);
+  c.myj = c.pbl && c.myj_opt.pbl_active();
   // param.F: dissipative heating is computed within ipbl=3,4,5
   if ((c.ipbl == 3 || c.ipbl == 4 || c.ipbl == 5) && c.idiss >= 1 && c.cm1setup != 4) c.idiss = 0;
   return c;
@@ -146,7 +149,8 @@ void DynConfig::check() const {
     pbl_opt.check();   // throws for every PBL option that is not ported (ipbl=2, 4, 5)
     turb_opt.check();
   }
-  mynn_opt.check();    // ipbl=4/5 <-> sfcmodel=6, MYNN options, water only (no SLAB)
+  mynn_opt.check();    // ipbl=4/5 <-> sfcmodel=6, MYNN options, lu0, tmn0
+  myj_opt.check();     // ipbl=6 <-> sfcmodel=7
   if (idiff != 0 && idiff != 1) unsupported("idiff=" + std::to_string(idiff) + " (only 0, 1)");
   if (idiff == 1 && difforder != 2 && difforder != 6)
     unsupported("difforder=" + std::to_string(difforder) + " with idiff=1 (only 2, 6)");
@@ -163,7 +167,8 @@ void DynConfig::check() const {
   if (testcase != 0) unsupported("testcase");
   if (axisymm != 0) unsupported("axisymm");
   if (cuparam != 0) unsupported("cuparam");
-  if (radopt != 0) unsupported("radopt");
+  // radopt=2 (RRTMG): rrtmg::RadOptions::check has the supported subset
+  if (radopt != 0 && radopt != 2) unsupported("radopt=" + std::to_string(radopt));
   if (iptra != 0) unsupported("iptra");
   if (iprcl != 0) unsupported("iprcl");
   if (iinit == 10 || iinit == 11 || iinit == 12) unsupported("iinit=" + std::to_string(iinit) + " (forcing in sound/solve1)");
@@ -173,8 +178,9 @@ void DynConfig::check() const {
   // (bbc=3 adds the surface-layer term, from physics/sfc).
   // With ipbl=2 dissten is set by turbparam_vert/turbparam_horiz, with
   // ipbl=1 by turbparam_horiz and ysudiss.
-  // (ipbl=4,5: idiss=0, MYNN's dissipative heating is part of thpten)
-  if (idiss != 0 && ipbl != 0 && ipbl != 1 && ipbl != 2) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
+  // (ipbl=4,5: idiss=0, MYNN's dissipative heating is part of thpten;
+  // ipbl=6: as ipbl=1 without ysudiss, turbparam_horiz only)
+  if (idiss != 0 && ipbl != 0 && ipbl != 1 && ipbl != 2 && ipbl != 6) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
   if (rterm != 0) unsupported("rterm");
   if (adapt_dt != 0) unsupported("adapt_dt");
   // surface layer: sfcmodel=0, or sfcmodel=1 (bbc=3, isfcflx=0/1) with the
@@ -189,10 +195,12 @@ void DynConfig::check() const {
   // terrain-following coordinate: everything above that has a terrain branch
   // is ported (advection, sound psolver=3, open boundaries, TKE sgsmodel=1,
   // Rayleigh damping, diff6, Coriolis/lspgrad, Kessler); these are not
+  // (PBL covers every ipbl, has_layer every sfcmodel incl. MYNN, MYJ, GFDL)
   if (terrain_flag) {
     if (diff2()) unsupported("difforder=2 with terrain (diff2.F stops: cannot use diff2u with terrain)");
     if (imove != 0) unsupported("imove=1 with terrain (param.F)");
     if (pbl) unsupported("PBL schemes (cm1setup=2) with terrain");
+    if (radopt != 0) unsupported("radiation (radopt=" + std::to_string(radopt) + ") with terrain");
     if (sfc_opt.has_layer()) unsupported("the surface layer (sfcmodel>=1, bbc=3) with terrain");
   }
   if (do_lsnudge) unsupported("do_lsnudge");
@@ -325,7 +333,8 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     cvm = s3("cvm");
     ts.allocate(B);
     m_tw.allocate(B);
-    if (m_cfg.sfc_opt.wrf() || m_cfg.pbl_opt.ipbl == 1) {
+    if (m_cfg.sfc_opt.wrf() || m_cfg.sfc_opt.gfdl() || m_cfg.pbl_opt.ipbl == 1 || m_cfg.pbl_opt.ipbl == 3 ||
+        m_cfg.myj) {
       auto& w = m_ww;
       w.d1 = s3("wrf_dum1"); w.d2 = s3("wrf_dum2"); w.d3 = s3("wrf_dum3"); w.d4 = s3("wrf_dum4");
       w.d5 = s3("wrf_dum5"); w.d6 = s3("wrf_dum6"); w.d7 = s3("wrf_dum7");
@@ -336,9 +345,11 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
         auto s2 = [&](const char* n) { return FArray3(n, {B.ib, B.jb, 1}, {B.ie, B.je, 1}); };
         w.kpbl2d = s2("kpbl2d"); w.wstar = s2("wstar"); w.delta = s2("delta");
       }
+      if (m_cfg.pbl_opt.ipbl == 3) w.kpbl2d = FArray3("kpbl2d", {B.ib, B.jb, 1}, {B.ie, B.je, 1});
     }
   }
   if (m_cfg.mynn) m_mw.allocate(B);   // psi tables (init_physics.F), inputs, qke tendency
+  if (m_cfg.myj) m_myw.allocate(B);   // psi tables (init_physics.F: MYJSFCINIT), column workspace
 
   if (m_cfg.diff2()) m_d2.allocate(B);
 
@@ -458,8 +469,17 @@ void Dyncore::sfc_and_turb(double rtime, int nstep) {
     if (m_cfg.mynn) {
       // MYNN surface layer (sfcmodel=6)
       if (!m_has_mynn) throw std::runtime_error("cm1k dyncore: the MYNN PBL needs set_mynn()");
-      pbl_mynn::surface_layer(m_cfg.mynn_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, nstep, u3d, v3d, th3d, pp3d,
-                              q3d, m_cfg.nqv, s.prs, s.rho, rf, m_sfc, m_mc, m_mw);
+      pbl_mynn::surface_layer(m_cfg.mynn_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, nstep, m_dt, update_sfc, u3d,
+                              v3d, th3d, pp3d, q3d, m_cfg.nqv, s.prs, s.rho, rf, m_sfc, m_mc, m_mw);
+    } else if (m_cfg.myj) {
+      // MYJ surface layer (sfcmodel=7)
+      if (!m_has_myj) throw std::runtime_error("cm1k dyncore: the MYJ PBL needs set_myj()");
+      sfc::sfc_prelude(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, m_sfc);
+      wrf_inputs();
+      const auto& w = m_ww;
+      myj::surface_layer(m_cfg.myj_opt, w.c, m_g, m_dt, nstep, update_sfc,
+                         {w.d1, w.d2, w.d3, w.d4, w.d5, w.d6, w.d7, w.qv, w.qc, w.qi}, s.prs, rf, m_sfc, m_myc,
+                         m_myw);
     } else if (so.wrf()) {
       if (!m_has_wsfc) throw std::runtime_error("cm1k dyncore: sfcmodel=2,3 needs set_wrf_surface()");
       sfc::sfc_prelude(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, m_sfc);
@@ -467,10 +487,18 @@ void Dyncore::sfc_and_turb(double rtime, int nstep) {
       auto& w = m_ww;
       sfclay::wrf_surface_layer(so, m_cfg.sfclay_opt, w.c, B.ni, B.nj, m_dt, update_sfc, w.d1, w.d2, w.d4, w.d5,
                                 w.qv, s.prs, rf, m_wsfc);
+    } else if (so.gfdl()) {
+      if (!m_has_gsfc) throw std::runtime_error("cm1k dyncore: sfcmodel=4 needs set_gfdl_surface()");
+      sfc::sfc_prelude(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, m_sfc);
+      wrf_inputs();
+      auto& w = m_ww;
+      sfc_gfdl::gfdl_surface_layer(so, w.c, m_g.zh, B.ni, B.nj, m_dt, m_cfg.smeps, update_sfc, w.d1, w.d2, w.d4,
+                                   w.qv, s.prs, rf, m_gsfc);
     } else {
       sfc::sfc_layer(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc);
     }
     turb::sfc_bcs(to, B, m_sfc);
+    if (so.gfdl()) sfc_gfdl::gfdl_bcs(to, B, m_gsfc, m_sfc.zntmp);   // bc2d(mznt), zntmp = mznt
     turb::calcnm(to, m_c, B, m_g.rdz, m_g.c1, m_g.c2, m_g.mf, m_b.pi0, m_b.th0, ts.nm, m_tw.d1, m_tw.d2, m_tw.d3,
                  m_tw.d6, s.prs, pp3d, th3d, q3d);
     turb::calcdef(to, m_g, s.rho, rf, u3d, v3d, w3d, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, ts.defv,
@@ -528,14 +556,39 @@ void Dyncore::wrf_inputs() {
   wrfphys::pbl_moist(B.ni, B.nj, B.nk, m_cfg.imoist, po.nqv, po.nqc, po.nqi, q3d, w.qv, w.qc, w.qi);
 }
 
+void Dyncore::set_radiation(const FArray3& thraten) {
+  m_thraten = thraten;   // shallow: the view is shared with the caller
+  m_has_thraten = true;
+}
+
+const FArray3& Dyncore::rad_thraten() const {
+  if (!m_has_thraten) throw std::runtime_error("cm1k dyncore: radopt=2 needs set_radiation()");
+  return m_thraten;
+}
+
 void Dyncore::set_pbl(const pbl::Tendencies& t) {
   m_pt = t;   // shallow: the views are shared with the caller
   m_has_pbl = true;
 }
 
+void Dyncore::set_myj(const myj::Carried& c) {
+  m_myc = c;   // shallow: the views are shared with the caller
+  m_has_myj = true;
+}
+
 void Dyncore::set_mynn(const pbl_mynn::Carried& c) {
   m_mc = c;   // shallow: the views are shared with the caller
   m_has_mynn = true;
+}
+
+void Dyncore::set_gfdl_surface(const sfc_gfdl::GfdlSurface& w) {
+  m_gsfc = w;   // shallow: the views are shared with the caller
+  m_has_gsfc = true;
+}
+
+void Dyncore::set_gfs(const pbl_gfs::Carried& c) {
+  m_gc = c;   // shallow: the views are shared with the caller
+  m_has_gfs = true;
 }
 
 // turb.F sfc_and_turb, "doingpbl" block (see the header for the hook).
@@ -551,7 +604,9 @@ void Dyncore::pbl(double /*rtime*/) {
     const auto& ss = m_wsfc.s;
     pbl_ysu::Inputs in;
     in.ux = w.d1; in.vx = w.d2; in.tx = w.d4; in.qvx = w.qv; in.qcx = w.qc; in.qix = w.qi;
-    in.p2d = s.prs; in.p2di = w.d6; in.pi2d = w.d7; in.dz8w2d = w.d5; in.rthraten = w.rth;   // rth = 0
+    in.p2d = s.prs; in.p2di = w.d6; in.pi2d = w.d7; in.dz8w2d = w.d5;
+    // turb.F: dum9 = thraten with radopt>=1, else rth = 0
+    in.rthraten = m_has_thraten ? m_thraten : w.rth;
     in.psfcpa = ss.psfc; in.znt = m_sfc.zntmp; in.ust = ss.ust; in.psim = ss.fm; in.psih = ss.fh;
     in.xland = ss.xland; in.hfx = ss.hfx; in.qfx = ss.qfx; in.wspd = ss.wspd; in.br = ss.br;
     pbl_ysu::Outputs out;
@@ -571,12 +626,50 @@ void Dyncore::pbl(double /*rtime*/) {
     pbl::br09(m_cfg.turb_opt, m_cfg.pbl_opt, m_g, m_b, m_dt, u3d, v3d, w3d, th3d, q3d, s.rho, rr, rf, s.kmv, s.khv,
               ts.t13, ts.t23, m_sfc, m_pt, m_tw);
     break;
+  case 3: {   // dogfsedmf
+    if (!m_has_gfs) throw std::runtime_error("cm1k dyncore: GFS-EDMF needs set_gfs()");
+    const auto& B = m_g.b;
+    const auto& so = m_cfg.sfc_opt;
+    auto& w = m_ww;
+    pbl_gfs::Inputs in;
+    in.u3d = w.d1; in.v3d = w.d2; in.t3d = w.d4; in.qv3d = w.qv; in.qc3d = w.qc; in.qi3d = w.qi;
+    in.p3d = s.prs; in.pi3d = w.d7; in.dz8w = w.d5; in.z = m_g.zf;
+    // turb.F: RTHRATEN = dum9 = thraten with radopt>=1, else rth = 0
+    in.rthraten = m_has_thraten ? m_thraten : w.rth;
+    in.psfc = m_sfc.psfc; in.hfx = m_sfc.hfx; in.qfx = m_sfc.qfx; in.tsk = m_sfc.tsk; in.gz1oz0 = m_sfc.gz1oz0;
+    in.br = m_sfc.br; in.u10 = m_sfc.u10; in.v10 = m_sfc.v10; in.xland = m_sfc.xland;
+    if (so.gfdl()) {
+      if (!m_has_gsfc) throw std::runtime_error("cm1k dyncore: sfcmodel=4 needs set_gfdl_surface()");
+      in.psim = m_gsfc.f.psim; in.psih = m_gsfc.f.psih;
+      in.znt = m_gsfc.f.mznt;   // turb.F: ZNT=mznt
+    } else {
+      if (!m_has_wsfc) throw std::runtime_error("cm1k dyncore: GFS-EDMF with sfcmodel=2,3 needs set_wrf_surface()");
+      in.psim = m_wsfc.s.psim; in.psih = m_wsfc.s.psih;
+      in.znt = m_sfc.znt;       // turb.F: mznt = znt on the interior, all the scheme reads
+    }
+    pbl_gfs::Outputs out;
+    out.rublten = m_pt.upten; out.rvblten = m_pt.vpten; out.rthblten = m_pt.thpten; out.rqvblten = m_pt.qvpten;
+    out.rqcblten = m_pt.qcpten; out.rqiblten = m_pt.qipten; out.dku3d = m_gc.xkzm; out.dkt3d = m_gc.xkzh;
+    out.dissten = ts.dissten; out.dheat = m_tw.d8;   // turb.F: dheat = thten (scratch)
+    out.ust = m_sfc.ust; out.wspd = m_sfc.wspd; out.hpbl = m_sfc.hpbl; out.kpbl2d = w.kpbl2d;
+    pbl_gfs::Options o;   // turb.F: disheat, gfs_alpha = -1, var_ric = 1, coef_ric_l/s = 0.16/0.25
+    o.qi = (m_cfg.pbl_opt.nqi >= 1);
+    pbl_gfs::gfsedmf(o, w.c, m_dt, B.ni, B.nj, B.nk, in, out, w.gfs);
+    break;
+  }
   case 4:   // domynn (MYNN level 2.5)
   case 5:   // (level 3)
     if (!m_has_mynn) throw std::runtime_error("cm1k dyncore: the MYNN PBL needs set_mynn()");
     pbl_mynn::pbl(m_cfg.mynn_opt, m_g, m_b, m_dt, m_nstep, u3d, v3d, w3d, th3d, pp3d, q3d, m_cfg.nqv, m_cfg.nqc,
                   /*nqi=*/0, s.prs, s.rho, m_mc, m_mw);
     break;
+  case 6: {   // domyj (MYJ)
+    if (!m_has_myj) throw std::runtime_error("cm1k dyncore: the MYJ PBL needs set_myj()");
+    const auto& w = m_ww;
+    myj::pbl(m_cfg.myj_opt, m_g.b, m_dt, {w.d1, w.d2, w.d3, w.d4, w.d5, w.d6, w.d7, w.qv, w.qc, w.qi}, s.prs,
+             m_sfc, m_pt, m_myc, m_myw);
+    break;
+  }
   default:
     unsupported("ipbl=" + std::to_string(m_cfg.pbl_opt.ipbl));
   }
@@ -610,6 +703,16 @@ void Dyncore::diff2_stress() {
 }
 
 //===========================================================================
+namespace {
+// solve1.F (radopt>=1): thten1 = thten1 + thraten, after the dissipative
+// heating and before the PBL tendency of theta and the doturb block
+void add_thraten(const Bounds& B, const FArray3& thraten, const FArray3& thten1) {
+  Kokkos::parallel_for("thraten", box3(1, B.ni, 1, B.nj, 1, B.nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    thten1(i, j, k) = thten1(i, j, k) + thraten(i, j, k);
+  });
+}
+} // namespace
+
 void Dyncore::solve1() {
   openbc_solve1();   // radbc (irbc=1)
 
@@ -681,6 +784,7 @@ void Dyncore::solve1() {
     // dissipative heating (~919), before the turbulent fluxes of theta
     const sfc::SfcState* sp = m_has_sfc ? &m_sfc : nullptr;
     turb::dissheat(to, c, B, pi0, ppi, qa, ts.dissten, thten1, cvm, m_g.zf, sp);
+    if (cfg.radopt != 0) add_thraten(B, rad_thraten(), thten1);   // (~1056)
     // doturb block (~1119)
     turb::turb_tendencies(to, m_g, m_b, m_dt, rho, rr, rf, ua, va, wa, tha, qa, uten1, vten1, wten1, thten1,
                           qten, m_s.kmh, m_s.kmv, m_s.khh, m_s.khv, ts, m_tw, sp);
@@ -689,6 +793,7 @@ void Dyncore::solve1() {
     const auto& to = cfg.turb_opt;
     // dissipative heating (~919; idiss=1, dissten from turbparam_*)
     turb::dissheat(to, c, B, pi0, ppi, qa, ts.dissten, thten1, cvm, m_g.zf, &m_sfc);
+    if (cfg.radopt != 0) add_thraten(B, rad_thraten(), thten1);   // (~1056)
     // PBL tendency of theta (~1087), before the doturb block
     pbl::add_theta_tendency(B, m_pt, thten1);
     // doturb block (~1119): only with dohturb (horizturb=1); turbw also
@@ -698,6 +803,8 @@ void Dyncore::solve1() {
                             qten, m_s.kmh, m_s.kmv, m_s.khh, m_s.khv, ts, m_tw, &m_sfc);
     // PBL tendencies of u, v (~1269) and the moisture (~1329)
     pbl::add_tendencies(cfg.pbl_opt, B, m_pt, uten1, vten1, qten);
+  } else if (cfg.radopt != 0) {
+    add_thraten(B, rad_thraten(), thten1);   // (~1056)
   }
 
   //  contribution to pressure tendency from potential temperature

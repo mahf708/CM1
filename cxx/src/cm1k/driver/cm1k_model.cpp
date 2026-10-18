@@ -5,6 +5,7 @@
 #include "share/cm1k_dump_io.hpp"
 
 #include "physics/kessler/cm1k_kessler.hpp"
+#include "physics/rrtmg/cm1k_radiation.hpp"
 
 #include <stdexcept>
 
@@ -48,6 +49,8 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   }
   // sfcmodel=2,3: the WRF surface-layer state (tables, tmn, emiss, thc)
   if (m_sfc_opt.wrf()) m_wsfc.setup(m_sfc_opt, sfclay::Options::from_namelist(nl), b, m_sfc);
+  // sfcmodel=4: the GFDL surface-layer state (tables, SLAB's tmn, emiss, thc)
+  if (m_sfc_opt.gfdl()) m_gsfc.setup(m_sfc_opt, b, m_sfc);
   // PBL tendency arrays: allocated from the dynamical core's configuration
   // (DynConfig::pbl, param.F use_pbl); zero at start as in cm1.F
   {
@@ -55,10 +58,23 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     m_use_pbl = cfg.pbl;
     m_ipbl = cfg.pbl_opt.ipbl;
     if (m_use_pbl) m_pbl.allocate(b);
+    if (m_use_pbl && m_ipbl == 3) m_gfs.allocate(b);   // GFS-EDMF: xkzh, xkzm
     // MYNN: carried arrays (zero at start, cm1.F), aliasing the surface and
     // PBL arrays CM1 shares with it
     m_use_mynn = cfg.mynn && m_sfc_opt.mynn();
-    if (m_use_mynn) m_mynn.allocate(b, m_sfc, m_pbl);
+    if (m_use_mynn) m_mynn.allocate(b, m_sfc, m_pbl, m_sfc_opt);
+    // MYJ: carried arrays (cm1.F initial values: tke_myj = 0.01, the rest 0)
+    m_use_myj = cfg.myj && m_sfc_opt.myj();
+    if (m_use_myj) m_myj.allocate(b, m_sfc_opt);
+  }
+  // radiation (radopt=2): gsw, glw, emiss are SLAB's (sfcmodel=2,3)
+  {
+    const auto ro = rrtmg::RadOptions::from_namelist(nl);
+    if (ro.active()) {
+      ro.check();
+      m_rad = std::make_unique<rrtmg::Radiation>();
+      m_rad->setup(ro, m_c, b, m_sfc.tsk, m_sfc.xland, m_wsfc.gsw, m_wsfc.glw, m_wsfc.emiss);
+    }
   }
   build_registry();
 }
@@ -94,12 +110,28 @@ void Model::build_registry() {
     if (m_sfc_opt.has_layer()) m_reg.add("hpbl", m_sfc.hpbl);
     for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
   }
+  if (m_sfc_opt.gfdl())
+    for (auto& [name, a] : m_gsfc.dumped()) m_reg.add(name, a);
+  if (m_use_pbl && m_ipbl == 3) {
+    m_reg.add("hpbl", m_sfc.hpbl);
+    for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
+    for (auto& [name, a] : m_gfs.dumped()) m_reg.add(name, a);
+  }
   if (m_use_mynn) {
     for (auto& [name, a] : m_mynn.dumped_sfc()) m_reg.add(name, a);
     m_reg.add("hpbl", m_sfc.hpbl);
     for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
     m_reg.add("qipten", m_pbl.qipten);
     for (auto& [name, a] : m_mynn.dumped_pbl()) m_reg.add(name, a);
+  }
+  if (m_rad)
+    for (auto& [name, a] : m_rad->dumped()) m_reg.add(name, a);
+  if (m_use_myj) {
+    for (auto& [name, a] : m_myj.dumped_sfc()) m_reg.add(name, a);
+    m_reg.add("hpbl", m_sfc.hpbl);
+    for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
+    m_reg.add("qipten", m_pbl.qipten);
+    for (auto& [name, a] : m_myj.dumped_pbl()) m_reg.add(name, a);
   }
 }
 
@@ -116,6 +148,22 @@ std::vector<std::string> Model::pbl_field_names() const {
     for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
     n.push_back("qipten");
     for (auto& [name, a] : m_mynn.dumped_pbl()) n.push_back(name);
+  }
+  if (m_use_myj) {
+    // src/cm1dump_state.inc: sfcmodel=7, then ipbl=6 blocks
+    for (auto& [name, a] : m_myj.dumped_sfc()) n.push_back(name);
+    n.push_back("hpbl");
+    for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
+    n.push_back("qipten");
+    for (auto& [name, a] : m_myj.dumped_pbl()) n.push_back(name);
+  }
+  // src/cm1dump_state.inc: sfcmodel=4, then ipbl=3 blocks
+  if (m_sfc_opt.gfdl())
+    for (auto& [name, a] : m_gsfc.dumped()) n.push_back(name);
+  if (m_use_pbl && m_ipbl == 3) {
+    n.push_back("hpbl");
+    for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
+    for (auto& [name, a] : m_gfs.dumped()) n.push_back(name);
   }
   return n;
 }
@@ -175,6 +223,7 @@ void Model::init_from_dump(const std::string& step_dir) {
   set_extrap_coeffs(m_grid);
   m_nstep = r.nstep();
   m_mtime = r.mtime();
+  if (m_rad) m_rad->set_clock(m_nstep, m_dt);   // radtim of the Fortran at this dump
   m_dyn.reset();           // the dynamical core is set up again from these arrays
   m_dyn_started = false;
 }
@@ -196,6 +245,10 @@ void Model::init() {
   init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
   if (m_sfc_opt.has_layer()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
   if (m_sfc_opt.wrf()) sfclay::init_soil(m_grid.b, m_wsfc);                 // tslb
+  if (m_rad) m_rad->init_state();                                           // o30, radtim
+  if (m_use_mynn) m_mynn.init_soil(m_grid.b, m_sfc);                       // tslb (sfcmodel=6)
+  if (m_use_myj) myj::init(m_grid.b, m_sfc, m_myj);   // MYJSFCINIT ust, z0base, tslb
+  if (m_sfc_opt.gfdl()) m_gsfc.init_soil(m_grid.b);                          // tslb (sfcmodel=4)
   m_nstep = 0;
   m_mtime = 0;
   m_dyn.reset();            // the dynamical core is set up again from the new grid
@@ -210,6 +263,10 @@ Dyncore& Model::dyncore() {
     if (m_sfc_opt.wrf()) m_dyn->set_wrf_surface(m_wsfc);
     if (m_use_pbl) m_dyn->set_pbl(m_pbl);
     if (m_use_mynn) m_dyn->set_mynn(m_mynn);
+    if (m_rad) m_dyn->set_radiation(m_rad->thraten);
+    if (m_use_myj) m_dyn->set_myj(m_myj);
+    if (m_sfc_opt.gfdl()) m_dyn->set_gfdl_surface(m_gsfc);
+    if (m_use_pbl && m_ipbl == 3) m_dyn->set_gfs(m_gfs);
   }
   return *m_dyn;
 }
@@ -233,6 +290,10 @@ void Model::step() {
     dyn.start_from_state();
     m_dyn_started = true;
   }
+  // radiation (radopt=2): cm1.F calls radiation_driver at the end of a pass
+  // when due (always in the startup pass), after the dump and before
+  // sfc_and_turb; with the same argument as for sfc_and_turb this is here
+  if (m_rad) m_rad->pass(m_mtime, m_nstep, m_dt, m_grid, m_base, m_state);
   // nstep: cm1.F's update_sfc is .false. in the startup pass (nstep = 0)
   dyn.sfc_and_turb(m_mtime, m_nstep);            // no-op unless sgsmodel=1 or a PBL scheme
   dyn.diff2_stress();                            // no-op unless idiff=1, difforder=2

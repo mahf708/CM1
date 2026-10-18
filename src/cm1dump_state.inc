@@ -124,6 +124,8 @@
           call dump3('rmol',rmol,ibl,iel,jbl,jel,1,1)
           call dump3('zol',zol,ibl,iel,jbl,jel,1,1)
           call dump3('ustm',ustm,ibl,iel,jbl,jel,1,1)
+          ! and the SLAB soil temperatures (SLAB runs after it)
+          call dump3('tslb',tslb,ibl,iel,jbl,jel,1,num_soil_layers)
         endif
         if( use_pbl .and. (ipbl.eq.4 .or. ipbl.eq.5) )then
           ! MYNN PBL (ipbl=4: level 2.5, ipbl=5: level 3): hpbl, the PBL
@@ -151,5 +153,108 @@
           call dump3('qi_bl',qi_bl,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
           call dump3('cldfra_bl',cldfra_bl,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
           call dump3('dqke',dqke,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
+        endif
+        if( radopt.eq.2 )then
+          ! RRTMG radiation: the tendencies and fluxes of the last
+          ! radiation_driver call (it runs after the dump of its pass), the
+          ! ozone it writes back, and the surface arrays it reads/writes
+          call dump3('swten',swten,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('lwten',lwten,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('swtenc',swtenc,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('lwtenc',lwtenc,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('thraten',thraten,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('cldfra',cldfra,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('o30',o30,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('lwupt',lwupt,ibr,ier,jbr,jer,1,1)
+          call dump3('lwuptc',lwuptc,ibr,ier,jbr,jer,1,1)
+          call dump3('lwdnt',lwdnt,ibr,ier,jbr,jer,1,1)
+          call dump3('lwdntc',lwdntc,ibr,ier,jbr,jer,1,1)
+          call dump3('lwupb',lwupb,ibr,ier,jbr,jer,1,1)
+          call dump3('lwupbc',lwupbc,ibr,ier,jbr,jer,1,1)
+          call dump3('lwdnb',lwdnb,ibr,ier,jbr,jer,1,1)
+          call dump3('lwdnbc',lwdnbc,ibr,ier,jbr,jer,1,1)
+          call dump3('swupt',swupt,ibr,ier,jbr,jer,1,1)
+          call dump3('swuptc',swuptc,ibr,ier,jbr,jer,1,1)
+          call dump3('swdnt',swdnt,ibr,ier,jbr,jer,1,1)
+          call dump3('swdntc',swdntc,ibr,ier,jbr,jer,1,1)
+          call dump3('swupb',swupb,ibr,ier,jbr,jer,1,1)
+          call dump3('swupbc',swupbc,ibr,ier,jbr,jer,1,1)
+          call dump3('swdnb',swdnb,ibr,ier,jbr,jer,1,1)
+          call dump3('swdnbc',swdnbc,ibr,ier,jbr,jer,1,1)
+          call dump3('lwcf',lwcf,ibr,ier,jbr,jer,1,1)
+          call dump3('swcf',swcf,ibr,ier,jbr,jer,1,1)
+          call dump3('coszr',coszr,ibr,ier,jbr,jer,1,1)
+          call dump3('coszen',coszen,ibr,ier,jbr,jer,1,1)
+          call dump3('hrang',hrang,ibr,ier,jbr,jer,1,1)
+          call dump3('swddir',swddir,ibr,ier,jbr,jer,1,1)
+          call dump3('swddni',swddni,ibr,ier,jbr,jer,1,1)
+          call dump3('swddif',swddif,ibr,ier,jbr,jer,1,1)
+          call dump3('olr',olr,1,ni,1,nj,1,1)
+          call dump3('albd',albd,ibl,iel,jbl,jel,1,1)
+          call dump3('emiss',emiss,ibl,iel,jbl,jel,1,1)
+          call dump3('gsw',gsw,ibl,iel,jbl,jel,1,1)
+          call dump3('glw',glw,ibl,iel,jbl,jel,1,1)
+        endif
+        if( sfcmodel.eq.7 )then
+          ! MYJ surface layer: the stability arrays, the SLAB soil
+          ! temperatures, the roughness/viscous-sublayer state it carries
+          ! across steps (thz0, qz0, uz0, vz0, akhs, akms, zntmyj; z0base is
+          ! constant) and its 10-m diagnostics
+          call dump3('mol',mol,ibl,iel,jbl,jel,1,1)
+          call dump3('rmol',rmol,ibl,iel,jbl,jel,1,1)
+          call dump3('tslb',tslb,ibl,iel,jbl,jel,1,num_soil_layers)
+          call dump3('thz0',thz0,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('qz0',qz0,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('uz0',uz0,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('vz0',vz0,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('akhs',akhs,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('akms',akms,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('zntmyj',zntmyj,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('z0base',z0base,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('th10',th10,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('q10',q10,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('u10e',u10e,ibmyj,iemyj,jbmyj,jemyj,1,1)
+          call dump3('v10e',v10e,ibmyj,iemyj,jbmyj,jemyj,1,1)
+        endif
+        if( use_pbl .and. ipbl.eq.6 )then
+          ! MYJ PBL: hpbl, the PBL tendencies and diffusivities that
+          ! sfc_and_turb computed from the previous state (as for kmh..khv),
+          ! the TKE and mixing length it carries, and the mixed-layer depth
+          call dump3('hpbl',hpbl,ibl,iel,jbl,jel,1,1)
+          call dump3('thpten',thpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qvpten',qvpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qcpten',qcpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qipten',qipten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('upten',upten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('vpten',vpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('xkzh',xkzh,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('xkzm',xkzm,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('tke_myj',tke_myj,ibmyj,iemyj,jbmyj,jemyj,kbmyj,kemyj)
+          call dump3('el_myj',el_myj,ibmyj,iemyj,jbmyj,jemyj,kbmyj,kemyj)
+          call dump3('mixht',mixht,ibmyj,iemyj,jbmyj,jemyj,1,1)
+        endif
+        if( sfcmodel.eq.4 )then
+          ! GFDL surface layer: the momentum roughness length it carries
+          ! across steps (znt is its thermal one) and its stability outputs
+          call dump3('mznt',mznt,ibl,iel,jbl,jel,1,1)
+          call dump3('mol',mol,ibl,iel,jbl,jel,1,1)
+          call dump3('rmol',rmol,ibl,iel,jbl,jel,1,1)
+          call dump3('zol',zol,ibl,iel,jbl,jel,1,1)
+          call dump3('br',br,ibl,iel,jbl,jel,1,1)
+          call dump3('gz1oz0',gz1oz0,ibl,iel,jbl,jel,1,1)
+          call dump3('psim',psim,ibl,iel,jbl,jel,1,1)
+          call dump3('psih',psih,ibl,iel,jbl,jel,1,1)
+        endif
+        if( use_pbl .and. ipbl.eq.3 )then
+          ! GFS-EDMF PBL: hpbl, the PBL tendencies and diffusivities that
+          ! sfc_and_turb computed from the previous state (as for kmh..khv)
+          call dump3('hpbl',hpbl,ibl,iel,jbl,jel,1,1)
+          call dump3('thpten',thpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qvpten',qvpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qcpten',qcpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('upten',upten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('vpten',vpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('xkzh',xkzh,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('xkzm',xkzm,ibb,ieb,jbb,jeb,kbb,keb)
         endif
         call dump_end()

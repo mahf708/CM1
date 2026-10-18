@@ -37,7 +37,7 @@ Options: `CM1K_ENABLE_FORTRAN_BRIDGE` (default ON, needs gfortran),
 |---|---|
 | `src/cm1k/share` | types, `FArray` (Fortran-indexed arrays), constants, namelist, grid, state, dump I/O |
 | `src/cm1k/dynamics` | dynamical core: advection, acoustic solver, boundary conditions, solve1/2/3 |
-| `src/cm1k/physics/<scheme>` | physics (e.g. `kessler`) |
+| `src/cm1k/physics/<scheme>` | physics (e.g. `kessler`; `rrtmg`: RRTMG radiation, which reads `RRTMG_LW_DATA` / `RRTMG_SW_DATA` from `$CM1K_RRTMG_DATA_DIR`, the working directory or the source tree's `run/`) |
 | `src/cm1k/init` | native initialization (grid, base state, initial perturbations) |
 | `src/cm1k/driver` | `Model` (the public API) and the `cm1k` executable |
 | `python/` | pybind11 module `cm1k` |
@@ -64,6 +64,10 @@ CMakeLists.txt.
   `x*x`, `x**0.5` is `std::pow(x,0.5)` unless the Fortran says `sqrt`; real
   literals are doubles; FMA contraction is off (`-ffp-contract=off`, also in
   the Fortran reference build). Do not "simplify" expressions.
+- **Same math library paths.** glibc chooses libm/libmvec code paths (FMA,
+  AVX2, ...) from the CPU at run time, and those can differ in the last bit.
+  When references and tests run on different machines, run both with
+  `GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX512F,-AVX2,-FMA,-FMA4` (CI does).
 - **Options:** read namelist options with `Namelist::geti/getr/getb`, using
   param.F's default. Unsupported option values must throw (`fail loudly`),
   never silently run something different.
@@ -101,8 +105,9 @@ boundaries (`ssopenbc*`), Rayleigh damping (`irdamp`/`hrdamp = 1`),
 Coriolis and `lspgrad = 1`, the cm1r19 `termod1` pressure-gradient term,
 Kessler, and the LES TKE scheme (`sgsmodel = 1`, `doimpl = 0/1`, bbc = 1).
 Unported combinations throw: `difforder = 2` (diff2.F stops), `imove = 1`,
-`itern = 0` or 4, the surface layer (`sfcmodel >= 1`), PBL schemes
-(`cm1setup = 2`), and everything param.F already refuses with terrain.
+`itern = 0` or 4, the surface layer (any `sfcmodel >= 1`, incl. MYNN, MYJ,
+GFDL), PBL schemes (`cm1setup = 2`, every `ipbl`), radiation (`radopt = 2`),
+and everything param.F already refuses with terrain.
 Tests: cases `nh_mountain_waves`, `nh_mountain_waves_long`,
 `kessler_terrain_tke` and `kessler_terrain_tke_openbc` (init, step from
 dump, step from `Model::init`), and the `[terrain]` component tests
@@ -115,7 +120,8 @@ dump, step from `Model::init`), and the `[terrain]` component tests
 `src/cm1dump.F` (Fortran, enabled only when `CM1_DUMP_DIR` is set) writes
 `$CM1_DUMP_DIR/step_NNNNNN/{index.txt,<name>.bin}` at step 0 and every
 `CM1_DUMP_EVERY` steps: grid metrics, base state, `ua va wa ppi tha rho prs`,
-`qa_<qname>`, `tkea kmh kmv khh khv rain`. Raw float64 in Fortran order,
+`qa_<qname>`, `tkea kmh kmv khh khv rain` (plus the surface, PBL and, with
+`radopt = 2`, radiation arrays: see `src/cm1dump_state.inc`). Raw float64 in Fortran order,
 halos included; `index.txt` lists `name kind ndims lb ub ...`.
 `Model::write_dump` writes the same format, so the Python tools and tests
 can compare either side.
