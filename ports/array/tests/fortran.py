@@ -13,6 +13,7 @@ Driver convention (see fortran_harness/README in ports/array/README.md):
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -41,23 +42,78 @@ def objdir(prec: str) -> Path:
     return d / "src"
 
 
-def build_driver(name: str, prec: str = "r8") -> Path:
+def public_module(text: str) -> str:
+    """Source edit for ``build_driver(..., public=...)``: make every entity of
+    a Fortran module public (drop the default ``private`` statement, the
+    ``PRIVATE ::`` lists and the ``, PRIVATE`` attributes), so that a
+    harness driver can call a module's private routines and read its
+    constants.  The generated code of the routines is unchanged."""
+    out = []
+    for line in text.splitlines():
+        s = line.strip().lower()
+        if s == "private" or (s.startswith("private") and "::" in s):
+            continue
+        out.append(re.sub(r",\s*private\b", "", line, flags=re.IGNORECASE))
+    return "\n".join(out) + "\n"
+
+
+def variant_obj(stem: str, prec: str, edit=public_module) -> tuple[Path, Path]:
+    """Compile ``edit`` applied to CM1's preprocessed ``<stem>.f90`` with the
+    harness object flags (build_objs.sh), in its own directory so that its
+    ``.mod`` files do not replace CM1's.  Returns (object file, module dir).
+    The object has the same symbols as ``<stem>.o`` (plus the ones made
+    public) and replaces it when linking a driver."""
+    obj = objdir(prec)
+    vdir = CACHE / f"variant_{stem}_{prec}"
+    o = vdir / f"{stem}.o"
+    srcf = obj / f"{stem}.f90"
+    if o.exists() and o.stat().st_mtime > srcf.stat().st_mtime:
+        return o, vdir
+    vdir.mkdir(parents=True, exist_ok=True)
+    (vdir / f"{stem}.f90").write_text(edit(srcf.read_text()))
+    extra = ["-fdefault-real-8", "-fdefault-double-8"] if prec == "r8" else []
+    cmd = [
+        "gfortran",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-O2",
+        "-fallow-argument-mismatch",
+        *extra,
+        f"-I{obj}",
+        "-c",
+        f"{stem}.f90",
+    ]
+    subprocess.run(cmd, check=True, cwd=vdir)
+    return o, vdir
+
+
+def build_driver(name: str, prec: str = "r8", public: tuple = ()) -> Path:
+    """Compile and link ``drv_<name>.F90`` against CM1's objects.  ``public``
+    names CM1 source stems (e.g. ``("morrison",)``) whose module is linked
+    in its ``public_module`` variant (see ``variant_obj``)."""
     obj = objdir(prec)
     drv = HARNESS / f"drv_{name}.F90"
     exe = CACHE / f"drv_{name}_{prec}.exe"
     deps = [drv, HARNESS / "harness_io.F90"]
+    variants = {stem: variant_obj(stem, prec) for stem in public}
+    deps += [o for o, _ in variants.values()]
     if exe.exists() and all(exe.stat().st_mtime > p.stat().st_mtime for p in deps):
         return exe
     bdir = CACHE / f"build_{name}_{prec}"
     bdir.mkdir(parents=True, exist_ok=True)
     extra = ["-fdefault-real-8", "-fdefault-double-8"] if prec == "r8" else []
-    objs = [str(p) for p in sorted(obj.glob("*.o")) if p.name != "cm1.o"]
+    objs = [
+        str(variants[p.stem][0]) if p.stem in variants else str(p)
+        for p in sorted(obj.glob("*.o"))
+        if p.name != "cm1.o"
+    ]
     cmd = [
         "gfortran",
         "-O1",
         "-ffree-line-length-none",
         "-fallow-argument-mismatch",
         *extra,
+        *[f"-I{d}" for _, d in variants.values()],
         f"-I{obj}",
         f"-J{bdir}",
         "-cpp",
@@ -75,9 +131,12 @@ def build_driver(name: str, prec: str = "r8") -> Path:
     return exe
 
 
-def run_driver(name: str, inputs: dict, outputs: dict, prec: str = "r8") -> dict:
-    """inputs: name -> numpy array (Python [k,j,i] order); outputs: name -> shape."""
-    exe = build_driver(name, prec)
+def run_driver(
+    name: str, inputs: dict, outputs: dict, prec: str = "r8", public: tuple = ()
+) -> dict:
+    """inputs: name -> numpy array (Python [k,j,i] order); outputs: name -> shape.
+    ``public``: see ``build_driver``."""
+    exe = build_driver(name, prec, public)
     dt = DTYPES[prec]
     with tempfile.TemporaryDirectory() as wd:
         for k, v in inputs.items():
