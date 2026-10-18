@@ -179,6 +179,7 @@ function cm1f_rrtmg_lw_table(cname, out, n) result(cnt) bind(C, name="cm1f_rrtmg
   use rrlw_kg16, only: kg16_absb => absb
   use rrlw_kg16, only: kg16_selfref => selfref
   use rrlw_kg16, only: kg16_forref => forref
+  use module_ra_rrtmg_lw, only: rad_retab => retab
   implicit none
   character(kind=c_char), intent(in) :: cname(*)
   integer(c_int), value :: n
@@ -193,6 +194,7 @@ function cm1f_rrtmg_lw_table(cname, out, n) result(cnt) bind(C, name="cm1f_rrtmg
   enddo
   cnt = -1
   select case (trim(name))
+  case ('rad.retab'); call put_r(rad_retab)
   case ('absice0'); call put_r(t_absice0)
   case ('absice1'); call put_r(t_absice1)
   case ('absice2'); call put_r(t_absice2)

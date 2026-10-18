@@ -75,6 +75,9 @@ struct LwTables {
   // rtrnmc module data
   Real wtdiff, rec_6;
   FA<1> a0, a1, a2;
+  // RRTMG_LWRAD / O3DATA data statements (module_ra_rrtmg_lw retab, PPROF,
+  // TPROF; O3DATA's O3SUM, PPSUM, O3WIN, PPWIN), registered as rad.<name>
+  FA<1> retab, PPROF, TPROF, O3SUM, PPSUM, O3WIN, PPWIN;
   // the combined k-distributions
   LwKg01 kg01; LwKg02 kg02; LwKg03 kg03; LwKg04 kg04; LwKg05 kg05; LwKg06 kg06; LwKg07 kg07; LwKg08 kg08;
   LwKg09 kg09; LwKg10 kg10; LwKg11 kg11; LwKg12 kg12; LwKg13 kg13; LwKg14 kg14; LwKg15 kg15; LwKg16 kg16;
