@@ -7,7 +7,7 @@ default 1) and any extra input files the case needs (copied next to the
 namelist when the case runs).
 
 All cases are serial, double precision (`gfortran -fdefault-real-8
--ffp-contract=off`), 3D, no radiation, no surface fluxes, no explicit
+-ffp-contract=off`), 3D, no radiation (except `rrtmg_*`), no surface fluxes, no explicit
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 free-slip top and bottom, a warm bubble (`iinit = 1`) with no random
@@ -30,6 +30,7 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `pbl2_sfclay_land` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_kessler` but with the MM5 surface layer (`sfcmodel = 2`, `isfcflx = 1` forced by param.F) over land (`lu0 = 3`, `xland0 = 1`, `tmn0 = 297.28 K`) and no horizontal turbulence: the SLAB soil model (5 layers) updates `tsk`, `tslb`, `hfx`, `qfx` every step after the first; also dumps `mol` and `tslb` |
 | `ysu_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | YSU PBL (`cm1setup = 2`, `ipbl = 1`, `l_inf = 0`) with the revised MM5 surface layer (`sfcmodel = 3`) and SLAB over land (`lu0 = 3`, `tsk0 = 305 K`), `horizturb = 0`, YSU dissipative heating (`idiss = 1`), dry, Weisman-Klemp sounding and winds; dumps the surface arrays, `mol`, `tslb`, `hpbl` and the YSU tendencies |
 | `ysu_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | YSU with the MM5 surface layer (`sfcmodel = 2`) over water (`lu0 = 16`), horizontal Smagorinsky turbulence (`horizturb = 1`), `idiss = 1`, Kessler microphysics (YSU's qc tendency) |
+| `rrtmg_ysu_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `ysu_kessler` over land (`lu0 = 3`, `xland0 = 1`: SLAB updates `tsk`, `tslb`) with RRTMG radiation (`radopt = 2`, LW and SW every `dtrad = 36 s` = 6 steps, so dumps fall between calls; 21:38 UTC on 15 May 2009 at 36.68 N, 98.35 W: daytime) on the Kessler clouds (`cal_cldfra1`); YSU gets `rthraten`, SLAB `gsw`/`glw`. Also dumps the radiation arrays (`swten`, `lwten`, `thraten`, `cldfra`, `o30`, the LW/SW fluxes, `coszen`, `gsw`, `glw`, `albd`, `emiss`, ...). `make_refs.sh` copies `run/RRTMG_LW_DATA` and `run/RRTMG_SW_DATA` into the run directory of a `radopt = 2` case |
 | `mynn25_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_kessler` with the MYNN-EDMF level-2.5 PBL (`ipbl = 4`: prognostic `qke`, advected in each RK stage, mass flux, subgrid clouds, its own dissipative heating, so `param.F` resets `idiss` to 0) and the MYNN surface layer (`sfcmodel = 6`) over water (`lu0 = 16`, so SLAB only diagnoses `qsfc`); also dumps the MYNN carried arrays (`qke`, `qke3d`, `tsq`, `el_pbl`, `cldfra_bl`, ...), `mol`, `rmol`, `zol`, `ustm`, `qcpten`, `qipten`, `xkzh`, `xkzm` |
 | `mynn3_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_dry` with the MYNN-EDMF level-3 PBL (`ipbl = 5`: `tsq`, `qsq`, `cov` prognostic) and the MYNN surface layer (`sfcmodel = 6`, `isftcflx = 1`) over water (`xland0 = 2`, `lu0 = 16`), dry, no horizontal turbulence; dumps as `mynn25_kessler` |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;

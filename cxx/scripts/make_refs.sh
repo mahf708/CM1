@@ -113,6 +113,11 @@ for c in "${cases[@]}"; do
   for f in "$src"/*; do
     case "$(basename "$f")" in namelist.input|every|README*) ;; *) cp -r "$f" "$run/" ;; esac
   done
+  # RRTMG radiation (radopt = 2) reads its k-distribution data from the run
+  # directory
+  if grep -Eiq '^[[:space:]]*radopt[[:space:]]*=[[:space:]]*2[[:space:]]*(,|$)' "$src/namelist.input"; then
+    cp "$root/run/RRTMG_LW_DATA" "$root/run/RRTMG_SW_DATA" "$run/"
+  fi
   every=1
   [ -f "$src/every" ] && every=$(tr -d '[:space:]' <"$src/every")
   echo "== $c (dump every $every steps, OMP_NUM_THREADS=$threads)"
@@ -125,7 +130,7 @@ for c in "${cases[@]}"; do
     die "case $c: cm1.exe did not terminate normally; log: $run/cm1.log"
   fi
   # model output files are not part of the references
-  rm -f "$run"/cm1out_* "$run"/*.dat "$run"/*.ctl "$run"/*.nc
+  rm -f "$run"/cm1out_* "$run"/*.dat "$run"/*.ctl "$run"/*.nc "$run"/RRTMG_LW_DATA "$run"/RRTMG_SW_DATA
   shopt -s nullglob
   steps=("$run"/step_*)
   shopt -u nullglob
