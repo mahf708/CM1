@@ -10,6 +10,16 @@
 
 namespace cm1k {
 
+namespace {
+// param.F extrapolation coefficients, kept on the Grid for the terrain
+// branches of the subgrid turbulence
+void set_extrap_coeffs(Grid& g) {
+  const auto ex = init::extrap_coeffs(g.sigma.to_host(), g.sigmaf.to_host(), g.b.nk);
+  g.cgs1 = ex.cgs1; g.cgs2 = ex.cgs2; g.cgs3 = ex.cgs3;
+  g.cgt1 = ex.cgt1; g.cgt2 = ex.cgt2; g.cgt3 = ex.cgt3;
+}
+} // namespace
+
 Model::Model(const Namelist& nl) : m_nl(nl) {
   m_c = Constants::make(nl.geti("testcase", 0));
   const auto b = Bounds::from_namelist(nl);
@@ -162,6 +172,7 @@ void Model::init_from_dump(const std::string& step_dir) {
     m_grid.zt = sigmaf(m_grid.b.nk + 1);
     m_grid.rzt = 1.0 / sigmaf(m_grid.b.nk + 1);
   }
+  set_extrap_coeffs(m_grid);
   m_nstep = r.nstep();
   m_mtime = r.mtime();
   m_dyn.reset();           // the dynamical core is set up again from these arrays
@@ -180,6 +191,7 @@ void Model::init() {
   // param.F (grid), base.F (base state), init3d.F + getset (initial state);
   // see init/cm1k_init.hpp for the supported options.
   auto info = init::init_grid(m_nl, m_grid);
+  set_extrap_coeffs(m_grid);
   init::init_base(m_nl, m_c, m_grid, info, m_base);
   init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
   if (m_sfc_opt.has_layer()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F

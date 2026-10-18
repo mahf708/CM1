@@ -397,11 +397,91 @@ void calcnm(const Options& o, const Constants& c, const Bounds& b, Real rdz,
   });
 }
 
+// turb.F calcdef, "Cartesian with terrain": strain rates (times rho);
+// dum1/dum2 are scratch (u, v at w points; then w at scalar points)
+void calcdef_terrain(const Grid& g, const FArray3& rho, const FArray3& rf,
+                     const FArray3& ua, const FArray3& va, const FArray3& wa,
+                     const FArray3& s11, const FArray3& s12, const FArray3& s13,
+                     const FArray3& s22, const FArray3& s23, const FArray3& s33,
+                     const FArray3& dum1, const FArray3& dum2) {
+  const auto& b = g.b;
+  const int ni = b.ni, nj = b.nj, nk = b.nk;
+  const Real rdx = g.rdx, rdy = g.rdy, zt = g.zt;
+  const Real cgs1 = g.cgs1, cgs2 = g.cgs2, cgs3 = g.cgs3, cgt1 = g.cgt1, cgt2 = g.cgt2, cgt3 = g.cgt3;
+  const auto uh = g.uh; const auto uf = g.uf; const auto vh = g.vh; const auto vf = g.vf;
+  const auto rds = g.rds; const auto sigma = g.sigma; const auto rdsf = g.rdsf; const auto sigmaf = g.sigmaf;
+  const auto gz = g.gz; const auto rgz = g.rgz; const auto rgzu = g.rgzu; const auto rgzv = g.rgzv;
+  const auto gx = g.gx; const auto gy = g.gy;
+
+  // dum1 stores u at w-pts, dum2 stores v at w-pts
+  Kokkos::parallel_for("calcdef_t_uvw", box3(0, ni + 2, 0, nj + 2, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+    if (k == 1) {
+      dum1(i, j, 1) = cgs1 * ua(i, j, 1) + cgs2 * ua(i, j, 2) + cgs3 * ua(i, j, 3);
+      dum2(i, j, 1) = cgs1 * va(i, j, 1) + cgs2 * va(i, j, 2) + cgs3 * va(i, j, 3);
+    } else if (k == nk + 1) {
+      dum1(i, j, nk + 1) = cgt1 * ua(i, j, nk) + cgt2 * ua(i, j, nk - 1) + cgt3 * ua(i, j, nk - 2);
+      dum2(i, j, nk + 1) = cgt1 * va(i, j, nk) + cgt2 * va(i, j, nk - 1) + cgt3 * va(i, j, nk - 2);
+    } else {
+      const Real r2 = (sigmaf(k) - sigma(k - 1)) * rds(k);
+      const Real r1 = 1.0 - r2;
+      dum1(i, j, k) = r1 * ua(i, j, k - 1) + r2 * ua(i, j, k);
+      dum2(i, j, k) = r1 * va(i, j, k - 1) + r2 * va(i, j, k);
+    }
+  });
+  Kokkos::parallel_for("calcdef_t_s", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    Real t = gz(i, j, 1) * (ua(i + 1, j, k) * rgzu(i + 1, j, 1) - ua(i, j, k) * rgzu(i, j, 1)) * rdx * uh(i)
+             + (gx(i, j, k + 1) * (dum1(i, j, k + 1) + dum1(i + 1, j, k + 1))
+                - gx(i, j, k) * (dum1(i, j, k) + dum1(i + 1, j, k))) * 0.5 * rdsf(k);
+    s11(i, j, k) = t * rho(i, j, k);
+    t = gz(i, j, 1) * (va(i, j + 1, k) * rgzv(i, j + 1, 1) - va(i, j, k) * rgzv(i, j, 1)) * rdy * vh(j)
+        + (gy(i, j, k + 1) * (dum2(i, j, k + 1) + dum2(i, j + 1, k + 1))
+           - gy(i, j, k) * (dum2(i, j, k) + dum2(i, j + 1, k))) * 0.5 * rdsf(k);
+    s22(i, j, k) = t * rho(i, j, k);
+    t = (wa(i, j, k + 1) - wa(i, j, k)) * rdsf(k) * gz(i, j, 1);
+    s33(i, j, k) = t * rho(i, j, k);
+  });
+  Kokkos::parallel_for("calcdef_t_s12", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    const Real r1 = 0.25 * ((rho(i - 1, j - 1, k) * gz(i - 1, j - 1, 1) + rho(i, j, k) * gz(i, j, 1))
+                           + (rho(i - 1, j, k) * gz(i - 1, j, 1) + rho(i, j - 1, k) * gz(i, j - 1, 1)));
+    s12(i, j, k) = 0.5 * ((r1 * (ua(i, j, k) * rgzu(i, j, 1) - ua(i, j - 1, k) * rgzu(i, j - 1, 1)) * rdy * vf(j)
+                           + 0.5 * ((zt - sigmaf(k + 1)) * (dum1(i, j - 1, k + 1) + dum1(i, j, k + 1))
+                                    - (zt - sigmaf(k)) * (dum1(i, j - 1, k) + dum1(i, j, k)))
+                                 * rdsf(k) * r1 * (rgzu(i, j, 1) - rgzu(i, j - 1, 1)) * rdy * vf(j))
+                          + (r1 * (va(i, j, k) * rgzv(i, j, 1) - va(i - 1, j, k) * rgzv(i - 1, j, 1)) * rdx * uf(i)
+                             + 0.5 * ((zt - sigmaf(k + 1)) * (dum2(i - 1, j, k + 1) + dum2(i, j, k + 1))
+                                      - (zt - sigmaf(k)) * (dum2(i - 1, j, k) + dum2(i, j, k)))
+                                   * rdsf(k) * r1 * (rgzv(i, j, 1) - rgzv(i - 1, j, 1)) * rdx * uf(i)));
+  });
+  // now, dum1 stores w at scalar-pts
+  Kokkos::parallel_for("calcdef_t_ws", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+    dum1(i, j, k) = 0.5 * (wa(i, j, k) + wa(i, j, k + 1));
+  });
+  if (nk >= 2) {
+    Kokkos::parallel_for("calcdef_t_s13", box3(1, ni + 1, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      const Real t = 0.5 * ((ua(i, j, k) - ua(i, j, k - 1)) * rds(k)
+                            + (wa(i, j, k) * rgz(i, j, 1) - wa(i - 1, j, k) * rgz(i - 1, j, 1)) * rdx * uf(i)
+                            + 0.5 * rds(k) * ((zt - sigma(k)) * (dum1(i, j, k) + dum1(i - 1, j, k))
+                                              - (zt - sigma(k - 1)) * (dum1(i, j, k - 1) + dum1(i - 1, j, k - 1)))
+                                  * (rgz(i, j, 1) - rgz(i - 1, j, 1)) * rdx * uf(i));
+      s13(i, j, k) = t * 0.5 * (gz(i - 1, j, 1) * rf(i - 1, j, k) + gz(i, j, 1) * rf(i, j, k));
+    });
+    Kokkos::parallel_for("calcdef_t_s23", box3(1, ni, 1, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+      const Real t = 0.5 * ((va(i, j, k) - va(i, j, k - 1)) * rds(k)
+                            + (wa(i, j, k) * rgz(i, j, 1) - wa(i, j - 1, k) * rgz(i, j - 1, 1)) * rdy * vf(j)
+                            + 0.5 * rds(k) * ((zt - sigma(k)) * (dum1(i, j, k) + dum1(i, j - 1, k))
+                                              - (zt - sigma(k - 1)) * (dum1(i, j, k - 1) + dum1(i, j - 1, k - 1)))
+                                  * (rgz(i, j, 1) - rgz(i, j - 1, 1)) * rdy * vf(j));
+      s23(i, j, k) = t * 0.5 * (gz(i, j - 1, 1) * rf(i, j - 1, k) + gz(i, j, 1) * rf(i, j, k));
+    });
+  }
+}
+
 void calcdef(const Options& o, const Grid& g, const FArray3& rho, const FArray3& rf,
              const FArray3& ua, const FArray3& va, const FArray3& wa,
              const FArray3& s11, const FArray3& s12, const FArray3& s13,
              const FArray3& s22, const FArray3& s23, const FArray3& s33,
-             const FArray3& defv, const FArray3& defh) {
+             const FArray3& defv, const FArray3& defh,
+             const FArray3& dum1, const FArray3& dum2) {
   const auto& b = g.b;
   const int ni = b.ni, nj = b.nj, nk = b.nk;
   const Real rdx = g.rdx, rdy = g.rdy, rdz = g.rdz;
@@ -414,6 +494,12 @@ void calcdef(const Options& o, const Grid& g, const FArray3& rho, const FArray3&
   const auto c1 = g.c1;
   const auto c2 = g.c2;
 
+  if (b.terrain_flag) {
+    // Cartesian with terrain (no wall conditions in this branch of turb.F)
+    if (!dum1.is_allocated() || !dum2.is_allocated())
+      throw std::runtime_error("cm1k turb::calcdef: terrain needs the dum1/dum2 scratch arrays");
+    calcdef_terrain(g, rho, rf, ua, va, wa, s11, s12, s13, s22, s23, s33, dum1, dum2);
+  } else {
   Kokkos::parallel_for("calcdef_s", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     const Real temz = rdz * mh(1, 1, k);
     s11(i, j, k) = rho(i, j, k) * (ua(i + 1, j, k) - ua(i, j, k)) * rdx * uh(i);
@@ -475,6 +561,7 @@ void calcdef(const Options& o, const Grid& g, const FArray3& rho, const FArray3&
     else if (o.nbc == 4 && o.ibn == 1)
       Kokkos::parallel_for("calcdef_n23", box2(1, ni, 2, nk), KOKKOS_LAMBDA(int i, int k) { s23(i, nj + 1, k) = -2.0 * wa(i, nj, k) * rdy * vf(nj + 1); });
   }
+  }  // terrain_flag
 
   // open boundary conditions
   if (o.wbc == 2 || o.ebc == 2 || o.sbc == 2 || o.nbc == 2) {
@@ -709,7 +796,8 @@ void sfc_and_turb(const Options& o, const Constants& c, const Grid& g, const Bas
   });
   calcnm(o, c, b, g.rdz, g.c1, g.c2, g.mf, base.pi0, base.th0, ts.nm, w.d1, w.d2, w.d3, w.d6,
          prs, ppi, tha, qa);
-  calcdef(o, g, rho, rf, ua, va, wa, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, ts.defv, ts.defh);
+  calcdef(o, g, rho, rf, ua, va, wa, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, ts.defv, ts.defh,
+          w.d1, w.d2);
   tkekm(o, g, ts.nm, w.d1, w.d3, w.d4, w.d5, kmh, kmv, khh, khv, ts.cme, ts.ce1, ts.ce2,
         tkea, ts.lenscl, ts.dissten);
   tkebc(o, b, tkea, kmh, kmv, khh, khv, sfc);

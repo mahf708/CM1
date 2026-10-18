@@ -178,7 +178,8 @@ void calcdef(const Options& o, const Grid& g, const FArray3& rho, const FArray3&
              const FArray3& ua, const FArray3& va, const FArray3& wa,
              const FArray3& s11, const FArray3& s12, const FArray3& s13,
              const FArray3& s22, const FArray3& s23, const FArray3& s33,
-             const FArray3& defv, const FArray3& defh);
+             const FArray3& defv, const FArray3& defh,
+             const FArray3& dum1 = FArray3(), const FArray3& dum2 = FArray3());
 
 // turb.F tkekm: length scales, dissipation (dissten +=), kmh/kmv/khh/khv
 // (k=2..nk), then bcw(K,1) on all four.

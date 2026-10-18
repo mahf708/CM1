@@ -46,6 +46,10 @@ struct Grid {
   //   gx gxu gy gyv (itb:ite,jtb:jte,ktb:kte)
   // zt = rzt = 0 without terrain (as in the Fortran: never used then).
   Real zt = 0, rzt = 0;
+  // param.F 2nd-order extrapolation coefficients to the surface (cgs*) and
+  // the top (cgt*) (init::extrap_coeffs; set by Model::init and
+  // Model::init_from_dump; the terrain branches of turb read them here)
+  Real cgs1 = 0, cgs2 = 0, cgs3 = 0, cgt1 = 0, cgt2 = 0, cgt3 = 0;
   FArray3 zs, gz, rgz, gzu, rgzu, gzv, rgzv, dzdx, dzdy;
   FArray3 gx, gxu, gy, gyv;
 
