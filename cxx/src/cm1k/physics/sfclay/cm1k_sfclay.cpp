@@ -9,18 +9,9 @@
 // of SFCLAY1D (see the header), so each column runs all passes in order.
 #include "physics/sfclay/cm1k_sfclay.hpp"
 
+#include <cmath>
 #include <stdexcept>
 #include <string>
-
-#if defined(CM1K_HAVE_LIBMVEC) && defined(__x86_64__)
-#include <emmintrin.h>
-// glibc libmvec SSE2 variants (see sfclayinit below).
-extern "C" {
-__m128d _ZGVbN2vv_pow(__m128d, __m128d);
-__m128d _ZGVbN2v_log(__m128d);
-__m128d _ZGVbN2v_atan(__m128d);
-}
-#endif
 
 namespace cm1k::sfclay {
 
@@ -200,37 +191,22 @@ void Options::check() const {
 // Tables
 //------------------------------------------------------------------------------
 
-// gfortran -O2 vectorizes the sfclayinit loop (two lanes, SSE2) through
-// glibc's libmvec: X=(1-16z)**0.25 -> _ZGVbN2vv_pow, ALOG -> _ZGVbN2v_log,
-// ATAN -> _ZGVbN2v_atan, while (1-16z)**0.5 becomes sqrtpd (the argument is
-// provably >= 1) and 2.*ATAN(1.) is constant-folded. libmvec's log/pow/atan
-// are not the scalar libm ones (they differ in the last bit for some
-// arguments), so to reproduce the cm1f tables bit for bit we call the same
-// vector entry points here. Lanes are independent, so pairing is irrelevant.
-// Without libmvec (non-glibc or non-x86_64 hosts) the scalar libm is used.
-#if defined(CM1K_HAVE_LIBMVEC) && defined(__x86_64__)
-namespace {
-inline Real mvec_pow(Real a, Real b) { return _mm_cvtsd_f64(_ZGVbN2vv_pow(_mm_set1_pd(a), _mm_set1_pd(b))); }
-inline Real mvec_log(Real a) { return _mm_cvtsd_f64(_ZGVbN2v_log(_mm_set1_pd(a))); }
-inline Real mvec_atan(Real a) { return _mm_cvtsd_f64(_ZGVbN2v_atan(_mm_set1_pd(a))); }
-}  // namespace
-#else
-namespace {
-inline Real mvec_pow(Real a, Real b) { return std::pow(a, b); }
-inline Real mvec_log(Real a) { return std::log(a); }
-inline Real mvec_atan(Real a) { return std::atan(a); }
-}  // namespace
-#endif
-
+// sfclayinit's loop is scalar (the cm1k fork marks it !GCC$ NOVECTOR:
+// vectorized, gfortran called glibc's libmvec, whose SSE4 log uses the
+// CPU-model-dependent rcpps approximation, so the tables were not
+// reproducible across machines). Scalar libm, as the Fortran: x**0.25 is
+// pow, ALOG log, ATAN atan; (1-16z)**0.5 is also a pow call
+// (not sqrt: the objdump of sfclay.o shows two pow calls), and 2.*ATAN(1.) is
+// constant-folded.
 Tables sfclayinit() {
   Kokkos::View<Real*, HostSpace> m("psimtb", 1001), h("psihtb", 1001);
   const Real two_atan1 = 2. * std::atan(1.);  // folded at compile time by gfortran
   for (int n = 0; n <= 1000; ++n) {
     const Real zoln = -Real(n) * 0.01;
-    const Real x = mvec_pow(1 - 16. * zoln, 0.25);
-    m(n) = 2 * mvec_log(0.5 * (1 + x)) + mvec_log(0.5 * (1 + x * x)) - 2. * mvec_atan(x) + two_atan1;
-    const Real y = std::sqrt(1 - 16 * zoln);
-    h(n) = 2 * mvec_log(0.5 * (1 + y));
+    const Real x = std::pow(1 - 16. * zoln, 0.25);
+    m(n) = 2 * std::log(0.5 * (1 + x)) + std::log(0.5 * (1 + x * x)) - 2. * std::atan(x) + two_atan1;
+    const Real y = std::pow(1 - 16 * zoln, 0.5);
+    h(n) = 2 * std::log(0.5 * (1 + y));
   }
   Tables t;
   t.psimtb = host_table_to_device("psimtb", m);

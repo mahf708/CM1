@@ -945,6 +945,11 @@ CONTAINS
    INTEGER                   ::      N
    REAL                      ::      ZOLN,X,Y
 
+   ! cm1k fork: keep this loop scalar. Vectorized, gfortran calls glibc's
+   ! libmvec (_ZGVbN2v_log, ...), whose SSE4 log uses rcpps, an approximate
+   ! reciprocal whose bits differ between CPU models (Intel/AMD): the tables
+   ! then differ in the last bit from one runner to another.
+!GCC$ NOVECTOR
    DO N=0,1000
       ZOLN=-FLOAT(N)*0.01
       X=(1-16.*ZOLN)**0.25
