@@ -26,8 +26,10 @@ state.  imove (domain translation) changes only the base-state winds
 
 from __future__ import annotations
 
+import dataclasses
+
 from . import bc as _bc
-from .backend import get_backend, is_array
+from .backend import get_backend, is_array, torch_kernel_options
 from .misc import dtsmall
 from .mp_driver import mp_driver
 from .namelist import read_namelist
@@ -94,9 +96,11 @@ class Model:
 
     Parameters: ``namelist_path`` (CM1 namelist.input), ``backend``
     ('numpy', 'jax', 'torch'; also 'dask', 'array_api_strict'), ``dtype``
-    ('float64' or 'float32'), ``jit`` (compile the whole time step with
-    ``Backend.compile``: ``jax.jit`` on jax, ``torch.compile`` on torch, a
-    no-op elsewhere; ``jit_options`` are passed to the compiler),
+    ('float64' or 'float32'), ``jit`` (jax: compile the whole time step with
+    ``jax.jit``, ``jit_options`` passed to it; torch: ``torch.compile`` each
+    hot routine separately (``Backend.kernel``; ``jit_options`` update
+    ``backend.TORCH_KERNEL_DEFAULTS``), or the whole step with
+    ``jit_options={"whole_step": True}``; a no-op elsewhere),
     ``overrides`` ({namelist name: value}, e.g. ``{"nx": 80, "ny": 80}``).
     ``step(hooks=...)`` always runs eagerly.
     Attributes: ``cfg``, ``bk``, ``grid``, ``base``, ``state`` (dict of
@@ -119,6 +123,14 @@ class Model:
         self.bk = bk = get_backend(backend, dtype)
         self.jit = bool(jit)
         self.jit_options = dict(jit_options or {})
+        # torch: jit=True compiles the hot routines one by one (Backend.kernel)
+        # and runs the step eagerly between them; whole_step=True compiles the
+        # whole step instead (very slow to compile, see bench/results_cpu.md)
+        self._whole_step = bool(self.jit_options.pop("whole_step", bk.name != "torch"))
+        if self.jit and bk.name == "torch" and not self._whole_step:
+            self.bk = bk = dataclasses.replace(
+                bk, kernels=torch_kernel_options(self.jit_options)
+            )
         # compiled step, shared by shallow copies (cm1x._grad_utils.clone)
         self._jit_cache = {}
         self.grid, self.base, st = initialize(cfg, bk)
@@ -403,7 +415,7 @@ class Model:
         mtime = self.mtime + self.dt
         dorad = self._dorad()
         sol = self._solar(mtime) if dorad else {"coszen": 0.0, "solcon": 0.0}
-        if self.jit and hooks is None:
+        if self.jit and self._whole_step and hooks is None:
             fn = self._compiled_step(dorad)
             barr = {k: v for k, v in self.base.items() if is_array(v)}
             self.state = fn(
