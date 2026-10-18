@@ -65,6 +65,7 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   c.isfcflx = nl.geti("isfcflx", 0);
   c.sfcmodel = nl.geti("sfcmodel", 0);
   c.sfc_opt = sfc::Options::from_namelist(nl);
+  if (c.sfc_opt.wrf()) c.sfclay_opt = sfclay::Options::from_namelist(nl);
   c.bbc = c.sfc_opt.bbc;   // param.F: sfcmodel>=1 sets bbc=3
   c.irbc = nl.geti("irbc", 4);
   c.wbc = nl.geti("wbc", 1); c.ebc = nl.geti("ebc", 1);
@@ -164,15 +165,19 @@ void DynConfig::check() const {
   // turbulence / PBL schemes set: with sgsmodel=0 and ipbl=0 it is exactly
   // zero and the term is a no-op; with sgsmodel=1 it is turb::dissheat
   // (bbc=3 adds the surface-layer term, from physics/sfc).
-  // With ipbl=2 dissten is set by turbparam_vert/turbparam_horiz.
-  if (idiss != 0 && ipbl != 0 && ipbl != 2) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
+  // With ipbl=2 dissten is set by turbparam_vert/turbparam_horiz, with
+  // ipbl=1 by turbparam_horiz and ysudiss.
+  if (idiss != 0 && ipbl != 0 && ipbl != 1 && ipbl != 2) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
   if (rterm != 0) unsupported("rterm");
   if (adapt_dt != 0) unsupported("adapt_dt");
   // surface layer: sfcmodel=0, or sfcmodel=1 (bbc=3, isfcflx=0/1) with the
-  // LES TKE scheme; sfc_opt.check throws for every option not ported
+  // LES TKE scheme or a PBL scheme, or sfcmodel=2,3 with a PBL scheme;
+  // sfc_opt.check throws for every option not ported
   sfc_opt.check();
-  if (sfc_opt.active() && !(turb && sgsmodel == 1) && !pbl)
-    unsupported("the surface layer (sfcmodel=1) without the LES TKE scheme (sgsmodel=1) or a PBL scheme");
+  if (sfc_opt.wrf()) sfclay_opt.check();
+  if (sfc_opt.has_layer() && !(turb && sgsmodel == 1) && !pbl)
+    unsupported("the surface layer (sfcmodel=" + std::to_string(sfcmodel) +
+                ") without the LES TKE scheme (sgsmodel=1) or a PBL scheme");
   if (terrain_flag) unsupported("terrain_flag");
   if (do_ib) unsupported("do_ib");
   if (do_lsnudge) unsupported("do_lsnudge");
@@ -295,6 +300,18 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     cvm = s3("cvm");
     ts.allocate(B);
     m_tw.allocate(B);
+    if (m_cfg.sfc_opt.wrf() || m_cfg.pbl_opt.ipbl == 1) {
+      auto& w = m_ww;
+      w.d1 = s3("wrf_dum1"); w.d2 = s3("wrf_dum2"); w.d3 = s3("wrf_dum3"); w.d4 = s3("wrf_dum4");
+      w.d5 = s3("wrf_dum5"); w.d6 = s3("wrf_dum6"); w.d7 = s3("wrf_dum7");
+      w.qv = s3("wrf_qv"); w.qc = s3("wrf_qc"); w.qi = s3("wrf_qi"); w.rth = s3("wrf_rthraten");
+      w.c = wrfphys::WrfConst::make(c);
+      if (m_cfg.pbl_opt.ipbl == 1) {
+        w.xkzh = s3("xkzh"); w.xkzm = s3("xkzm");
+        auto s2 = [&](const char* n) { return FArray3(n, {B.ib, B.jb, 1}, {B.ie, B.je, 1}); };
+        w.kpbl2d = s2("kpbl2d"); w.wstar = s2("wstar"); w.delta = s2("delta");
+      }
+    }
   }
 
   if (m_cfg.diff2()) m_d2.allocate(B);
@@ -393,7 +410,7 @@ void Dyncore::compute_rf() {
 
 //===========================================================================
 // cm1.F:3748 sfc_and_turb (LES path), on the 3d arrays as CM1 passes them
-void Dyncore::sfc_and_turb(double rtime) {
+void Dyncore::sfc_and_turb(double rtime, bool update_sfc) {
   auto& s = m_s;
   if (m_cfg.pbl) {
     // mesoscale path (cm1setup=2, see physics/pbl/cm1k_pbl.hpp)
@@ -404,7 +421,17 @@ void Dyncore::sfc_and_turb(double rtime) {
     Kokkos::parallel_for("pbl_dissten0", box3(1, B.ni, 1, B.nj, 1, B.nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
       dissten(i, j, k) = 0.0;
     });
-    sfc::sfc_layer(m_cfg.sfc_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc);
+    const auto& so = m_cfg.sfc_opt;
+    if (so.wrf()) {
+      if (!m_has_wsfc) throw std::runtime_error("cm1k dyncore: sfcmodel=2,3 needs set_wrf_surface()");
+      sfc::sfc_prelude(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, m_sfc);
+      wrf_inputs();
+      auto& w = m_ww;
+      sfclay::wrf_surface_layer(so, m_cfg.sfclay_opt, w.c, B.ni, B.nj, m_dt, update_sfc, w.d1, w.d2, w.d4, w.d5,
+                                w.qv, s.prs, rf, m_wsfc);
+    } else {
+      sfc::sfc_layer(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc);
+    }
     turb::sfc_bcs(to, B, m_sfc);
     turb::calcnm(to, m_c, B, m_g.rdz, m_g.c1, m_g.c2, m_g.mf, m_b.pi0, m_b.th0, ts.nm, m_tw.d1, m_tw.d2, m_tw.d3,
                  m_tw.d6, s.prs, pp3d, th3d, q3d);
@@ -414,7 +441,9 @@ void Dyncore::sfc_and_turb(double rtime) {
       pbl::turbparam_horiz(to, m_cfg.pbl_opt, B, ts.defh, s.kmh, s.khh, ts.dissten, m_sfc);
     if (m_cfg.pbl_opt.ipbl == 2)
       pbl::turbparam_vert(to, m_cfg.pbl_opt, m_g, ts.nm, ts.defv, s.kmv, s.khv, ts.dissten, m_sfc, m_tw.d4);
-    turb::gettau(to, B, s.kmh, s.kmv, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, rf, &m_sfc);
+    // turb.F: gettau if (idoles .or. ipbl.eq.2 .or. horizturb.eq.1 .or. cm1setup.eq.3)
+    if (m_cfg.pbl_opt.ipbl == 2 || m_cfg.pbl_opt.horizturb == 1)
+      turb::gettau(to, B, s.kmh, s.kmv, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, rf, &m_sfc);
     pbl(rtime);
     return;
   }
@@ -436,6 +465,31 @@ void Dyncore::set_surface(const sfc::SfcState& s) {
   m_has_sfc = true;
 }
 
+void Dyncore::set_wrf_surface(const sfclay::WrfSurface& w) {
+  m_wsfc = w;   // shallow: the views are shared with the caller
+  m_has_wsfc = true;
+}
+
+// turb.F: the inputs of the WRF physics on the current state (u, v at
+// scalar points, T, dz8w, p on w levels, Exner; qv, qc, qi), after psfc.
+// turb.F builds dum1..dum7 twice (k=1 for the surface layer, all k in
+// get_vars for the PBL scheme) from the same state with the same formulas,
+// so one pass serves both.
+void Dyncore::wrf_inputs() {
+  const auto& B = m_g.b;
+  auto& w = m_ww;
+  wrfphys::PrepIn in;
+  in.ni = B.ni; in.nj = B.nj; in.nk = B.nk;
+  in.pertflx = m_cfg.sfc_opt.pertflx;
+  in.dz = m_g.dz; in.cgt1 = m_cgt1; in.cgt2 = m_cgt2; in.cgt3 = m_cgt3;
+  in.ua = u3d; in.va = v3d; in.u0 = m_b.u0; in.v0 = m_b.v0; in.th0 = m_b.th0; in.tha = th3d;
+  in.pi0 = m_b.pi0; in.ppi = pp3d; in.prs = m_s.prs; in.rmh = m_g.rmh; in.c1 = m_g.c1; in.c2 = m_g.c2;
+  in.psfc = m_sfc.psfc;
+  wrfphys::pbl_prep(in, w.d1, w.d2, w.d3, w.d4, w.d5, w.d6, w.d7);
+  const auto& po = m_cfg.pbl_opt;
+  wrfphys::pbl_moist(B.ni, B.nj, B.nk, m_cfg.imoist, po.nqv, po.nqc, po.nqi, q3d, w.qv, w.qc, w.qi);
+}
+
 void Dyncore::set_pbl(const pbl::Tendencies& t) {
   m_pt = t;   // shallow: the views are shared with the caller
   m_has_pbl = true;
@@ -447,6 +501,29 @@ void Dyncore::pbl(double /*rtime*/) {
   if (!m_has_pbl) throw std::runtime_error("cm1k dyncore: the PBL scheme needs set_pbl()");
   auto& s = m_s;
   switch (m_cfg.pbl_opt.ipbl) {
+  case 1: {   // doysu
+    if (!m_has_wsfc) throw std::runtime_error("cm1k dyncore: YSU needs set_wrf_surface()");
+    const auto& B = m_g.b;
+    auto& w = m_ww;
+    const auto& ss = m_wsfc.s;
+    pbl_ysu::Inputs in;
+    in.ux = w.d1; in.vx = w.d2; in.tx = w.d4; in.qvx = w.qv; in.qcx = w.qc; in.qix = w.qi;
+    in.p2d = s.prs; in.p2di = w.d6; in.pi2d = w.d7; in.dz8w2d = w.d5; in.rthraten = w.rth;   // rth = 0
+    in.psfcpa = ss.psfc; in.znt = m_sfc.zntmp; in.ust = ss.ust; in.psim = ss.fm; in.psih = ss.fh;
+    in.xland = ss.xland; in.hfx = ss.hfx; in.qfx = ss.qfx; in.wspd = ss.wspd; in.br = ss.br;
+    pbl_ysu::Outputs out;
+    out.utnp = m_pt.upten; out.vtnp = m_pt.vpten; out.ttnp = m_pt.thpten; out.qvtnp = m_pt.qvpten;
+    out.qctnp = m_pt.qcpten; out.qitnp = m_pt.qipten; out.exch_hx = w.xkzh; out.exch_mx = w.xkzm;
+    out.hpbl = ss.hpbl; out.kpbl2d = w.kpbl2d; out.wstar = w.wstar; out.delta = w.delta;
+    out.u10 = ss.u10; out.v10 = ss.v10;
+    pbl_ysu::ysu(pbl_ysu::Options{}, w.c, m_dt, B.ni, B.nj, B.nk, in, out, w.ysu);
+    // ysudiss (idiss=1; output_dissten only outputs dissten): the column
+    // stresses go to scratch (turb.F: thten, thten1)
+    if (m_cfg.idiss == 1)
+      pbl_ysu::ysu_dissten(B.ni, B.nj, B.nk, m_g.dz, m_g.rdz, m_g.rmh, m_g.mf, m_pt.upten, m_pt.vpten, w.d1, w.d2,
+                           m_tw.d8, m_tw.d9, ts.dissten);
+    break;
+  }
   case 2:   // dobr09
     pbl::br09(m_cfg.turb_opt, m_cfg.pbl_opt, m_g, m_b, m_dt, u3d, v3d, w3d, th3d, q3d, s.rho, rr, rf, s.kmv, s.khv,
               ts.t13, ts.t23, m_sfc, m_pt, m_tw);

@@ -516,13 +516,23 @@ TEST_CASE("pbl options: unsupported values throw", "[pbl]") {
   o.cm1setup = 2; o.ipbl = 2; o.sfcmodel = 1; o.use_pbl = true;
   REQUIRE_NOTHROW(o.check());
   auto bad = [&](auto f) { pbl::Options x = o; f(x); REQUIRE_THROWS(x.check()); };
-  bad([](pbl::Options& x) { x.ipbl = 1; });
+  bad([](pbl::Options& x) { x.ipbl = 1; });   // YSU needs sfcmodel=2,3
+  bad([](pbl::Options& x) { x.ipbl = 3; });
   bad([](pbl::Options& x) { x.ipbl = 4; });
   bad([](pbl::Options& x) { x.ipbl = 5; });
   bad([](pbl::Options& x) { x.cm1setup = 4; });
   bad([](pbl::Options& x) { x.sfcmodel = 0; });
-  bad([](pbl::Options& x) { x.sfcmodel = 2; });
+  bad([](pbl::Options& x) { x.sfcmodel = 4; });
   bad([](pbl::Options& x) { x.horizturb = 2; });
+  // ipbl=2 also runs with the WRF/MM5 surface layers; YSU only with those
+  for (int sfcmodel : {2, 3}) {
+    pbl::Options y = o;
+    y.sfcmodel = sfcmodel;
+    REQUIRE_NOTHROW(y.check());
+    y.ipbl = 1;
+    REQUIRE_NOTHROW(y.check());
+  }
+  bad([](pbl::Options& x) { x.ipbl = 1; x.sfcmodel = 0; });
   bad([](pbl::Options& x) { x.terrain_flag = true; });
   bad([](pbl::Options& x) { x.imoist = 1; x.ptype = 2; });
   // param.F: use_pbl for cm1setup=2,4 with ipbl>=1; l_inf=0 for ipbl/=2
@@ -534,17 +544,26 @@ TEST_CASE("pbl options: unsupported values throw", "[pbl]") {
   REQUIRE(y.use_pbl);
   REQUIRE(y.l_inf == 0.0);
   REQUIRE_FALSE(pbl::Options::from_namelist(Namelist::from_string("&param2\n cm1setup = 1 /\n")).use_pbl);
-  // turb and sfc accept cm1setup=2 only with ipbl=2
+  // turb accepts cm1setup=2 with ipbl=1 (YSU) or 2; sfc accepts sfcmodel=1
+  // with ipbl=2 and sfcmodel=2,3 with ipbl=1,2
   turb::Options t;
   t.cm1setup = 2; t.sgsmodel = 0; t.ipbl = 2; t.dohturb = false; t.dovturb = false;
   REQUIRE_NOTHROW(t.check());
   t.horizturb = 1; t.dohturb = true;
   REQUIRE_NOTHROW(t.check());
   t.ipbl = 1;
+  REQUIRE_NOTHROW(t.check());
+  t.sfcmodel = 3; t.bbc = 3;
+  REQUIRE_NOTHROW(t.check());
+  t.ipbl = 3;
   REQUIRE_THROWS(t.check());
   sfc::Options s;
   s.sfcmodel = 1; s.bbc = 3; s.cm1setup = 2; s.ipbl = 2;
   REQUIRE_NOTHROW(s.check());
   s.ipbl = 1;
+  REQUIRE_THROWS(s.check());
+  s.sfcmodel = 2;
+  REQUIRE_NOTHROW(s.check());
+  s.lu0 = 0;   // init_surface.F: lu_index must be 1..33 for sfcmodel=2,3
   REQUIRE_THROWS(s.check());
 }
