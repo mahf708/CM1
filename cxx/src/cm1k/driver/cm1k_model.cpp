@@ -1,4 +1,5 @@
 #include "cm1k_model.hpp"
+#include "share/cm1k_moist.hpp"
 
 #include "dynamics/cm1k_dyncore.hpp"
 #include "init/cm1k_init.hpp"
@@ -27,8 +28,7 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   m_state.allocate(b);
   if (nl.geti("imoist", 0) == 1) {
     const int ptype = nl.geti("ptype", 0);
-    if (ptype == 0) m_state.qname = {"qv"};
-    else if (ptype == 1) m_state.qname = {"qv", "qc", "qr"};
+    if (MoistLayout::known(ptype)) m_state.qname = MoistLayout::make(1, ptype).qname;
   }
   m_dt = nl.getr("dtl", 0.0);
   m_sfc_opt = sfc::Options::from_namelist(nl);
