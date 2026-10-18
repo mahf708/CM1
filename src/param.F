@@ -2293,7 +2293,9 @@
         call stopcm1
       ENDIF
       !-----
-      IF( radopt.eq.2 .and. ( ptype.ne.3 .and. ptype.ne.5 .and. ptype.ne.7 .and. ptype.ne.50 .and.  &
+      ! cm1k fork: allow warm-rain radiation for port validation (ptype=1)
+      IF( radopt.eq.2 .and. ( ptype.ne.1 .and.                                                      &
+                              ptype.ne.3 .and. ptype.ne.5 .and. ptype.ne.7 .and. ptype.ne.50 .and.  &
                               ptype.ne.51 .and. ptype.ne.52 .and. ptype.ne.53 .and.&
                               ptype.ne.55 .and. ptype.ne.26 .and. ptype.ne.27)  )THEN
         if(myid.eq.0)then
@@ -2312,7 +2314,9 @@
         call stopcm1
       ENDIF
       !-----
-      IF( (radopt.eq.1.or.radopt.eq.2) .and. (ptype.eq.1.or.ptype.eq.6)  )THEN
+      ! cm1k fork: allow warm-rain radiation for port validation (radopt=2, ptype=1)
+      IF( (radopt.eq.1.or.radopt.eq.2) .and. (ptype.eq.1.or.ptype.eq.6) .and.  &
+          .not.(radopt.eq.2.and.ptype.eq.1) )THEN
         if(myid.eq.0)then
         print *
         print *,'  radopt   = ',radopt
@@ -4537,7 +4541,9 @@
 !-------   END:  modify stuff above here -------------------------------
 !-----------------------------------------------------------------------
 
-      IF( (radopt.eq.1.or.radopt.eq.2) .and. iice.ne.1 )THEN
+      ! cm1k fork: allow warm-rain radiation for port validation (radopt=2, ptype=1)
+      IF( (radopt.eq.1.or.radopt.eq.2) .and. iice.ne.1 .and.  &
+          .not.(radopt.eq.2.and.ptype.eq.1) )THEN
         print *
         print *,'  radopt   = ',radopt
         print *,'  iice     = ',iice

@@ -521,6 +521,12 @@
             f_qg = .false.
           endif
 
+          if( ptype.eq.1 )then
+            ! cm1k fork: allow warm-rain radiation for port validation
+            ! (Kessler: mp_physics would be undefined; 1 = WRF's Kessler)
+            mp_physics = 1
+          endif
+
           icloud = 1
           o3input = 0
 
