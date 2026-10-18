@@ -25,7 +25,7 @@ from . import constants as C
 from .adv_routines import zsgrad
 from .grid import Grid
 
-__all__ = ["init_terrain"]
+__all__ = ["init_terrain", "terrain_metrics"]
 
 
 def init_terrain(
@@ -42,7 +42,7 @@ def init_terrain(
     xp = bk.xp
     S = bk.asarray
     ni, nk, ng = g.ni, g.nk, g.ngxy
-    dx, dy = float(g.dx), float(g.dy)
+    dx = float(g.dx)
     itern = int(cfg.get("itern", 0))
     shp2 = g.s_shape[1:]
 
@@ -76,10 +76,38 @@ def init_terrain(
     else:
         raise NotImplementedError(f"itern={itern} not ported")
 
-    # ---------------- DO NOT CHANGE ANYTHING BELOW HERE (init_terrain.F)
+    zt = float(kw.get("maxz", float(bk.to_numpy(sigmaf[nk + 1]))))
+    return terrain_metrics(
+        bk,
+        g,
+        cfg,
+        zs=zs,
+        uh=uh,
+        uf=uf,
+        vh=vh,
+        vf=vf,
+        rds=rds,
+        sigma=sigma,
+        rdsf=rdsf,
+        sigmaf=sigmaf,
+        zt=zt,
+    )
+
+
+def terrain_metrics(
+    bk, g: Grid, cfg, *, zs, uh, uf, vh, vf, rds, sigma, rdsf, sigmaf, zt
+):
+    """The part of ``init_terrain`` below "DO NOT CHANGE ANYTHING BELOW HERE":
+    from a surface height ``zs`` (2-D ``[j, i]``, halos filled by bc2d here)
+    and the model top ``zt`` (Python float) all Gal-Chen metrics.  Returns
+    the same dict as init_terrain."""
+    xp = bk.xp
+    S = bk.asarray
+    nk = g.nk
+    dx, dy = float(g.dx), float(g.dy)
+    shp2 = g.s_shape[1:]
     zs = _bc.bc2d(bk, g, zs, cfg)
 
-    zt = float(kw.get("maxz", float(bk.to_numpy(sigmaf[nk + 1]))))
     zts = S(zt)
     rzt = 1.0 / zt
 
