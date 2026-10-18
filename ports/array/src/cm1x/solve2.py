@@ -36,7 +36,7 @@ def _check(cfg):
         ("betaplane", (0,)),
         ("axisymm", (0,)),
         ("iptra", (0,)),
-        ("ipbl", (0,)),
+        ("ipbl", (0, 1, 2, 3, 6)),
         ("cuparam", (0,)),
         ("iprcl", (0,)),
         ("nudgeobc", (0,)),

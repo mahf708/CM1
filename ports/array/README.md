@@ -113,7 +113,7 @@ build reads the 4-byte data files unchanged.
 dissten=0, the surface layer, bc2d of the surface arrays, calcnm, calcdef,
 `turbparam_horiz` (horizturb=1), `turbparam_vert` (ipbl=2), gettau, the PBL
 scheme, bcs(upten/vpten)), the solve1 `use_pbl` blocks and the param.F option
-adjustments (`pbl.options`: bbc=3, isfcflx, tconfig=2, l_inf, dohturb/dovturb,
+adjustments (`pbl.apply_options`: bbc=3, isfcflx, tconfig=2, l_inf, dohturb/dovturb,
 use_pbl, dosfcflx). PBL schemes and surface layers plug in through a registry
 in `pbl.py`; adding one is a one-line entry:
 
