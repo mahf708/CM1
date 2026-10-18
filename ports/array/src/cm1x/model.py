@@ -287,6 +287,10 @@ class Model:
             ctx = Context(
                 bk, g, cfg, dt=self.dt, nstep=None, rtime=0.0, s=s, b=self.base
             )
+            from . import slab
+
+            if int(cfg.get("sfcmodel", 0)) in slab.SLAB_SFCMODELS:
+                s.update(slab.init_state(ctx))
             for mod in (self.sfc_mod, self.pbl_mod):
                 if mod is not None and hasattr(mod, "init_state"):
                     s.update(mod.init_state(ctx))
