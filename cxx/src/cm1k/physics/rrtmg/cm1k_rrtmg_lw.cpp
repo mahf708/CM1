@@ -283,7 +283,7 @@ struct LwCol : LwTables {
         resnmc(l) = resnmcl(iplon, l);
       }
     }
-  
+
   }
 
   KOKKOS_INLINE_FUNCTION void cldprmc() {
@@ -379,7 +379,7 @@ struct LwCol : LwTables {
         }
       }
     }
-  
+
   }
 
   KOKKOS_INLINE_FUNCTION void setcoef() {
@@ -572,7 +572,7 @@ struct LwCol : LwTables {
       selffac(lay) = colh2o(lay) * selffac(lay);
       forfac(lay) = colh2o(lay) * forfac(lay);
     }
-  
+
   }
 
   // taumol: gaseous optical depths and Planck fractions of the 16 bands
@@ -3002,7 +3002,7 @@ struct LwCol : LwTables {
     }
     htr(nlayers) = 0.0;
     htrc(nlayers) = 0.0;
-  
+
   }
 
   // module_ra_rrtmg_lw's INIRAD, relcalc and reicalc (cm1k_rrtmg_common.hpp)

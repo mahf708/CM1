@@ -471,7 +471,7 @@ struct SwCol : SwTables {
         }
       }
     }
-  
+
   }
 
   // reftra_sw: layer reflectivity and transmissivity (two-stream, kmodts = 2)
@@ -638,7 +638,7 @@ struct SwCol : SwTables {
         }
       }
     }
-  
+
   }
 
   // setcoef_sw
@@ -737,7 +737,7 @@ struct SwCol : SwTables {
       fac11(lay) = fp * ft1;
       fac01(lay) = fp * (1.0 - ft1);
     }
-  
+
   }
 
   // taumol_sw: gaseous and Rayleigh optical depths and the TOA solar source of the 14 bands
@@ -1696,7 +1696,7 @@ struct SwCol : SwTables {
       pfu(jk, kw) = (ptdbt(jk) * prup(jk) + (vq_ztdn(jk) - ptdbt(jk)) * prupd(jk)) * zreflect;
       pfd(jk, kw) = ptdbt(jk) + (vq_ztdn(jk) - ptdbt(jk) + ptdbt(jk) * prup(jk) * prdnd(jk)) * zreflect;
     }
-  
+
   }
 
   // spcvmc_sw: two-stream fluxes of the McICA subcolumns (actual arguments of rrtmg_sw by name)
@@ -1883,7 +1883,7 @@ struct SwCol : SwTables {
         }
       }
     }
-  
+
   }
 
   // inatm_sw (iplon = 1; dyofyr = 0, so adjflx = adjes)

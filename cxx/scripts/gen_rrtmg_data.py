@@ -17,106 +17,128 @@ decimal literals (so they convert to the same doubles as gfortran's
 -fdefault-real-8 reading of them). Anything else in those subroutines is an
 error, so a changed Fortran source cannot be silently mistranslated.
 """
+
 import os
 import re
-import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-OUT = os.path.join(ROOT, 'cxx', 'src', 'cm1k', 'physics', 'rrtmg')
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+OUT = os.path.join(ROOT, "cxx", "src", "cm1k", "physics", "rrtmg")
 
 JOBS = [
-    ('src/module_ra_rrtmg_lw.F', ['lwcmbdat', 'lwatmref', 'lwavplank', 'lwcldpr'], 'cm1k_rrtmg_lw_data.inc'),
-    ('src/module_ra_rrtmg_sw.F', ['swcmbdat', 'swatmref', 'swaerpr', 'swcldpr'], 'cm1k_rrtmg_sw_data.inc'),
+    (
+        "src/module_ra_rrtmg_lw.F",
+        ["lwcmbdat", "lwatmref", "lwavplank", "lwcldpr"],
+        "cm1k_rrtmg_lw_data.inc",
+    ),
+    (
+        "src/module_ra_rrtmg_sw.F",
+        ["swcmbdat", "swatmref", "swaerpr", "swcldpr"],
+        "cm1k_rrtmg_sw_data.inc",
+    ),
 ]
 
 
-def strip_comment(l):
-    i = l.find('!')
-    return l if i < 0 else l[:i]
+def strip_comment(line):
+    i = line.find("!")
+    return line if i < 0 else line[:i]
 
 
 def statements(lines):
-    cur = ''
-    for l in lines:
-        c = strip_comment(l).strip()
+    cur = ""
+    for line in lines:
+        c = strip_comment(line).strip()
         if not c:
             continue
         if cur:
-            c = c.lstrip('&').strip()
-        if c.endswith('&'):
-            cur += c[:-1] + ' '
+            c = c.lstrip("&").strip()
+        if c.endswith("&"):
+            cur += c[:-1] + " "
             continue
         cur += c
         yield cur
-        cur = ''
+        cur = ""
 
 
-NUM = r'[-+]?(\d+\.?\d*|\.\d+)([eEdD][-+]?\d+)?(_rb)?'
+NUM = r"[-+]?(\d+\.?\d*|\.\d+)([eEdD][-+]?\d+)?(_rb)?"
 
 
 def conv(v):
     v = v.strip()
     if not re.fullmatch(NUM, v):
-        raise ValueError('not a literal: %r' % v)
-    v = v.replace('_rb', '')
-    v = re.sub(r'[dDE]', 'e', v)
-    m = re.fullmatch(r'([-+]?)(\d*)(\.?)(\d*)(e[-+]?\d+)?', v)
-    if m is None: raise ValueError("bad literal %r" % v)
+        raise ValueError("not a literal: %r" % v)
+    v = v.replace("_rb", "")
+    v = re.sub(r"[dDE]", "e", v)
+    m = re.fullmatch(r"([-+]?)(\d*)(\.?)(\d*)(e[-+]?\d+)?", v)
+    if m is None:
+        raise ValueError("bad literal %r" % v)
     s, ip, dot, fp, ex = m.groups()
-    return s + (ip or '0') + '.' + (fp or '0') + (ex or '')
+    return s + (ip or "0") + "." + (fp or "0") + (ex or "")
 
 
 def section(s):
     out = []
-    for d in s.split(','):
+    for d in s.split(","):
         d = d.strip()
-        if d == ':':
-            out.append('S()')
-        elif ':' in d:
-            a, b = d.split(':')
-            out.append('S(%d, %d)' % (int(a), int(b)))
+        if d == ":":
+            out.append("S()")
+        elif ":" in d:
+            a, b = d.split(":")
+            out.append("S(%d, %d)" % (int(a), int(b)))
         else:
-            out.append('S(%d)' % int(d))
-    return '{' + ', '.join(out) + '}'
+            out.append("S(%d)" % int(d))
+    return "{" + ", ".join(out) + "}"
 
 
 def translate(fn, sub):
-    L = open(os.path.join(ROOT, fn)).read().split('\n')
-    a = [i for i, l in enumerate(L) if re.match(r'\s*subroutine\s+%s\s*$' % sub, l, re.I)]
+    L = open(os.path.join(ROOT, fn)).read().split("\n")
+    a = [
+        i
+        for i, ln in enumerate(L)
+        if re.match(r"\s*subroutine\s+%s\s*$" % sub, ln, re.I)
+    ]
     assert len(a) == 1, (fn, sub)
-    b = [i for i in range(a[0], len(L)) if re.match(r'\s*end\s+subroutine\s+%s\b' % sub, L[i], re.I)][0]
+    b = [
+        i
+        for i in range(a[0], len(L))
+        if re.match(r"\s*end\s+subroutine\s+%s\b" % sub, L[i], re.I)
+    ][0]
     out = []
-    for st in statements(L[a[0] + 1:b]):
-        if re.match(r'(save|use\b)', st, re.I):
+    for st in statements(L[a[0] + 1 : b]):
+        if re.match(r"(save|use\b)", st, re.I):
             continue
-        m = re.fullmatch(r'(\w+)\s*(\(([^)]*)\))?\s*=\s*\(/(.*)/\)', st)
+        m = re.fullmatch(r"(\w+)\s*(\(([^)]*)\))?\s*=\s*\(/(.*)/\)", st)
         if m:
-            vals = [conv(v) for v in m.group(4).split(',')]
-            sec = section(m.group(3)) if m.group(2) else '{S()}'
-            body = ', '.join(vals)
-            out.append('  fset(h.%s, %s, {%s});' % (m.group(1), sec, body))
+            vals = [conv(v) for v in m.group(4).split(",")]
+            sec = section(m.group(3)) if m.group(2) else "{S()}"
+            body = ", ".join(vals)
+            out.append("  fset(h.%s, %s, {%s});" % (m.group(1), sec, body))
             continue
-        m = re.fullmatch(r'(\w+)\s*=\s*(' + NUM + ')', st)
+        m = re.fullmatch(r"(\w+)\s*=\s*(" + NUM + ")", st)
         if m:
-            out.append('  h.%s = %s;' % (m.group(1), conv(m.group(2))))
+            out.append("  h.%s = %s;" % (m.group(1), conv(m.group(2))))
             continue
-        raise SystemExit('gen_rrtmg_data.py: cannot translate in %s %s: %s' % (fn, sub, st))
+        raise SystemExit(
+            "gen_rrtmg_data.py: cannot translate in %s %s: %s" % (fn, sub, st)
+        )
     return out
 
 
 def main():
     for fn, subs, inc in JOBS:
-        text = ['// Generated by cxx/scripts/gen_rrtmg_data.py from %s; do not edit.' % fn,
-                '// Each statement is one Fortran assignment of the subroutine, in order.', '']
+        text = [
+            "// Generated by cxx/scripts/gen_rrtmg_data.py from %s; do not edit." % fn,
+            "// Each statement is one Fortran assignment of the subroutine, in order.",
+            "",
+        ]
         for sub in subs:
-            text.append('template <class H> void %s_data(H& h) {' % sub)
+            text.append("template <class H> void %s_data(H& h) {" % sub)
             text += translate(fn, sub)
-            text.append('}')
-            text.append('')
+            text.append("}")
+            text.append("")
         path = os.path.join(OUT, inc)
-        open(path, 'w').write('\n'.join(text))
-        print('wrote', os.path.relpath(path, ROOT))
+        open(path, "w").write("\n".join(text))
+        print("wrote", os.path.relpath(path, ROOT))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
