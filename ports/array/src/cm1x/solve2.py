@@ -1,7 +1,8 @@
 """RK3 loop and acoustic solver call, ported from src/solve2.F.
 
-Active path for the reference cases only: psolver=3, imoist=1, eqtset=2,
-ptype>=1 (Kessler: qv, qc, qr), icor=0, no terrain, Cartesian, apmasscon=1,
+Active path for the reference cases only: psolver=3, eqtset=2, moist
+(imoist=1, ptype>=1, Kessler: qv, qc, qr) or dry (imoist=0), icor=0 or 1
+(f plane), with or without terrain (terrain_flag), Cartesian, apmasscon=1,
 no PBL/passive tracers.  Lateral boundaries: any type of cm1x.bc (periodic,
 open, walls), with the irbc=4 radiative phase speeds (radbcew4/radbcns4
 after each acoustic-step sequence).  Prognostic TKE (sgsmodel=1): advected
@@ -11,7 +12,7 @@ with advw (advwenos) and stepped on each RK stage.
 from __future__ import annotations
 
 from . import constants as c
-from .adv import advs, advu, advv, advw, getdivx
+from .adv import advs, advu, advv, advw, getdivx, sigdot
 from . import bc as _bc
 from .misc import NRKMAX, SMEPS, getdiv
 
@@ -29,9 +30,10 @@ def _check(cfg):
     bad = []
     for name, ok in (
         ("psolver", (3,)),
-        ("imoist", (1,)),
+        ("imoist", (0, 1)),
         ("eqtset", (2,)),
-        ("icor", (0,)),
+        ("icor", (0, 1)),
+        ("betaplane", (0,)),
         ("axisymm", (0,)),
         ("iptra", (0,)),
         ("ipbl", (0,)),
@@ -45,8 +47,10 @@ def _check(cfg):
             bad.append(f"{name}={v}")
     if _opt(cfg, "idiff", 0) >= 1 and _opt(cfg, "difforder", 6) == 6:
         bad.append("idiff>=1 with difforder=6")
-    if _opt(cfg, "terrain_flag", False):
-        bad.append("terrain_flag=T")
+    if int(_opt(cfg, "imove", 0)) != 0 and (
+        _opt(cfg, "terrain_flag", False) or int(_opt(cfg, "icor", 0)) == 1
+    ):
+        bad.append("imove=1 with terrain_flag or icor=1")
     _bc.ib_flags(cfg)  # validates wbc..nbc
     if int(_opt(cfg, "irbc", 4)) not in (4,) and any(_bc.ib_flags(cfg)):
         bad.append(f"irbc={_opt(cfg, 'irbc', 4)}")
@@ -122,6 +126,24 @@ def solve2(
     tke3d=None,
     tketen=None,
     hooks=None,
+    rds=None,
+    sigma=None,
+    rdsf=None,
+    sigmaf=None,
+    gz=None,
+    rgz=None,
+    gzu=None,
+    rgzu=None,
+    gzv=None,
+    rgzv=None,
+    dzdx=None,
+    dzdy=None,
+    gx=None,
+    gxu=None,
+    gy=None,
+    gyv=None,
+    zt=None,
+    cg=None,
     **unused,
 ):
     """solve2.F ``solve2`` (active path).  ``qa``, ``q3d``, ``qten`` are
@@ -134,6 +156,11 @@ def solve2(
     ``radbc*`` are the persistent open-boundary phase speeds (``[k, j]`` for
     w/e, ``[k, i]`` for s/n; zeros at t=0), ``ruf``/``rvf`` = 1/uf, 1/vf.
     ``tkea``, ``tke3d``, ``tketen`` (solve1) are needed for sgsmodel=1.
+
+    With ``terrain_flag`` the terrain metrics (rds, sigma, rdsf, sigmaf,
+    gz, rgz, gzu, rgzu, gzv, rgzv, dzdx, dzdy, gx, gxu, gy, gyv, the Python
+    float ``zt`` and the extrapolation coefficients ``cg`` = {cgs1.., cgt1..})
+    are required; the base state (rho0, th0, pi0, ...) is then 3-D.
 
     ``hooks`` (optional callable ``hooks(stage_name, nrk, locals_dict)``)
     lets tests inspect intermediate results.
@@ -177,6 +204,36 @@ def solve2(
             raise ValueError("solve2: sgsmodel=1 needs tkea, tke3d, tketen")
         tke3d = bk.copy(tke3d)
     advwenos = int(_opt(cfg, "advwenos", 0))
+    moist = int(_opt(cfg, "imoist", 1)) == 1
+    icor = int(_opt(cfg, "icor", 0))
+    fcor = float(_opt(cfg, "fcor", 0.0))
+    terr = bool(_opt(cfg, "terrain_flag", False))
+    tm = None
+    if terr:
+        tm = dict(
+            rds=rds,
+            sigma=sigma,
+            rdsf=rdsf,
+            sigmaf=sigmaf,
+            gz=gz,
+            rgz=rgz,
+            gzu=gzu,
+            rgzu=rgzu,
+            gzv=gzv,
+            rgzv=rgzv,
+            dzdx=dzdx,
+            dzdy=dzdy,
+            gx=gx,
+            gxu=gxu,
+            gy=gy,
+            gyv=gyv,
+            zt=zt,
+        )
+        miss = [k for k, v in tm.items() if v is None]
+        if miss:
+            raise ValueError("solve2: terrain_flag=.true. needs " + ", ".join(miss))
+        if any(_bc.ib_flags(cfg)) and cg is None:
+            raise ValueError("solve2: terrain with open boundaries needs cg")
 
     u3d, v3d, w3d = bk.copy(u3d), bk.copy(v3d), bk.copy(w3d)
     pp3d, th3d = bk.copy(pp3d), bk.copy(th3d)
@@ -208,33 +265,40 @@ def solve2(
     for nrk in range(1, NRKMAX + 1):
         dttmp = dt / float(NRKMAX + 1 - nrk)
 
-        # ---- misc variables (moist, eqtset=2) -----------------------------
-        ql = q3d[nql1][SI]
-        for m in range(nql1 + 1, nql2 + 1):
-            ql = ql + q3d[m][SI]
-        zero = xp.zeros_like(ql)
-        qv = xp.maximum(q3d[nqv][SI], zero)
-        qli = xp.maximum(zero, ql)  # + dum3 (=0, no ice)
-        cpli = c.cpl * xp.maximum(zero, ql)
-        dum8 = bk.set(
-            dum8,
-            SI,
-            c.g
-            * (
-                th3d[SI] * rth0[SI]
-                + c.repsm1 * (qv - qv0[SI])
-                - (qli - qc0[SI] - qi0[SI])
-            ),
-        )
-        t11 = bk.set(
-            t11, SI, (th0[SI] + th3d[SI]) * (1.0 + c.reps * qv) / (1.0 + qv + qli)
-        )
-        cpm = c.cp + c.cpv * qv + cpli
-        cvm = 1.0 / (c.cv + c.cvv * qv + cpli)
-        thterm = bk.set(
-            thterm, SI, (th0[SI] + th3d[SI]) * (c.rd + c.rv * qv - c.rovcp * cpm) * cvm
-        )
-        t22 = bk.set(t22, SI, (pi0[SI] + pp3d[SI]) * c.rovcp * cpm * cvm)
+        # ---- misc variables (eqtset=2 moist, or dry) -------------------------
+        if moist:
+            ql = q3d[nql1][SI]
+            for m in range(nql1 + 1, nql2 + 1):
+                ql = ql + q3d[m][SI]
+            zero = xp.zeros_like(ql)
+            qv = xp.maximum(q3d[nqv][SI], zero)
+            qli = xp.maximum(zero, ql)  # + dum3 (=0, no ice)
+            cpli = c.cpl * xp.maximum(zero, ql)
+            dum8 = bk.set(
+                dum8,
+                SI,
+                c.g
+                * (
+                    th3d[SI] * rth0[SI]
+                    + c.repsm1 * (qv - qv0[SI])
+                    - (qli - qc0[SI] - qi0[SI])
+                ),
+            )
+            t11 = bk.set(
+                t11, SI, (th0[SI] + th3d[SI]) * (1.0 + c.reps * qv) / (1.0 + qv + qli)
+            )
+            cpm = c.cp + c.cpv * qv + cpli
+            cvm = 1.0 / (c.cv + c.cvv * qv + cpli)
+            thterm = bk.set(
+                thterm,
+                SI,
+                (th0[SI] + th3d[SI]) * (c.rd + c.rv * qv - c.rovcp * cpm) * cvm,
+            )
+            t22 = bk.set(t22, SI, (pi0[SI] + pp3d[SI]) * c.rovcp * cpm * cvm)
+        else:
+            dum8 = bk.set(dum8, SI, c.g * th3d[SI] * rth0[SI])
+            t11 = bk.set(t11, SI, th0[SI] + th3d[SI])
+            t22 = bk.set(t22, SI, (pi0[SI] + pp3d[SI]) * c.rddcv)
         t11 = _bc.bcp(bk, g, t11, cfg)
 
         # ---- RK tendency arrays --------------------------------------------
@@ -243,24 +307,91 @@ def solve2(
         vten = bk.set(vten, R, vten1[R])
         wten = bk.set(wten, R, wten1[R])
 
-        # ---- rru, rrv, rrw, divx (no terrain) ------------------------------
-        rru = bk.set(rru, (K, J0, I02), col(rho0, K) * u3d[K, J0, I02])
-        rrv = bk.set(rrv, (K, J02, I0), col(rho0, K) * v3d[K, J02, I0])
-        rrw = bk.set(rrw, (nz, J0, I0), bk.zeros(rrw[nz, J0, I0].shape))
-        rrw = bk.set(rrw, (nz + nk, J0, I0), bk.zeros(rrw[nz, J0, I0].shape))
-        Kw = slice(nz + 1, nz + nk)
-        rrw = bk.set(rrw, (Kw, J0, I0), col(rf0, Kw) * w3d[Kw, J0, I0])
+        if terr and nrk >= 2:
+            w3d = _bc.bcwsfc(bk, g, gz=gz, dzdx=dzdx, dzdy=dzdy, u=u3d, v=v3d, w=w3d)
+            w3d = bk.set(w3d, (1,), _bc.bc2d(bk, g, w3d[1], cfg))
 
+        # ---- rru, rrv, rrw, divx -------------------------------------------
+        Kw = slice(nz + 1, nz + nk)
         uh0 = uh[I0][None, None, :]
         vh0 = vh[J0][None, :, None]
-        d = (
-            (rru[K, J0, n : n + ni + 2] - rru[K, J0, n - 1 : n + ni + 1]) * g.rdx * uh0
-            + (rrv[K, n : n + nj + 2, I0] - rrv[K, n - 1 : n + nj + 1, I0])
-            * g.rdy
-            * vh0
-        ) + (rrw[nz + 1 : nz + nk + 1, J0, I0] - rrw[K, J0, I0]) * g.rdz * col(mh, K)
+        if terr:
+            Im1 = slice(n - 2, n + ni + 1)  # i-1 for i = 0..ni+2
+            Jm1 = slice(n - 2, n + nj + 1)
+            rru = bk.set(
+                rru,
+                (K, J0, I02),
+                0.5
+                * (rho0[K, J0, Im1] + rho0[K, J0, I02])
+                * u3d[K, J0, I02]
+                * rgzu[None, J0, I02],
+            )
+            rrv = bk.set(
+                rrv,
+                (K, J02, I0),
+                0.5
+                * (rho0[K, Jm1, I0] + rho0[K, J02, I0])
+                * v3d[K, J02, I0]
+                * rgzv[None, J02, I0],
+            )
+            rrw = bk.set(rrw, (nz, J0, I0), bk.zeros(rrw[nz, J0, I0].shape))
+            rrw = bk.set(rrw, (nz + nk, J0, I0), bk.zeros(rrw[nz, J0, I0].shape))
+            rrw = bk.set(
+                rrw,
+                (Kw, J0, I0),
+                sigdot(
+                    bk,
+                    rf0[Kw, J0, I0] * w3d[Kw, J0, I0],
+                    rru,
+                    rrv,
+                    (2, nk),
+                    (0, nj + 1),
+                    (0, ni + 1),
+                    rds=rds,
+                    sigma=sigma,
+                    sigmaf=sigmaf,
+                    gz=gz,
+                    dzdx=dzdx,
+                    dzdy=dzdy,
+                    zt=zt,
+                ),
+            )
+            rrw = _bc.bcw(bk, g, rrw, 0, cfg)
+            dzf = rdsf[K][:, None, None]
+        else:
+            rru = bk.set(rru, (K, J0, I02), col(rho0, K) * u3d[K, J0, I02])
+            rrv = bk.set(rrv, (K, J02, I0), col(rho0, K) * v3d[K, J02, I0])
+            rrw = bk.set(rrw, (nz, J0, I0), bk.zeros(rrw[nz, J0, I0].shape))
+            rrw = bk.set(rrw, (nz + nk, J0, I0), bk.zeros(rrw[nz, J0, I0].shape))
+            rrw = bk.set(rrw, (Kw, J0, I0), col(rf0, Kw) * w3d[Kw, J0, I0])
+        dh = (
+            rru[K, J0, n : n + ni + 2] - rru[K, J0, n - 1 : n + ni + 1]
+        ) * g.rdx * uh0 + (
+            rrv[K, n : n + nj + 2, I0] - rrv[K, n - 1 : n + nj + 1, I0]
+        ) * g.rdy * vh0
+        if terr:
+            d = dh + (rrw[nz + 1 : nz + nk + 1, J0, I0] - rrw[K, J0, I0]) * dzf
+        else:
+            d = dh + (rrw[nz + 1 : nz + nk + 1, J0, I0] - rrw[K, J0, I0]) * g.rdz * col(
+                mh, K
+            )
         d = xp.where(xp.abs(d) < SMEPS, xp.zeros_like(d), d)
         divx = bk.set(divx, (K, J0, I0), d)
+
+        # ---- Coriolis (icor=1, f plane) ------------------------------------
+        if icor == 1:
+            umove = vmove = 0.0  # imove=0 (terrain) / not ported with icor
+            Jq, Iq = slice(n + 1, n + nj + 2), slice(n + 1, n + ni + 2)  # +1
+            Jm, Im = slice(n - 1, n + nj), slice(n - 1, n + ni)  # -1
+            R = (K, Jp, Ip)
+            vcor = 0.25 * (
+                (v3d[K, Jp, Ip] + v3d[K, Jq, Ip]) + (v3d[K, Jp, Im] + v3d[K, Jq, Im])
+            )
+            ucor = 0.25 * (
+                (u3d[K, Jp, Ip] + u3d[K, Jp, Iq]) + (u3d[K, Jm, Ip] + u3d[K, Jm, Iq])
+            )
+            uten = bk.set(uten, R, uten[R] + fcor * (vcor + vmove))
+            vten = bk.set(vten, R, vten[R] - fcor * (ucor + umove))
 
         # ---- advection of momentum -----------------------------------------
         uten = advu(
@@ -281,6 +412,9 @@ def solve2(
             c2=c2,
             dt=dttmp,
             cfg=cfg,
+            rho0=rho0,
+            gzu=gzu,
+            rdsf=rdsf,
         )["uten"]
         vten = advv(
             bk,
@@ -300,6 +434,9 @@ def solve2(
             c2=c2,
             dt=dttmp,
             cfg=cfg,
+            rho0=rho0,
+            gzv=gzv,
+            rdsf=rdsf,
         )["vten"]
         wten = advw(
             bk,
@@ -323,6 +460,8 @@ def solve2(
             dt=dttmp,
             iamw=True,
             cfg=cfg,
+            gz=gz,
+            rds=rds,
         )["wten"]
 
         # ---- buoyancy --------------------------------------------------------
@@ -336,6 +475,43 @@ def solve2(
                 + c2[Kb, Ji, Ii] * dum8[Kb, Ji, Ii]
             ),
         )
+
+        # ---- terrain: part of the horizontal pressure gradient (termod1) -----
+        if terr:
+            dum8 = _bc.bcs(bk, g, dum8, cfg)
+            Kd = slice(nz + 1, nz + nk)  # k = 2..nk
+            d1 = (
+                c1[Kd, J0, I0] * dum8[nz : nz + nk - 1, J0, I0]
+                + c2[Kd, J0, I0] * dum8[Kd, J0, I0]
+            )
+            zr = xp.zeros_like(d1[:1])
+            dum1 = bk.zeros(S)
+            dum1 = bk.set(dum1, (slice(1, nk + 2), J0, I0), xp.concat([zr, d1, zr]))
+            Iu = slice(n + ibw, n + ni + 1 - ibe)
+            Jv = slice(n + ibs, n + nj + 1 - ibn)
+            Kp1 = slice(nz + 1, nz + nk + 1)
+
+            def m1(sl):
+                return slice(sl.start - 1, sl.stop - 1)
+
+            tu = (
+                0.125
+                * (
+                    (dum1[Kp1, Ji, Iu] + dum1[Kp1, Ji, m1(Iu)])
+                    + (dum1[K, Ji, Iu] + dum1[K, Ji, m1(Iu)])
+                )
+                - 0.25 * (dum8[K, Ji, Iu] + dum8[K, Ji, m1(Iu)])
+            ) * (gxu[K, Ji, Iu] + gxu[Kp1, Ji, Iu])
+            uten = bk.set(uten, (K, Ji, Iu), uten[K, Ji, Iu] + tu)
+            tv = (
+                0.125
+                * (
+                    (dum1[Kp1, Jv, Ii] + dum1[Kp1, m1(Jv), Ii])
+                    + (dum1[K, Jv, Ii] + dum1[K, m1(Jv), Ii])
+                )
+                - 0.25 * (dum8[K, Jv, Ii] + dum8[K, m1(Jv), Ii])
+            ) * (gyv[K, Jv, Ii] + gyv[Kp1, Jv, Ii])
+            vten = bk.set(vten, (K, Jv, Ii), vten[K, Jv, Ii] + tv)
 
         if hooks is not None:
             hooks(
@@ -356,7 +532,10 @@ def solve2(
             )
 
         # ---- pressure equation: sadv = pi0 + pp3d ---------------------------
-        sadv = bk.set(sadv, (K, J0, I0), col(pi0, K) + pp3d[K, J0, I0])
+        if terr:
+            sadv = bk.set(sadv, (K, J0, I0), pi0[K, J0, I0] + pp3d[K, J0, I0])
+        else:
+            sadv = bk.set(sadv, (K, J0, I0), col(pi0, K) + pp3d[K, J0, I0])
 
         # ---- acoustic steps ---------------------------------------------------
         so = sound(
@@ -400,6 +579,10 @@ def solve2(
             radbce=radbce,
             radbcs=radbcs,
             radbcn=radbcn,
+            rho0=rho0,
+            rrf0=rrf0,
+            **(tm or {}),
+            cg=cg,
         )
         u3d, v3d, w3d, pp3d, ppx = (
             so["u3d"],
@@ -457,17 +640,19 @@ def solve2(
             )
 
         # ---- 3-D divergence (time-averaged velocities) into t11 ------------
-        t11 = getdiv(
-            bk,
-            g,
-            uh=uh[None, None, :],
-            vh=vh[None, :, None],
-            mh=mh,
-            u=rru,
-            v=rrv,
-            w=rrw,
-            div=t11,
-        )["div"]
+        if moist:
+            t11 = getdiv(
+                bk,
+                g,
+                uh=uh[None, None, :],
+                vh=vh[None, :, None],
+                mh=mh,
+                u=rru,
+                v=rrv,
+                w=rrw,
+                div=t11,
+                terrain=tm,
+            )["div"]
         gd = getdivx(
             bk,
             g,
@@ -481,13 +666,20 @@ def solve2(
             rrw=rrw,
             divx=divx,
             cfg=cfg,
+            **(tm or {}),
         )
         rru, rrv, rrw, divx = gd["rru"], gd["rrv"], gd["rrw"], gd["divx"]
 
         # ---- theta --------------------------------------------------------------
         thten = bk.zeros(S)
-        thten = bk.set(thten, SI, thten1[SI] - t11[SI] * thterm[SI])
-        sadv = bk.set(sadv, (K,), col(th0, K) - c.th0r + th3d[K])
+        if moist:
+            thten = bk.set(thten, SI, thten1[SI] - t11[SI] * thterm[SI])
+        else:
+            thten = bk.set(thten, SI, thten1[SI])
+        if terr:
+            sadv = bk.set(sadv, (K,), (th0[K] - c.th0r) + th3d[K])
+        else:
+            sadv = bk.set(sadv, (K,), col(th0, K) - c.th0r + th3d[K])
         thten = advs(
             bk,
             g,
@@ -514,6 +706,9 @@ def solve2(
             weps=10.0 * c.epsilon,
             pdefweno=0,
             cfg=cfg,
+            gz=gz,
+            rgz=rgz,
+            rdsf=rdsf,
         )["sten"]
         tn = tha[SI] + dttmp * thten[SI]
         tn = xp.where(xp.abs(tn) < SMEPS, xp.zeros_like(tn), tn)
@@ -550,6 +745,9 @@ def solve2(
                 weps=qmag[m] * c.epsilon,
                 pdefweno=(0 if m == nqv else 1),
                 cfg=cfg,
+                gz=gz,
+                rgz=rgz,
+                rdsf=rdsf,
             )["sten"]
             qn = qa[m][SI] + dttmp * sten[SI]
             qn = xp.where(xp.abs(qn) < SMEPS, xp.zeros_like(qn), qn)
@@ -560,7 +758,7 @@ def solve2(
 
         # ---- pressure, density ------------------------------------------------
         dopf = False
-        if nrk == NRKMAX and ptype >= 1:
+        if moist and nrk == NRKMAX and ptype >= 1:
             # subtract-off estimated diabatic terms used during RK steps,
             # save values before microphysics:
             pp3d = bk.set(pp3d, SI, pp3d[SI] - dt * qpten[SI])
@@ -572,14 +770,17 @@ def solve2(
             q3d[nqc] = bk.set(q3d[nqc], SI, q3d[nqc][SI] - dt * qcten[SI])
             qcten = bk.set(qcten, SI, q3d[nqc][SI])
 
-        def _prsrho(pp3d, prs, rho):
+        def _prsrho(pp3d, prs, rho, th3d=th3d, q3d=q3d):
             pit = pi0[SI] + pp3d[SI]
             p = c.p00 * (pit**c.cpdrd)
-            r = p / (
-                (th0[SI] + th3d[SI])
-                * pit
-                * (c.rd + xp.maximum(q3d[nqv][SI], xp.zeros_like(p)) * c.rv)
-            )
+            if moist:
+                r = p / (
+                    (th0[SI] + th3d[SI])
+                    * pit
+                    * (c.rd + xp.maximum(q3d[nqv][SI], xp.zeros_like(p)) * c.rv)
+                )
+            else:
+                r = p / (c.rd * (th0[SI] + th3d[SI]) * pit)
             return bk.set(prs, SI, p), bk.set(rho, SI, r)
 
         if nrk == NRKMAX:
@@ -598,6 +799,8 @@ def solve2(
         u3d = _bc.bcu(bk, g, u3d, cfg)
         v3d = _bc.bcv(bk, g, v3d, cfg)
         w3d = _bc.bcw(bk, g, w3d, 1, cfg)
+        if terr:
+            w3d = _bc.bcwsfc(bk, g, gz=gz, dzdx=dzdx, dzdy=dzdy, u=u3d, v=v3d, w=w3d)
         if nrk < NRKMAX:
             rho = _bc.bcp(bk, g, rho, cfg)
             pp3d = _bc.bcp(bk, g, pp3d, cfg)
@@ -632,6 +835,8 @@ def solve2(
                 dt=dttmp,
                 iamw=False,
                 cfg=cfg,
+                gz=gz,
+                rds=rds,
             )["wten"]
             tke3d = tke_rk_update(
                 bk, g, cfg, dttmp=dttmp, tkea=tkea, tten=wten, tke3d=tke3d

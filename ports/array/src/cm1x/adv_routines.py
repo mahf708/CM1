@@ -684,3 +684,55 @@ def vadv_weno5(bk, g, *, stag, c1, c2, rrw, a, pdef, pdefweno, weps, cfg=None):
         dumz = vadv_lwr_weno_23(bk, g, dumz=dumz, **kw)["dumz"]
         dumz = vadv_lwr_weno_35(bk, g, dumz=dumz, **kw)["dumz"]
     return {"dumz": dumz}
+
+
+# ---------------------------------------------------------------------------
+# terrain slope
+# ---------------------------------------------------------------------------
+
+
+def _flx4(s1, s2, s3, s4):
+    return (7.0 / 12.0) * (s3 + s2) - (1.0 / 12.0) * (s4 + s1)
+
+
+def _flx6(s1, s2, s3, s4, s5, s6):
+    return ((37.0 / 60.0) * (s4 + s3) + (-8.0 / 60.0) * (s5 + s2)) + (1.0 / 60.0) * (
+        s6 + s1
+    )
+
+
+def zsgrad(bk, g, cfg=None, *, zs, gz, dzdx, dzdy, uh, vh):
+    """Port of ``zsgrad``: terrain slopes dzdx (i, j = 1..ni, 1..nj) and dzdy
+    from zs interpolated to u / v points with the order of the horizontal
+    advection scheme, n = max(hadvordrs, hadvordrv).  ``zs``, ``gz``,
+    ``dzdx``, ``dzdy`` are 2-D ``[j, i]`` (``Grid.s_shape[1:]``); gz is
+    CM1's scratch array (left holding the v-point zs on j=1..nj+1, i=1..ni,
+    and the u-point zs at j=1..nj, i=ni+1 / unchanged elsewhere).
+    Returns {'gz', 'dzdx', 'dzdy'}."""
+    n = max(int(_opt(cfg, "hadvordrs", 5)), int(_opt(cfg, "hadvordrv", 5)))
+    ni, nj = g.ni, g.nj
+    J, I = slice(fi(1), fi(nj) + 1), slice(fi(1), fi(ni) + 1)
+    Ip, Jp = slice(fi(1), fi(ni + 1) + 1), slice(fi(1), fi(nj + 1) + 1)
+
+    def sx(d):  # zs(i+d, j) for i = 1..ni+1, j = 1..nj
+        return zs[J, fi(1) + d : fi(ni + 1) + d + 1]
+
+    def sy(d):  # zs(i, j+d) for j = 1..nj+1, i = 1..ni
+        return zs[fi(1) + d : fi(nj + 1) + d + 1, I]
+
+    if n <= 2:
+        fx, fy = 0.5 * (sx(-1) + sx(0)), 0.5 * (sy(-1) + sy(0))
+    elif n in (3, 4):
+        fx = _flx4(sx(-2), sx(-1), sx(0), sx(1))
+        fy = _flx4(sy(-2), sy(-1), sy(0), sy(1))
+    elif n in (5, 6):
+        fx = _flx6(sx(-3), sx(-2), sx(-1), sx(0), sx(1), sx(2))
+        fy = _flx6(sy(-3), sy(-2), sy(-1), sy(0), sy(1), sy(2))
+    else:
+        raise NotImplementedError(f"zsgrad: advection order {n} > 6 not ported")
+    rdx, rdy = 1.0 / g.dx, 1.0 / g.dy
+    gz = bk.set(bk.copy(gz), (J, Ip), fx)
+    dzdx = bk.set(bk.copy(dzdx), (J, I), (fx[:, 1:] - fx[:, :-1]) * rdx * uh[I])
+    gz = bk.set(gz, (Jp, I), fy)
+    dzdy = bk.set(bk.copy(dzdy), (J, I), (fy[1:] - fy[:-1]) * rdy * vh[J][:, None])
+    return {"gz": gz, "dzdx": dzdx, "dzdy": dzdy}

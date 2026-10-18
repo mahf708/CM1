@@ -31,6 +31,28 @@ from .solve2 import solve2
 from .solve3 import solve3
 from .state import initialize
 
+# terrain metrics (param.F / init_terrain.F) passed to solve2 / sound
+TERRAIN_KEYS = (
+    "rds",
+    "sigma",
+    "rdsf",
+    "sigmaf",
+    "gz",
+    "rgz",
+    "gzu",
+    "rgzu",
+    "gzv",
+    "rgzv",
+    "dzdx",
+    "dzdy",
+    "gx",
+    "gxu",
+    "gy",
+    "gyv",
+    "zt",
+)
+CG_KEYS = ("cgs1", "cgs2", "cgs3", "cgt1", "cgt2", "cgt3")
+
 FIELDS = (
     "u",
     "v",
@@ -135,7 +157,13 @@ class Model:
         s["radbce"] = bk.zeros((S[0], S[1]))
         s["radbcs"] = bk.zeros((S[0], S[2]))
         s["radbcn"] = bk.zeros((S[0], S[2]))
-        self.les = int(cfg.get("sgsmodel", 0)) == 1
+        # cm1setup=0 means no subgrid turbulence (idoles=.false.)
+        self.les = int(cfg.get("sgsmodel", 0)) == 1 and int(cfg.get("cm1setup", 1)) in (
+            1,
+            4,
+        )
+        self.terrain = bool(cfg.get("terrain_flag", False))
+        self.moist = int(cfg.imoist) == 1
         if self.les:
             from .turb import turb_constants
 
@@ -274,8 +302,11 @@ class Model:
         updated in place, as before."""
         bk, g, cfg = self.bk, self.grid, self.cfg
         s = dict(s)
-        xp = bk.xp
         dt = self.dt
+        tk = {}
+        if self.terrain:
+            tk = {k: b[k] for k in TERRAIN_KEYS}
+            tk["cg"] = {k: b[k] for k in CG_KEYS}
 
         r1 = solve1(
             bk,
@@ -370,33 +401,17 @@ class Model:
             tke3d=s.get("tke3d"),
             tketen=r1.get("tketen"),
             hooks=hooks,
+            **tk,
         )
         if hooks is not None:
             hooks("post_solve2", 0, r2)
 
-        mp = mp_driver(
-            bk,
-            g,
-            cfg,
-            dt=dt,
-            qbudget=s["qbudget"],
-            asq=s["asq"],
-            ruh=b["ruh"],
-            rvh=b["rvh"],
-            mh=b["mh"],
-            rmh=b["rmh"],
-            zh=b["zh"],
-            mf=b["mf"],
-            rain=s["rain"],
-            prate=s["prate"],
-            pi0=b["pi0"],
-            th0=b["th0"],
-            rho=r2["rho"],
-            prs=r2["prs"],
-            pp3d=r2["pp3d"],
-            th3d=r2["th3d"],
-            q3d=xp.stack(r2["q3d"], axis=0),
-        )
+        if not self.moist:  # cm1.F: microphysics only with imoist=1
+            mp = {k: r2[k] for k in ("pp3d", "th3d", "rho", "prs")}
+            mp.update({k: s[k] for k in ("rain", "prate", "qbudget", "asq")})
+            mp["q3d"] = r2["q3d"]
+        else:
+            mp = self._mp(s, b, r2)
         if hooks is not None:
             hooks("post_mp", 0, mp)
         q3d = [mp["q3d"][m] for m in range(len(r2["q3d"]))]
@@ -428,12 +443,13 @@ class Model:
             qa=s["qa"],
             tke3d=r2["tke3d"],
             tkea=s.get("tkea"),
+            **{k: b.get(k) for k in ("gz", "dzdx", "dzdy")},
         )
 
         s.update(
             u3d=r2["u3d"],
             v3d=r2["v3d"],
-            w3d=r2["w3d"],
+            w3d=r3["w3d"],
             divx=r2["divx"],
             prs=mp["prs"],
             rain=mp["rain"],
@@ -479,6 +495,35 @@ class Model:
                 q3d=r3["q3d"],
             )
         return s
+
+    def _mp(self, s, b, r2):
+        """cm1.F: ``mp_driver`` (imoist=1)."""
+        bk, g, cfg = self.bk, self.grid, self.cfg
+        xp = bk.xp
+        dt = self.dt
+        return mp_driver(
+            bk,
+            g,
+            cfg,
+            dt=dt,
+            qbudget=s["qbudget"],
+            asq=s["asq"],
+            ruh=b["ruh"],
+            rvh=b["rvh"],
+            mh=b["mh"],
+            rmh=b["rmh"],
+            zh=b["zh"],
+            mf=b["mf"],
+            rain=s["rain"],
+            prate=s["prate"],
+            pi0=b["pi0"],
+            th0=b["th0"],
+            rho=r2["rho"],
+            prs=r2["prs"],
+            pp3d=r2["pp3d"],
+            th3d=r2["th3d"],
+            q3d=xp.stack(r2["q3d"], axis=0),
+        )
 
     def _turb_inputs(self, s=None, b=None):
         s = self.state if s is None else s

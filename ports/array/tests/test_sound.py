@@ -209,7 +209,6 @@ def test_unsupported(bk, grid):
     d = make_inputs(grid)
     a = {k: bk.asarray(v) for k, v in d.items()}
     for opt in (
-        dict(terrain_flag=True),
         dict(axisymm=1),
         dict(wbc=5),
         dict(wbc=2, irbc=2),

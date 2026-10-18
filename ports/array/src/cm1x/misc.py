@@ -79,15 +79,76 @@ def dtsmall(
     return {"nsound": nsound, "dt": dt, "dbldt": dbldt}
 
 
-def getdiv(bk, g, *, uh, vh, mh, u, v, w, div=None):
-    """misclibs.F getdiv (Cartesian, no terrain): 3-D divergence of (u,v,w)
-    at interior scalar points.  Returns {'div': div}."""
+def getdiv(bk, g, *, uh, vh, mh, u, v, w, div=None, terrain=None):
+    """misclibs.F getdiv (Cartesian): 3-D divergence of (u,v,w) at interior
+    scalar points.  ``terrain`` (None without terrain_flag) is a dict with the
+    metrics rds, rdsf, sigma, sigmaf, gz, rgzu, rgzv, dzdx, dzdy and zt; the
+    divergence is then that of (u*rgzu, v*rgzv, sigma-dot).  ``uh``/``vh``
+    are broadcastable 1-D rows.  Returns {'div': div}."""
     xp = bk.xp
     K, J, I = g.K, g.J, g.I
     n, nz = g.ngxy, g.ngz
     ni, nj, nk = g.ni, g.nj, g.nk
     if div is None:
         div = bk.zeros(g.s_shape)
+    if terrain is not None:
+        from .adv import g2, kv, sigdot
+        from .adv_routines import put3, sub3
+
+        t = terrain
+        Kf, Jf, If = (1, nk), (1, nj), (1, ni)
+        Iu, Jv = (1, ni + 1), (1, nj + 1)
+        dum1 = put3(
+            bk,
+            bk.zeros(g.u_shape),
+            Kf,
+            Jf,
+            Iu,
+            sub3(u, Kf, Jf, Iu) * g2(t["rgzu"], Jf, Iu),
+        )
+        dum2 = put3(
+            bk,
+            bk.zeros(g.v_shape),
+            Kf,
+            Jv,
+            If,
+            sub3(v, Kf, Jv, If) * g2(t["rgzv"], Jv, If),
+        )
+        dum3 = bk.zeros(g.w_shape)
+        if nk >= 2:
+            Kw = (2, nk)
+            dum3 = put3(
+                bk,
+                dum3,
+                Kw,
+                Jf,
+                If,
+                sigdot(
+                    bk,
+                    sub3(w, Kw, Jf, If),
+                    dum1,
+                    dum2,
+                    Kw,
+                    Jf,
+                    If,
+                    **{
+                        k: t[k]
+                        for k in ("rds", "sigma", "sigmaf", "gz", "dzdx", "dzdy", "zt")
+                    },
+                ),
+            )
+        d = (
+            (dum1[K, J, n + 1 : n + ni + 1] - dum1[K, J, n : n + ni])
+            * g.rdx
+            * uh[:, :, I]
+            + (dum2[K, n + 1 : n + nj + 1, I] - dum2[K, n : n + nj, I])
+            * g.rdy
+            * vh[:, J, :]
+        ) + (dum3[nz + 1 : nz + nk + 1, J, I] - dum3[nz : nz + nk, J, I]) * kv(
+            t["rdsf"], Kf
+        )
+        d = xp.where(xp.abs(d) < SMEPS, xp.zeros_like(d), d)
+        return {"div": bk.set(div, (K, J, I), d)}
     du = (u[K, J, n + 1 : n + ni + 1] - u[K, J, n : n + ni]) * g.rdx * uh[:, :, I]
     dv = (v[K, n + 1 : n + nj + 1, I] - v[K, n : n + nj, I]) * g.rdy * vh[:, J, :]
     dw = (

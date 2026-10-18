@@ -50,6 +50,7 @@ def initialize(cfg, bk):
         zf=pg["zf"],
         mf=pg["mf"],
         cg=pg,
+        g=g,
     )
     b = dict(pg)
     b.update(bs)
@@ -90,6 +91,9 @@ def initialize(cfg, bk):
         rvh=b["rvh"],
         cg=pg,
         g=g,
+        gz=b.get("gz"),
+        dzdx=b.get("dzdx"),
+        dzdy=b.get("dzdy"),
     )
     b["rth0"] = gs.pop("rth0")
     state = dict(st)

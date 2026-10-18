@@ -1,18 +1,22 @@
 """Pre-RK tendencies, ported from src/solve1.F.
 
 Only the code paths active for the reference cases (irdamp=0/1, hrdamp=0,
-sgsmodel=0 or 1 (cm1setup=1), idiff=0, lspgrad=0, testcase=0, no
-radiation/PBL/cumulus/nudging/recycling, psolver=3, eqtset=2, imoist=1,
-ptype>=1) are ported, in solve1.F's order:
+sgsmodel=0 or 1 (cm1setup=1), idiff=0, lspgrad=0/1, testcase=0, no
+radiation/PBL/cumulus/nudging/recycling, psolver=3, eqtset=2, imoist=0/1,
+ptype>=1 when moist; terrain_flag with or without TKE as far as cm1x.turb
+supports it) are ported, in solve1.F's order:
 
   * sgsmodel=1: the TKE tendency tketen (shear/buoyancy production -
     dissipation, cm1x.turb.tke_source) plus its subgrid diffusion (turbt);
   * Rayleigh damping (irdamp=1) into uten1, vten1, wten1, thten1;
   * qten = 0;
+  * lspgrad=1: large-scale pressure gradient in geostrophic balance with
+    the base-state wind (icor=1, fcor);
   * sgsmodel=1: dissipative heating (idiss=1, cm1x.turb.dissheat) and the
     ``doturb`` block (turbu/turbv/turbw/turbs, cm1x.turb.turb_tendencies);
-  * the mass-conserving pressure tendency ppten (eqtset=2, moist) plus the
-    diabatic tendencies of the previous step (qpten, qtten, qvten, qcten).
+  * the mass-conserving pressure tendency ppten (eqtset=2, moist or dry)
+    plus, when moist, the diabatic tendencies of the previous step (qpten,
+    qtten, qvten, qcten).
 
 With sgsmodel=0 the turbulence terms are identically zero (zero eddy
 viscosities, stresses and dissipation) and are skipped.
@@ -38,7 +42,7 @@ def _check(cfg):
     for name, ok in (
         ("irdamp", (0, 1)),
         ("hrdamp", (0,)),
-        ("lspgrad", (0,)),
+        ("lspgrad", (0, 1)),
         ("idiff", (0,)),
         ("sgsmodel", (0, 1)),
         ("ipbl", (0,)),
@@ -48,7 +52,7 @@ def _check(cfg):
         ("rterm", (0,)),
         ("eqtset", (2,)),
         ("psolver", (3,)),
-        ("imoist", (1,)),
+        ("imoist", (0, 1)),
         ("isfcflx", (0,)),
         ("axisymm", (0,)),
     ):
@@ -57,7 +61,6 @@ def _check(cfg):
             bad.append(f"{name}={v}")
     for name in (
         "do_lsnudge",
-        "terrain_flag",
         "do_recycle_w",
         "do_recycle_e",
         "do_recycle_s",
@@ -65,8 +68,13 @@ def _check(cfg):
     ):
         if _opt(cfg, name, False):
             bad.append(f"{name}=T")
-    if int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) != 1:
+    if int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) not in (
+        0,
+        1,
+    ):
         bad.append(f"sgsmodel=1 with cm1setup={_opt(cfg, 'cm1setup', 1)}")
+    if int(_opt(cfg, "lspgrad", 0)) == 1 and int(_opt(cfg, "imove", 0)) != 0:
+        bad.append("lspgrad=1 with imove=1")
     if bad:
         raise NotImplementedError("solve1: options not ported: " + ", ".join(bad))
 
@@ -136,7 +144,8 @@ def solve1(
     else:
         qten = [bk.copy(q) for q in qten]
 
-    les = int(_opt(cfg, "sgsmodel", 0)) == 1
+    # cm1setup=0: no subgrid turbulence (idoles = .false.) whatever sgsmodel
+    les = int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) == 1
     tketen = None
     if les:
         from .turb import dissheat, tke_source, turb_tendencies
@@ -207,6 +216,17 @@ def solve1(
     for m in range(numq):
         qten[m] = bk.set(qten[m], S, bk.zeros(qa[m][S].shape))
 
+    # ---- large-scale pressure gradient (lspgrad=1) ---------------------------
+    if int(_opt(cfg, "lspgrad", 0)) == 1:
+        fcor = float(_opt(cfg, "fcor", 0.0))
+        vmove = umove = 0.0  # imove=0
+        Jq = slice(n + 1, n + nj + 2)  # j+1
+        Iq = slice(n + 1, n + ni + 2)  # i+1
+        vs = 0.25 * ((v0[K, Jp, Ip] + v0[K, Jq, Ip]) + (v0[K, Jp, Im] + v0[K, Jq, Im]))
+        us = 0.25 * ((u0[K, Jp, Ip] + u0[K, Jp, Iq]) + (u0[K, Jm, Ip] + u0[K, Jm, Iq]))
+        uten1 = bk.set(uten1, R, uten1[R] - fcor * (vs + vmove))
+        vten1 = bk.set(vten1, R, vten1[R] + fcor * (us + umove))
+
     # ---- subgrid turbulence (sgsmodel=1) ------------------------------------
     if les:
         if int(_opt(cfg, "idiss", 1)) == 1:
@@ -264,21 +284,26 @@ def solve1(
         )
         qten = list(tt["qten"])
 
-    # ---- pressure tendency for mass conservation (eqtset=2, moist) --------
+    # ---- pressure tendency for mass conservation (eqtset=2) ---------------
     rdt = 1.0 / dt
     tem = 0.0001 * TSMALL
     th1 = thten1[S]
-    qv1 = qten[nqv][S]
     thnew = tha[S] + dt * th1
-    qvnew = qa[nqv][S] + dt * qv1
-    pinew = (
-        rho[S] * (th0[S] + thnew) * (c.rd + c.rv * qvnew) * c.rp00
-    ) ** c.rddcv - pi0[S]
-    cond = (xp.abs(dt * th1) > tem) | (xp.abs(dt * qv1) > QSMALL)
+    moist = int(_opt(cfg, "imoist", 1)) == 1
+    if moist:
+        qv1 = qten[nqv][S]
+        qvnew = qa[nqv][S] + dt * qv1
+        pinew = (
+            rho[S] * (th0[S] + thnew) * (c.rd + c.rv * qvnew) * c.rp00
+        ) ** c.rddcv - pi0[S]
+        cond = (xp.abs(dt * th1) > tem) | (xp.abs(dt * qv1) > QSMALL)
+    else:
+        pinew = (rho[S] * (th0[S] + thnew) * c.rd * c.rp00) ** c.rddcv - pi0[S]
+        cond = xp.abs(dt * th1) > tem
     pt = xp.where(cond, (pinew - ppi[S]) * rdt, xp.zeros_like(pinew))
     ppten = bk.set(ppten, S, pt)
 
-    if ptype >= 1:
+    if moist and ptype >= 1:
         # diabatic tendencies from last timestep as a good estimate
         ppten = bk.set(ppten, S, ppten[S] + qpten[S])
         thten1 = bk.set(thten1, S, thten1[S] + qtten[S])
