@@ -327,6 +327,16 @@ TEST_CASE("dyncore + terrain: nh_mountain_waves from Model::init (no dump)", "[d
   run_case("nh_mountain_waves", 0.0, true);
 }
 
+TEST_CASE("dyncore + terrain: nh_mountain_waves_long from Model::init (900 steps)", "[dyn][step][init][terrain][long]") {
+  // 30 min of mountain waves, for long-run drift; skipped when the step
+  // tests are capped (CM1K_MAX_STEP, the bounds-checked debug build)
+  if (cm1k::testing::max_step() < 900) {
+    WARN("nh_mountain_waves_long skipped (CM1K_MAX_STEP < 900)");
+    return;
+  }
+  run_case("nh_mountain_waves_long", 0.0, true);
+}
+
 TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke vs Fortran",
           "[dyn][step][terrain][kessler][turb]") {
   // 3D hill (itern=3), periodic, TKE (doimpl=1, idiss=1) and Kessler

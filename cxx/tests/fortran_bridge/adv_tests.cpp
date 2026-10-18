@@ -38,6 +38,8 @@ void cm1f_advw(int nrk, double dt, int hadvorder, int vadvorder, int advweno, in
                const double* rho0, const double* rr0, const double* rf0, const double* rrf0,
                const double* rru, const double* rrv, const double* rrw, const double* divx,
                const double* rho, const double* u3d, const double* v3d, const double* w3d, double* wten);
+void cm1f_adv_terrain(const double* gz, const double* rgz, const double* gzu, const double* gzv,
+                      const double* rds, const double* rdsf);
 }
 
 using namespace cm1k;
@@ -84,7 +86,15 @@ struct Setup {
     b.ib = 1 - ngxy; b.ie = ni + ngxy; b.jb = 1 - ngxy; b.je = nj + ngxy; b.kb = 0; b.ke = nk + 1;
     return b;
   }
-  Setup(int ni, int nj, int nk, int ngxy) : Setup(box(ni, nj, nk, ngxy)) {}
+  static Bounds with_terrain(Bounds b, bool terrain) {
+    if (terrain) {
+      b.terrain_flag = true;
+      b.itb = b.ib; b.ite = b.ie; b.jtb = b.jb; b.jte = b.je; b.ktb = b.kb; b.kte = b.ke;
+    }
+    return b;
+  }
+  Setup(int ni, int nj, int nk, int ngxy, bool terrain = false)
+      : Setup(with_terrain(box(ni, nj, nk, ngxy), terrain)) {}
   explicit Setup(const Bounds& bb) : b(bb) {
     g.allocate(b);
     base.allocate(b);
@@ -156,6 +166,26 @@ struct Setup {
     cm1f_adv_setup(b.ni, b.nj, b.nk, b.ngxy, b.ngz, iopt, ropt);
   }
   AdvFluxes fluxes() const { return AdvFluxes{rru.d, rrv.d, rrw.d, divx.d, rho.d, rr.d}; }
+
+  // terrain_flag: random (not mutually consistent) metrics on both sides;
+  // call after fortran_setup
+  void terrain(std::mt19937_64& gen) {
+    std::uniform_real_distribution<double> U(-1.0, 1.0);
+    o.terrain_flag = true;
+    auto h2 = [](const FArray3& a) { return a.to_host(); };
+    auto gz = h2(g.gz), rgz = h2(g.rgz), gzu = h2(g.gzu), gzv = h2(g.gzv);
+    for (int j = b.jb; j <= b.je; ++j)
+      for (int i = b.ib; i <= b.ie; ++i) {
+        gz(i, j, 1) = 1.0 + 0.1*U(gen); rgz(i, j, 1) = 1.0/gz(i, j, 1);
+        gzu(i, j, 1) = 1.0 + 0.1*U(gen); gzv(i, j, 1) = 1.0 + 0.1*U(gen);
+      }
+    auto rds = g.rds.to_host(), rdsf = g.rdsf.to_host();
+    for (int k = b.kb; k <= b.ke; ++k) rds(k) = g.rdz*(1.0 + 0.2*U(gen));
+    for (int k = b.kb; k <= b.ke + 1; ++k) rdsf(k) = g.rdz*(1.0 + 0.2*U(gen));
+    g.gz.deep_copy_from(gz); g.rgz.deep_copy_from(rgz); g.gzu.deep_copy_from(gzu); g.gzv.deep_copy_from(gzv);
+    g.rds.deep_copy_from(rds); g.rdsf.deep_copy_from(rdsf);
+    cm1f_adv_terrain(gz.data(), rgz.data(), gzu.data(), gzv.data(), rds.data(), rdsf.data());
+  }
 };
 
 // Deep copy of a host array (to_host() of a host array aliases it).
@@ -193,11 +223,12 @@ Pair<3> rand_field(const std::string& n, const std::array<int, 3>& lb, const std
 
 struct ScalarCase {
   int order_h, order_v, wbc, nrk, wflag, advwenos, pdef, pdefweno, diffit, mdiff;
+  bool terrain = false;
 };
 
 void run_advs(const ScalarCase& c, int ngxy, unsigned seed) {
   std::mt19937_64 gen(seed);
-  Setup S(12, 10, 22, ngxy);
+  Setup S(12, 10, 22, ngxy, c.terrain);
   S.o.hadvordrs = c.order_h; S.o.vadvordrs = c.order_v;
   S.o.advwenos = c.advwenos; S.o.weno_order = 5;
   S.o.idiff = c.diffit; S.o.mdiff = c.mdiff; S.o.difforder = 6;
@@ -205,6 +236,7 @@ void run_advs(const ScalarCase& c, int ngxy, unsigned seed) {
   S.o.set_boundary_flags();
   S.randomize(gen);
   S.fortran_setup();
+  if (c.terrain) S.terrain(gen);
 
   const std::array<int, 3> lo{S.b.ib, S.b.jb, S.b.kb}, hi{S.b.ie, S.b.je, S.b.ke};
   // moisture-like (many zeros, pdef active) or theta-like fields
@@ -230,17 +262,19 @@ void run_advs(const ScalarCase& c, int ngxy, unsigned seed) {
   std::ostringstream os;
   os << "advs order " << c.order_h << "/" << c.order_v << " wbc " << c.wbc << " nrk " << c.nrk
      << " wflag " << c.wflag << " advwenos " << c.advwenos << " pdef " << c.pdef
-     << " pdefweno " << c.pdefweno << " diffit " << c.diffit << " mdiff " << c.mdiff << " ngxy " << ngxy;
+     << " pdefweno " << c.pdefweno << " diffit " << c.diffit << " mdiff " << c.mdiff << " ngxy " << ngxy
+     << " terrain " << c.terrain;
   require_same(sten.h, sten_f, os.str());
 }
 
 struct VelCase {
   int order_h, order_v, bc, nrk, advwenov, idiff, mdiff;
+  bool terrain = false;
 };
 
 void run_advuvw(const VelCase& c, int ngxy, unsigned seed) {
   std::mt19937_64 gen(seed);
-  Setup S(12, 10, 22, ngxy);
+  Setup S(12, 10, 22, ngxy, c.terrain);
   S.o.hadvordrv = c.order_h; S.o.vadvordrv = c.order_v;
   S.o.hadvordrs = c.order_h; S.o.vadvordrs = c.order_v;
   S.o.advwenov = c.advwenov; S.o.advwenos = c.advwenov; S.o.weno_order = 5;
@@ -249,6 +283,7 @@ void run_advuvw(const VelCase& c, int ngxy, unsigned seed) {
   S.o.set_boundary_flags();
   S.randomize(gen);
   S.fortran_setup();
+  if (c.terrain) S.terrain(gen);
 
   const auto& b = S.b;
   auto u3d = rand_field("u3d", {b.ib, b.jb, b.kb}, {b.ie + 1, b.je, b.ke}, gen, 10.0, 5.0);
@@ -282,7 +317,8 @@ void run_advuvw(const VelCase& c, int ngxy, unsigned seed) {
 
   std::ostringstream os;
   os << "order " << c.order_h << "/" << c.order_v << " bc " << c.bc << " nrk " << c.nrk
-     << " advwenov " << c.advwenov << " idiff " << c.idiff << " mdiff " << c.mdiff << " ngxy " << ngxy;
+     << " advwenov " << c.advwenov << " idiff " << c.idiff << " mdiff " << c.mdiff << " ngxy " << ngxy
+     << " terrain " << c.terrain;
   require_same(uten.h, uten_f, "advu " + os.str());
   require_same(vten.h, vten_f, "advv " + os.str());
   require_same(wten.h, wten_f, "advw " + os.str());
@@ -352,10 +388,28 @@ TEST_CASE("advu/advv/advw match adv.F", "[bridge][adv]") {
       run_advuvw({5, 5, bc, 3, 0, 1, mdiff}, 3, seed++);
 }
 
+TEST_CASE("advs/advu/advv/advw match adv.F with terrain", "[bridge][adv][terrain]") {
+  unsigned seed = 700;
+  for (int bc : {1, 2})
+    for (int nrk : {1, 3}) {
+      for (int pdef : {0, 1}) run_advs({5, 5, bc, nrk, 1, 0, pdef, 0, 0, 0, true}, 3, seed++);
+      for (int advwenos : {1, 2})
+        for (int pdefweno : {0, 1}) run_advs({5, 5, bc, nrk, 1, advwenos, 1, pdefweno, 0, 0, true}, 3, seed++);
+      run_advs({5, 5, bc, nrk, 1, 0, 0, 0, 1, 1, true}, 3, seed++);   // diff6 inside advs
+      run_advuvw({5, 5, bc, nrk, 0, 0, 0, true}, 3, seed++);
+      run_advuvw({5, 5, bc, nrk, 1, 1, 1, true}, 3, seed++);
+    }
+  for (int order : {2, 3, 4, 6})
+    run_advs({order, order, 1, 3, 1, 0, 1, 0, 0, 0, true}, ngxy_for(order), seed++);
+  // reset the Fortran state (terrain off) for the other tests
+  Setup S(12, 10, 22, 3);
+  S.fortran_setup();
+}
+
 TEST_CASE("advection options: unsupported values throw", "[adv]") {
   AdvOptions o;
   o.check();
-  { auto x = o; x.terrain_flag = true; REQUIRE_THROWS(x.check()); }
+  { auto x = o; x.terrain_flag = true; REQUIRE_NOTHROW(x.check()); }   // terrain branches are ported
   { auto x = o; x.axisymm = 1; REQUIRE_THROWS(x.check()); }
   { auto x = o; x.do_ib = true; REQUIRE_THROWS(x.check()); }
   { auto x = o; x.dolsw = true; REQUIRE_THROWS(x.check()); }

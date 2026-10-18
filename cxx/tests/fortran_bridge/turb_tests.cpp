@@ -82,6 +82,48 @@ void cm1f_sfc_turbs(int iflux, double dt, const double* uh, const double* uf, co
                     const double* sflux);
 void cm1f_sfc_dissheat(const double* pi0, const double* ppi, const double* qa, const double* dissten,
                        const double* zf, const double* ust, const double* zntmp, double* thten1);
+// terrain branches (cm1f_bridge_turbterrain.F90)
+void cm1f_turbterrain_setup(double zt, const double* cg);
+void cm1f_turbterrain_off();
+void cm1f_turbterrain_calcdef(const double* rds, const double* sigma, const double* rdsf, const double* sigmaf,
+                              const double* zs, const double* gz, const double* rgz, const double* gzu,
+                              const double* rgzu, const double* gzv, const double* rgzv, const double* gx,
+                              const double* gy, const double* uh, const double* uf, const double* vh,
+                              const double* vf, const double* mh, const double* c1, const double* c2,
+                              const double* mf, const double* rho, const double* rr, const double* rf,
+                              const double* ua, const double* va, const double* wa, double* s11, double* s12,
+                              double* s13, double* s22, double* s23, double* s33, double* defv, double* defh);
+void cm1f_turbterrain_turbt(double dt, const double* rds, const double* sigma, const double* gz, const double* rgz,
+                            const double* gzu, const double* rgzu, const double* gzv, const double* rgzv,
+                            const double* uh, const double* uf, const double* vh, const double* vf,
+                            const double* mh, const double* mf, const double* rho, const double* rr,
+                            const double* rf, const double* t, double* tten, const double* kmh, const double* kmv);
+void cm1f_turbterrain_turbu(double dt, const double* zs, const double* gz, const double* rgz, const double* gzu,
+                            const double* gzv, const double* rds, const double* sigma, const double* rdsf,
+                            const double* sigmaf, const double* gxu, const double* ruh, const double* uf,
+                            const double* vh, const double* mh, const double* mf, const double* rmf,
+                            const double* rho, const double* rf, const double* u, double* uten, const double* w,
+                            const double* t11, const double* t12, const double* t13, const double* t22,
+                            const double* kmv);
+void cm1f_turbterrain_turbv(double dt, const double* zs, const double* gz, const double* rgz, const double* gzu,
+                            const double* gzv, const double* rds, const double* sigma, const double* rdsf,
+                            const double* sigmaf, const double* gyv, const double* uh, const double* rvh,
+                            const double* vf, const double* mh, const double* mf, const double* rho,
+                            const double* rr, const double* rf, const double* v, double* vten, const double* w,
+                            const double* t12, const double* t22, const double* t23, const double* kmv);
+void cm1f_turbterrain_turbw(double dt, const double* gz, const double* rgzu, const double* rgzv, const double* rds,
+                            const double* sigma, const double* uh, const double* vh, const double* mh,
+                            const double* mf, const double* rho, const double* rf, const double* w, double* wten,
+                            const double* t13, const double* t23, const double* t33, const double* t22,
+                            const double* kmh);
+void cm1f_turbterrain_turbs(int iflux, double dt, const double* rds, const double* sigma, const double* rdsf,
+                            const double* sigmaf, const double* gz, const double* rgz, const double* gzu,
+                            const double* rgzu, const double* gzv, const double* rgzv, const double* gx,
+                            const double* gxu, const double* gy, const double* gyv, const double* uh,
+                            const double* uf, const double* vh, const double* vf, const double* mh,
+                            const double* mf, const double* rho, const double* rr, const double* rf,
+                            const double* s, double* sten, const double* khh, const double* khv,
+                            const double* dum7, const double* dum8);
 }
 
 using namespace cm1k;
@@ -577,6 +619,141 @@ void check_tendencies(const Case& cs, unsigned seed) {
   require_same(tke3d.h, t3f, "tke_rk_update");
 }
 
+
+//------------------------------------------------------------------------------
+// terrain branches (terrain_flag=.true.): random (not mutually consistent)
+// metrics; every output array compared bit-for-bit over its whole extent
+
+void check_terrain(const Case& cs, unsigned seed) {
+  INFO("terrain " << cs.str());
+  std::mt19937_64 gen(seed);
+  const auto o0 = options_for(cs);
+  auto bb = box(10, 9, 12, 3, o0.numq);
+  bb.terrain_flag = true;
+  bb.itb = bb.ib; bb.ite = bb.ie; bb.jtb = bb.jb; bb.jte = bb.je; bb.ktb = bb.kb; bb.kte = bb.ke;
+  auto o = o0;
+  o.terrain_flag = true;
+  Setup S(bb, o);
+  S.randomize(gen);
+  auto& g = S.g;
+  const auto& b = S.b;
+  // stretched sigma levels and their inverse spacings
+  auto sigma = wrap(g.sigma), sigmaf = wrap(g.sigmaf), rds = wrap(g.rds), rdsf = wrap(g.rdsf);
+  {
+    double z = -g.dz;
+    for (int k = b.kb; k <= b.ke + 1; ++k) { sigmaf.h(k) = z; z += g.dz * (1.0 + 0.2 * U(gen)); }
+    for (int k = b.kb; k <= b.ke; ++k) {
+      sigma.h(k) = 0.5 * (sigmaf.h(k) + sigmaf.h(k + 1));
+      rdsf.h(k) = 1.0 / (sigmaf.h(k + 1) - sigmaf.h(k));
+    }
+    rdsf.h(b.ke + 1) = rdsf.h(b.ke);
+    for (int k = b.kb + 1; k <= b.ke; ++k) rds.h(k) = 1.0 / (sigma.h(k) - sigma.h(k - 1));
+    rds.h(b.kb) = rds.h(b.kb + 1);
+    for (auto* p : {&sigma, &sigmaf, &rds, &rdsf}) p->to_dev();
+  }
+  g.zt = sigmaf.h(b.nk + 1);
+  g.rzt = 1.0 / g.zt;
+  const auto ex = init::extrap_coeffs(sigma.h, sigmaf.h, b.nk);
+  g.cgs1 = ex.cgs1; g.cgs2 = ex.cgs2; g.cgs3 = ex.cgs3; g.cgt1 = ex.cgt1; g.cgt2 = ex.cgt2; g.cgt3 = ex.cgt3;
+  auto zs = wrap(g.zs), gz = wrap(g.gz), rgz = wrap(g.rgz), gzu = wrap(g.gzu), rgzu = wrap(g.rgzu),
+       gzv = wrap(g.gzv), rgzv = wrap(g.rgzv), gx = wrap(g.gx), gxu = wrap(g.gxu), gy = wrap(g.gy),
+       gyv = wrap(g.gyv);
+  for (int j = b.jb; j <= b.je; ++j)
+    for (int i = b.ib; i <= b.ie; ++i) {
+      zs.h(i, j, 1) = 300.0 * (1.0 + U(gen));
+      gz.h(i, j, 1) = 1.0 + 0.1 * U(gen);   rgz.h(i, j, 1) = 1.0 / gz.h(i, j, 1);
+      gzu.h(i, j, 1) = 1.0 + 0.1 * U(gen);  rgzu.h(i, j, 1) = 1.0 / gzu.h(i, j, 1);
+      gzv.h(i, j, 1) = 1.0 + 0.1 * U(gen);  rgzv.h(i, j, 1) = 1.0 / gzv.h(i, j, 1);
+      for (int k = b.kb; k <= b.ke; ++k) {
+        gx.h(i, j, k) = 0.05 * U(gen); gxu.h(i, j, k) = 0.05 * U(gen);
+        gy.h(i, j, k) = 0.05 * U(gen); gyv.h(i, j, k) = 0.05 * U(gen);
+      }
+    }
+  for (auto* p : {&zs, &gz, &rgz, &gzu, &rgzu, &gzv, &rgzv, &gx, &gxu, &gy, &gyv}) p->to_dev();
+  S.fortran_setup();
+  const double cg[6] = {g.cgs1, g.cgs2, g.cgs3, g.cgt1, g.cgt2, g.cgt3};
+  cm1f_turbterrain_setup(g.zt, cg);
+  const double dt = 6.0;
+
+  {  // calcdef
+    std::vector<FArray<3, HostSpace>> f;
+    for (auto* p : {&S.t11, &S.t12, &S.t13, &S.t22, &S.t23, &S.t33, &S.defv, &S.defh}) f.push_back(hcopy(p->h));
+    T::calcdef(S.o, g, S.rho.d, S.rf.d, S.ua.d, S.va.d, S.wa.d, S.ts.t11, S.ts.t12, S.ts.t13, S.ts.t22,
+               S.ts.t23, S.ts.t33, S.ts.defv, S.ts.defh, S.w.d1, S.w.d2);
+    S.sync_to_host();
+    cm1f_turbterrain_calcdef(rds.p(), sigma.p(), rdsf.p(), sigmaf.p(), zs.p(), gz.p(), rgz.p(), gzu.p(), rgzu.p(),
+                             gzv.p(), rgzv.p(), gx.p(), gy.p(), S.uh.p(), S.uf.p(), S.vh.p(), S.vf.p(), S.mh.p(),
+                             S.c1.p(), S.c2.p(), S.mf.p(), S.rho.p(), S.rr.p(), S.rf.p(), S.ua.p(), S.va.p(),
+                             S.wa.p(), f[0].data(), f[1].data(), f[2].data(), f[3].data(), f[4].data(),
+                             f[5].data(), f[6].data(), f[7].data());
+    const char* names[] = {"s11", "s12", "s13", "s22", "s23", "s33", "defv", "defh"};
+    int n = 0;
+    for (auto* p : {&S.t11, &S.t12, &S.t13, &S.t22, &S.t23, &S.t33, &S.defv, &S.defh}) {
+      require_same(p->h, f[n], std::string("terrain calcdef ") + names[n]);
+      ++n;
+    }
+  }
+  {  // turbt
+    auto tketen = random_like(S.tkea, gen, 0.0, 1.0e-3);
+    auto tkf = hcopy(tketen.h);
+    T::turbt(S.o, g, dt, S.rho.d, S.rf.d, S.tkea.d, tketen.d, S.kmh.d, S.kmv.d, S.w);
+    tketen.to_host();
+    cm1f_turbterrain_turbt(dt, rds.p(), sigma.p(), gz.p(), rgz.p(), gzu.p(), rgzu.p(), gzv.p(), rgzv.p(), S.uh.p(),
+                           S.uf.p(), S.vh.p(), S.vf.p(), S.mh.p(), S.mf.p(), S.rho.p(), S.rr.p(), S.rf.p(),
+                           S.tkea.p(), tkf.data(), S.kmh.p(), S.kmv.p());
+    require_same(tketen.h, tkf, "terrain turbt");
+  }
+  {  // momentum
+    auto uten = random_like(S.ua, gen, 0.0, 1.0e-3), vten = random_like(S.va, gen, 0.0, 1.0e-3),
+         wten = random_like(S.wa, gen, 0.0, 1.0e-3);
+    auto uf_ = hcopy(uten.h), vf_ = hcopy(vten.h), wf_ = hcopy(wten.h);
+    T::turbu(S.o, g, dt, S.rho.d, S.rf.d, S.ua.d, uten.d, S.wa.d, S.ts.t11, S.ts.t12, S.ts.t13, S.kmv.d, S.w);
+    T::turbv(S.o, g, dt, S.rho.d, S.rf.d, S.va.d, vten.d, S.wa.d, S.ts.t12, S.ts.t22, S.ts.t23, S.kmv.d, S.w);
+    T::turbw(S.o, g, dt, S.rho.d, S.rf.d, S.wa.d, wten.d, S.ts.t13, S.ts.t23, S.ts.t33, S.kmh.d, S.w);
+    uten.to_host(); vten.to_host(); wten.to_host();
+    cm1f_turbterrain_turbu(dt, zs.p(), gz.p(), rgz.p(), gzu.p(), gzv.p(), rds.p(), sigma.p(), rdsf.p(), sigmaf.p(),
+                           gxu.p(), S.ruh.p(), S.uf.p(), S.vh.p(), S.mh.p(), S.mf.p(), S.rmf.p(), S.rho.p(),
+                           S.rf.p(), S.ua.p(), uf_.data(), S.wa.p(), S.t11.p(), S.t12.p(), S.t13.p(), S.t22.p(),
+                           S.kmv.p());
+    cm1f_turbterrain_turbv(dt, zs.p(), gz.p(), rgz.p(), gzu.p(), gzv.p(), rds.p(), sigma.p(), rdsf.p(), sigmaf.p(),
+                           gyv.p(), S.uh.p(), S.rvh.p(), S.vf.p(), S.mh.p(), S.mf.p(), S.rho.p(), S.rr.p(),
+                           S.rf.p(), S.va.p(), vf_.data(), S.wa.p(), S.t12.p(), S.t22.p(), S.t23.p(), S.kmv.p());
+    cm1f_turbterrain_turbw(dt, gz.p(), rgzu.p(), rgzv.p(), rds.p(), sigma.p(), S.uh.p(), S.vh.p(), S.mh.p(),
+                           S.mf.p(), S.rho.p(), S.rf.p(), S.wa.p(), wf_.data(), S.t13.p(), S.t23.p(), S.t33.p(),
+                           S.t22.p(), S.kmh.p());
+    require_same(uten.h, uf_, "terrain turbu");
+    require_same(vten.h, vf_, "terrain turbv");
+    require_same(wten.h, wf_, "terrain turbw");
+  }
+  {  // scalars
+    auto d7 = zeros_like(S.tha), d8 = zeros_like(S.tha);
+    T::vimpl_coefs(S.b, S.khv.d, g.mf, S.rf.d, g.mh, S.rr.d, d7.d, d8.d);
+    d7.to_host(); d8.to_host();
+    for (int iflux : {1, 0}) {
+      auto sten = random_like(S.tha, gen, 0.0, 1.0e-3);
+      auto sf = hcopy(sten.h);
+      T::turbs(S.o, g, iflux, dt, S.rho.d, S.rr.d, S.rf.d, S.tha.d, sten.d, S.khh.d, S.khv.d, d7.d, d8.d, S.w);
+      sten.to_host();
+      cm1f_turbterrain_turbs(iflux, dt, rds.p(), sigma.p(), rdsf.p(), sigmaf.p(), gz.p(), rgz.p(), gzu.p(), rgzu.p(),
+                             gzv.p(), rgzv.p(), gx.p(), gxu.p(), gy.p(), gyv.p(), S.uh.p(), S.uf.p(), S.vh.p(),
+                             S.vf.p(), S.mh.p(), S.mf.p(), S.rho.p(), S.rr.p(), S.rf.p(), S.tha.p(), sf.data(),
+                             S.khh.p(), S.khv.p(), d7.p(), d8.p());
+      require_same(sten.h, sf, "terrain turbs iflux=" + std::to_string(iflux));
+    }
+  }
+  cm1f_turbterrain_off();
+}
+
+TEST_CASE("turb terrain branches match turb.F / turbtend.F", "[bridge][turb][terrain]") {
+  unsigned seed = 901;
+  for (const auto& bc : std::vector<std::array<int, 4>>{{1, 1, 1, 1}, {2, 2, 2, 2}, {2, 3, 4, 2}})
+    for (int doimpl : {1, 0}) {
+      auto c = lateral_case(bc);
+      c.doimpl = doimpl;
+      check_terrain(c, seed++);
+    }
+}
+
 TEST_CASE("turb bcw matches bc.F", "[bridge][turb]") {
   unsigned seed = 11;
   for (const auto& bc : kLateral) check_bcw(lateral_case(bc), seed++);
@@ -666,7 +843,10 @@ TEST_CASE("turb options: unsupported values throw", "[turb]") {
   bad([](T::Options& x) { x.sfcmodel = 2; x.bbc = 3; });
   bad([](T::Options& x) { x.tbc = 2; });
   bad([](T::Options& x) { x.dosfcflx = true; });           // without sfcmodel=1
-  bad([](T::Options& x) { x.terrain_flag = true; });
+  // terrain: ported for the LES scheme without a surface layer
+  { T::Options x; x.terrain_flag = true; REQUIRE_NOTHROW(x.check()); }
+  bad([](T::Options& x) { x.terrain_flag = true; x.sfcmodel = 1; x.bbc = 3; });
+  bad([](T::Options& x) { x.terrain_flag = true; x.cm1setup = 2; x.ipbl = 2; x.sgsmodel = 0; x.dovturb = false; x.dohturb = false; });
   bad([](T::Options& x) { x.axisymm = 1; });
   bad([](T::Options& x) { x.wbc = 5; });
   REQUIRE_THROWS(T::Options::from_namelist(Namelist::from_string("&param2\n sgsmodel = 2 /\n")).check());

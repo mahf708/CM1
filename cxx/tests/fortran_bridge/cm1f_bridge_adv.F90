@@ -9,12 +9,16 @@ module cm1f_bridge_adv_mod
   ! input order of iopt (must match adv_tests.cpp)
   !  1 hadvordrs 2 vadvordrs 3 hadvordrv 4 vadvordrv 5 advwenos 6 advwenov
   !  7 weno_order 8 idiff 9 mdiff 10 difforder 11 wbc 12 ebc 13 sbc 14 nbc
+  ! terrain metrics passed to the routines: flat-grid values (gz = 1,
+  ! rds = rdsf = rdz) unless cm1f_adv_terrain set them
+  real, allocatable :: t_gz(:,:), t_rgz(:,:), t_gzu(:,:), t_gzv(:,:), t_rds(:), t_rdsf(:)
 end module cm1f_bridge_adv_mod
 
 subroutine cm1f_adv_setup(ni_, nj_, nk_, ngxy_, ngz_, iopt, ropt) bind(C, name="cm1f_adv_setup")
   use iso_c_binding
   use input
   use ib_module, only: ibib, ieib, jbib, jeib, kbib, keib, kmaxib
+  use cm1f_bridge_adv_mod
   implicit none
   integer(c_int), value :: ni_, nj_, nk_, ngxy_, ngz_
   integer(c_int), intent(in) :: iopt(14)
@@ -51,7 +55,28 @@ subroutine cm1f_adv_setup(ni_, nj_, nk_, ngxy_, ngz_, iopt, ropt) bind(C, name="
   terrain_flag = .false.; axisymm = 0; do_ib = .false.; dolsw = .false.
   stat_qsrc = 0; pdscheme = 1; timestats = 0
   smeps = 1.0e-60
+
+  if (allocated(t_gz)) deallocate(t_gz, t_rgz, t_gzu, t_gzv, t_rds, t_rdsf)
+  allocate(t_gz(itb:ite,jtb:jte), t_rgz(itb:ite,jtb:jte), t_gzu(itb:ite,jtb:jte), t_gzv(itb:ite,jtb:jte), &
+           t_rds(kb:ke), t_rdsf(kb:ke+1))
+  t_gz = 1; t_rgz = 1; t_gzu = 1; t_gzv = 1; t_rds = rdz; t_rdsf = rdz
 end subroutine cm1f_adv_setup
+
+! terrain_flag=.true. (call after cm1f_adv_setup): itb:ite, jtb:jte, ktb:kte
+! = ib:ie, jb:je, kb:ke (cm1.F) and the metrics the advection routines read
+subroutine cm1f_adv_terrain(gz, rgz, gzu, gzv, rds, rdsf) bind(C, name="cm1f_adv_terrain")
+  use iso_c_binding
+  use input
+  use cm1f_bridge_adv_mod
+  implicit none
+  real(c_double), intent(in), dimension(ib:ie,jb:je) :: gz, rgz, gzu, gzv
+  real(c_double), intent(in) :: rds(kb:ke), rdsf(kb:ke+1)
+  terrain_flag = .true.
+  itb = ib; ite = ie; jtb = jb; jte = je; ktb = kb; kte = ke
+  deallocate(t_gz, t_rgz, t_gzu, t_gzv)
+  allocate(t_gz(itb:ite,jtb:jte), t_rgz(itb:ite,jtb:jte), t_gzu(itb:ite,jtb:jte), t_gzv(itb:ite,jtb:jte))
+  t_gz = gz; t_rgz = rgz; t_gzu = gzu; t_gzv = gzv; t_rds = rds; t_rdsf = rdsf
+end subroutine cm1f_adv_terrain
 
 subroutine cm1f_advs(nrk, wflag, pdef, pdefweno, dt, weps, diffit, hadvorder, vadvorder, &
                      uh, vh, mh, c1, c2, rho0, rr0, rf0, rrf0, rru, rrv, rrw, divx, rho, rr, &
@@ -60,6 +85,7 @@ subroutine cm1f_advs(nrk, wflag, pdef, pdefweno, dt, weps, diffit, hadvorder, va
   use input
   use adv_module
   use ib_module, only: ibib, ieib, jbib, jeib, kbib, keib, kmaxib
+  use cm1f_bridge_adv_mod
   implicit none
   integer(c_int), value :: nrk, wflag, pdef, pdefweno, diffit, hadvorder, vadvorder
   real(c_double), value :: dt, weps
@@ -88,10 +114,10 @@ subroutine cm1f_advs(nrk, wflag, pdef, pdefweno, dt, weps, diffit, hadvorder, va
   gz = 1; rdsf = rdz; wprof = 0; dumk1 = 0; dumk2 = 0; diag = 0; out3d = 0
   bndy = .false.; kbdy = 1; hflx = 0; bsq = 0
 
-  call advs(nrk, wflag, 0, bsq, uh, uh, uh, uh, uh, uh, xf, vh, vh, gz, gz, mh, mh, &
+  call advs(nrk, wflag, 0, bsq, uh, uh, uh, uh, uh, uh, xf, vh, vh, t_gz, t_rgz, mh, mh, &
             rho0, rr0, rf0, rrf0, advx, advy, advz, dumx, dumy, dumz, mass, subs, divx, &
             rru, rrv, rrw, s0, s, sten, pdef, pdefweno, dt, weps, &
-            flag, sw31, sw32, se31, se32, ss31, ss32, sn31, sn32, rdsf, c1, c2, rho, rr, diffit, &
+            flag, sw31, sw32, se31, se32, ss31, ss32, sn31, sn32, t_rdsf, c1, c2, rho, rr, diffit, &
             .false., 1, 1, 1, 1, 1, 1, 1, diag, 1, 1, 1, 1, 1, 1, wprof, dumk1, dumk2, &
             hadvorder, vadvorder, kbdy, bndy, hflx, hflx, hflx, hflx, out3d)
 end subroutine cm1f_advs
@@ -101,6 +127,7 @@ subroutine cm1f_advu(nrk, dt, uh, uf, vh, vf, mh, mf, c1, c2, rho0, rr0, rf0, rr
   use iso_c_binding
   use input
   use adv_module
+  use cm1f_bridge_adv_mod
   implicit none
   integer(c_int), value :: nrk
   real(c_double), value :: dt
@@ -122,8 +149,8 @@ subroutine cm1f_advu(nrk, dt, uh, uf, vh, vf, mh, mf, c1, c2, rho0, rr0, rf0, rr
   allocate(gz(itb:ite,jtb:jte), rdsf(kb:ke+1), wprof(kb:ke), diag(1,1,1,1), bndy(1,1,1), kbdy(1,1), hflx(1,1,1))
   gz = 1; rdsf = rdz; wprof = 0; diag = 0; bndy = .false.; kbdy = 1; hflx = 0
 
-  call advu(nrk, uh, uh, uh, uf, uf, uf, uf, uf, vh, gz, gz, gz, mh, rho0, rr0, rf0, rrf0, &
-            d1, d2, d3, d4, d5, d6, d7, divx, rru, u3d, uten, rrv, rrw, rdsf, c1, c2, rho, dt, &
+  call advu(nrk, uh, uh, uh, uf, uf, uf, uf, uf, vh, t_gz, t_rgz, t_gzu, mh, rho0, rr0, rf0, rrf0, &
+            d1, d2, d3, d4, d5, d6, d7, divx, rru, u3d, uten, rrv, rrw, t_rdsf, c1, c2, rho, dt, &
             .false., diag, wprof, bndy, kbdy, hflx, hflx, hflx, hflx, vf, mf, v3d, w3d)
 end subroutine cm1f_advu
 
@@ -132,6 +159,7 @@ subroutine cm1f_advv(nrk, dt, uh, uf, vh, vf, mh, mf, c1, c2, rho0, rr0, rf0, rr
   use iso_c_binding
   use input
   use adv_module
+  use cm1f_bridge_adv_mod
   implicit none
   integer(c_int), value :: nrk
   real(c_double), value :: dt
@@ -153,8 +181,8 @@ subroutine cm1f_advv(nrk, dt, uh, uf, vh, vf, mh, mf, c1, c2, rho0, rr0, rf0, rr
   allocate(gz(itb:ite,jtb:jte), rdsf(kb:ke+1), wprof(kb:ke), diag(1,1,1,1), bndy(1,1,1), kbdy(1,1), hflx(1,1,1))
   gz = 1; rdsf = rdz; wprof = 0; diag = 0; bndy = .false.; kbdy = 1; hflx = 0
 
-  call advv(nrk, uh, uh, uh, uh, uh, uf, vh, vf, gz, gz, gz, mh, rho0, rr0, rf0, rrf0, &
-            d1, d2, d3, d4, d5, d6, d7, divx, rru, rrv, v3d, vten, rrw, rdsf, c1, c2, rho, dt, &
+  call advv(nrk, uh, uh, uh, uh, uh, uf, vh, vf, t_gz, t_rgz, t_gzv, mh, rho0, rr0, rf0, rrf0, &
+            d1, d2, d3, d4, d5, d6, d7, divx, rru, rrv, v3d, vten, rrw, t_rdsf, c1, c2, rho, dt, &
             .false., diag, wprof, bndy, kbdy, hflx, hflx, hflx, hflx, uf, mf, u3d, w3d)
 end subroutine cm1f_advv
 
@@ -163,6 +191,7 @@ subroutine cm1f_advw(nrk, dt, hadvorder, vadvorder, advweno, iamw_, uh, uf, vh, 
   use iso_c_binding
   use input
   use adv_module
+  use cm1f_bridge_adv_mod
   implicit none
   integer(c_int), value :: nrk, hadvorder, vadvorder, advweno, iamw_
   real(c_double), value :: dt
@@ -186,8 +215,8 @@ subroutine cm1f_advw(nrk, dt, hadvorder, vadvorder, advweno, iamw_, uh, uf, vh, 
   gz = 1; rds = rdz; rdsf = rdz; diag = 0; bndy = .false.; kbdy = 1; hflx = 0
   iamw = (iamw_ .ne. 0)
 
-  call advw(nrk, uh, uh, uh, uh, uh, uf, vh, gz, gz, mh, mf, rho0, rr0, rf0, rrf0, &
-            d1, d2, d3, d4, d5, d6, d7, divx, rru, rrv, rrw, w3d, wten, rds, rdsf, c1, c2, rho, dt, &
+  call advw(nrk, uh, uh, uh, uh, uh, uf, vh, t_gz, t_rgz, mh, mf, rho0, rr0, rf0, rrf0, &
+            d1, d2, d3, d4, d5, d6, d7, divx, rru, rrv, rrw, w3d, wten, t_rds, t_rdsf, c1, c2, rho, dt, &
             .false., diag, hadvorder, vadvorder, advweno, bndy, kbdy, uf, vf, u3d, v3d, &
             hflx, hflx, hflx, hflx, iamw)
 end subroutine cm1f_advw

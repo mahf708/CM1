@@ -81,6 +81,7 @@ TEST_CASE("init: cbl_sfc_moist", "[init][ref][sfc]") { check_case("cbl_sfc_moist
 // gx, gyv, ...) and the terrain-dependent base state are compared
 TEST_CASE("init: nh_mountain_waves", "[init][ref][terrain]") { check_case("nh_mountain_waves"); }
 TEST_CASE("init: kessler_terrain_tke", "[init][ref][terrain]") { check_case("kessler_terrain_tke"); }
+TEST_CASE("init: nh_mountain_waves_long", "[init][ref][terrain]") { check_case("nh_mountain_waves_long"); }
 
 TEST_CASE("init: unsupported options throw", "[init]") {
   const auto nl0 = Namelist::from_file(testing::case_namelist("dry_bubble"));

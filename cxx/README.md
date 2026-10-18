@@ -89,6 +89,27 @@ Two levels, both required for a ported component:
    `cm1k::testing::case_ref("<case>")`; tests skip with a warning when no
    references are available, and CI always provides them.
 
+## Terrain-following coordinate
+
+`terrain_flag = .true.` (Gal-Chen and Somerville sigma coordinate) is ported
+on these paths, bit-for-bit with the double-precision gfortran build:
+native initialization (`itern = 1, 2, 3`: init_terrain.F, zsgrad and the
+metrics of param.F; the metrics are dumped and compared at step 0), scalar
+and momentum advection (including WENO, `pdefx/y/z`, 6th-order diffusion),
+the acoustic solver (`psolver = 3`, with `bcwsfc`), open-radiative
+boundaries (`ssopenbc*`), Rayleigh damping (`irdamp`/`hrdamp = 1`),
+Coriolis and `lspgrad = 1`, the cm1r19 `termod1` pressure-gradient term,
+Kessler, and the LES TKE scheme (`sgsmodel = 1`, `doimpl = 0/1`, bbc = 1).
+Unported combinations throw: `difforder = 2` (diff2.F stops), `imove = 1`,
+`itern = 0` or 4, the surface layer (`sfcmodel >= 1`), PBL schemes
+(`cm1setup = 2`), and everything param.F already refuses with terrain.
+Tests: cases `nh_mountain_waves`, `nh_mountain_waves_long` and
+`kessler_terrain_tke` (init, step from dump, step from `Model::init`), and
+the `[terrain]` component tests (adv.F, turb.F/turbtend.F with random
+metrics). Periodic halo copies wrap their source index (`pwrap` in
+`dynamics/cm1k_bc.hpp`), which also makes them correct for `nj < ngxy`
+(the 2D `ny = 1` case).
+
 ## Reference dumps
 
 `src/cm1dump.F` (Fortran, enabled only when `CM1_DUMP_DIR` is set) writes

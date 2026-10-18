@@ -25,7 +25,13 @@
 //     fluxes of theta and qv into turbs: dosfcflx)
 //   * tbc=1 (free-slip upper boundary)
 //   * lateral boundaries wbc..nbc = 1 (periodic), 2 (open), 3, 4 (walls)
-//   * no terrain, axisymm=0, do_ib=.false.
+//   * terrain_flag: the "Cartesian with terrain" branches of calcdef, turbt,
+//     turbu/turbuz, turbv/turbvz, turbw and turbs, and solve1's theta-th0
+//     with th0(i,j,k); metrics, zt and the param.F extrapolation
+//     coefficients cgs*/cgt* come from the Grid. Only without a surface
+//     layer (bbc=1) and with the LES (cm1setup=1); calcdef then needs the
+//     dum1/dum2 scratch arrays and turbuz/turbvz (doimpl=1) dum9
+//   * axisymm=0, do_ib=.false.
 //   * imoist=0, or imoist=1 with the moisture layout in Options (ptype=1
 //     Kessler from the namelist; the ice branch of calcnm is ported and
 //     tested through Options set by hand)
