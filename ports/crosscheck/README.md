@@ -28,8 +28,10 @@ out of tolerance, 2 an implementation cannot run the case.
 implementations (cm1k on the CPU, Fortran) must agree to 1e-12 (in practice
 they are bitwise identical). Pairs involving cm1x must agree to 1e-9: its
 differences are round-off from operation order, below ~1e-10 over 300 steps on
-the Kessler cases. A GPU build of cm1k gets 1e-10 up to step 4, 1e-6 up to
-step 100, then 3e-5, until its differences are measured.
+the Kessler cases. A GPU build of cm1k must agree to 1e-10 up to step 4, then
+1e-8: on a T4 (CUDA 12.6) its largest difference from Fortran over the eight
+GPU cases (150 steps) is 1.1e-10, in `ppi` on `cbl_sfc_moist`, from the device
+math library and FMA contraction.
 
 **Known gap.** On the bundled `supercell_kessler` (open radiative boundaries,
 `irbc=4`), cm1x differs from cm1k and Fortran by ~2e-8 from step 5, growing

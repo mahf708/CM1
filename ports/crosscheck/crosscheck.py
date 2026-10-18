@@ -50,12 +50,12 @@ LAGGED_K = ("kmh", "kmv", "khh", "khv")
 # bitwise-identical to the double-precision Fortran on the CPU (cxx tests).
 # cm1x differs by round-off only (a few ulps from operation order), which on
 # the Kessler cases stays below ~1e-10 over 300 steps.  A device build of
-# cm1k is not bitwise (device math library, FMA contraction) and its
-# differences are not yet measured, so it gets a schedule that lets them grow.
+# cm1k is not bitwise (device math library, FMA contraction): on a T4 its
+# differences peak at ~1.1e-10 over 150 steps of the GPU cases.
 TOLERANCES = {
     "bitwise": [(math.inf, 1e-12)],
     "roundoff": [(math.inf, 1e-9)],
-    "device": [(4, 1e-10), (100, 1e-6), (math.inf, 3e-5)],
+    "device": [(4, 1e-10), (math.inf, 1e-8)],
 }
 
 
