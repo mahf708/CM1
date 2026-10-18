@@ -10,6 +10,7 @@
 // array of those routines a member FA bound to a per-column slice of a
 // scratch pool. Columns are processed in chunks to bound the scratch memory.
 #include "physics/rrtmg/cm1k_rrtmg_lw.hpp"
+#include "physics/rrtmg/cm1k_rrtmg_common.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -54,21 +55,6 @@ const char* lw_err_message(int e) {
     ierr = (code);    \
     return;           \
   } while (0)
-
-// KISS random numbers (kissvec, one column): 32-bit integer arithmetic
-// wrapping as the Fortran's does.
-KOKKOS_INLINE_FUNCTION int kiss_m(int k, int n) {
-  const uint32_t u = uint32_t(k);
-  return int(u ^ (n >= 0 ? (u << n) : (u >> (-n))));
-}
-KOKKOS_INLINE_FUNCTION void kissvec(int& seed1, int& seed2, int& seed3, int& seed4, Real& ran_arr) {
-  seed1 = int(69069u * uint32_t(seed1) + 1327217885u);
-  seed2 = kiss_m(kiss_m(kiss_m(seed2, 13), -17), 5);
-  seed3 = int(18000u * (uint32_t(seed3) & 65535u) + (uint32_t(seed3) >> 16));
-  seed4 = int(30903u * (uint32_t(seed4) & 65535u) + (uint32_t(seed4) >> 16));
-  const int kiss = int(uint32_t(seed1) + uint32_t(seed2) + (uint32_t(seed3) << 16) + uint32_t(seed4));
-  ran_arr = kiss * 2.328306e-10 + 0.5;
-}
 
 // RRTMG_LWRAD's inputs for one call (radiation_driver.F's actual arguments).
 struct LwIn {
@@ -3019,66 +3005,14 @@ struct LwCol : LwTables {
   
   }
 
-  // INIRAD + O3DATA (usecode = 2): o3prof(kts:kte+1) from plev(kts:kte+2)
+  // module_ra_rrtmg_lw's INIRAD, relcalc and reicalc (cm1k_rrtmg_common.hpp)
   KOKKOS_INLINE_FUNCTION void inirad(const FA<1>& O3PROF, const FA<2>& Plev2, int kte_) {
-    // Plev(K) = Plev2(1,K): ncol = 1, so the 2-D actual argument is the 1-D dummy
-    for (int K = kts; K <= kte_ + 1; ++K) O3PROF(K) = 0.;
-    Real PPWRKH[33], O3WRK[32], PPWRK[32], O3ANN[32], PPANN[32];
-    Real frac;
-    int K, kk;
-    for (K = 1; K <= 31; ++K) PPANN[K] = PPSUM(K);
-    O3ANN[1] = 0.5 * (O3SUM(1) + O3WIN(1));
-    for (K = 2; K <= 31; ++K)
-      O3ANN[K] = O3WIN(K - 1) + (O3WIN(K) - O3WIN(K - 1)) / (PPWIN(K) - PPWIN(K - 1)) * (PPSUM(K) - PPWIN(K - 1));
-    for (K = 2; K <= 31; ++K) O3ANN[K] = 0.5 * (O3ANN[K] + O3SUM(K));
-    for (K = 1; K <= 31; ++K) {
-      O3WRK[K] = O3ANN[K];
-      PPWRK[K] = PPANN[K];
-    }
-    PPWRKH[1] = 1100.;
-    for (K = 2; K <= 31; ++K) PPWRKH[K] = (PPWRK[K] + PPWRK[K - 1]) / 2.;
-    PPWRKH[32] = 0.;
-    for (int k = kts; k <= kte_ + 1; ++k) {
-      const Real plevk = Plev2(1, k);
-      if (plevk > PPWRKH[1]) {
-        kk = 1;
-        frac = (plevk - PPWRKH[kk]) / (PPWRKH[kk + 1] - PPWRKH[kk]);
-        O3PROF(k) = O3WRK[kk] + (O3WRK[kk + 1] - O3WRK[kk]) * frac;
-      } else if (plevk < PPWRKH[31]) {
-        kk = 31;
-        frac = (plevk - PPWRKH[kk]) / (PPWRKH[kk] - PPWRKH[kk - 1]);
-        O3PROF(k) = O3WRK[kk] + (O3WRK[kk] - O3WRK[kk - 1]) * frac;
-      } else {
-        kk = 1;
-        while (PPWRKH[kk] > plevk && kk < 31) kk = kk + 1;
-        frac = (plevk - PPWRKH[kk - 1]) / (PPWRKH[kk] - PPWRKH[kk - 1]);
-        O3PROF(k) = O3WRK[kk - 1] + (O3WRK[kk] - O3WRK[kk - 1]) * frac;
-        if (frac < -0.0001 || frac > 1.0001) LW_FAIL(LW_O3FRAC);
-      }
-    }
+    if (!rrtmg::inirad(O3PROF, Plev2, kts, kte_, O3SUM, PPSUM, O3WIN, PPWIN)) LW_FAIL(LW_O3FRAC);
   }
-
-  // relcalc (ncol = pcols = 1, pver = kte), t = tlay
   KOKKOS_INLINE_FUNCTION void relcalc(int pver, Real landfrac, Real landm, Real icefrac, Real snowh) {
-    const Real tmelt = 273.16, rliqocean = 14.0, rliqice = 14.0, rliqland = 8.0;
-    for (int k = 1; k <= pver; ++k) {
-      const int i = 1;
-      reliq(i, k) = rliqland + (rliqocean - rliqland) * Kokkos::min(1.0, Kokkos::max(0.0, (tmelt - tlay(i, k)) * 0.05));
-      reliq(i, k) = reliq(i, k) + (rliqocean - reliq(i, k)) * Kokkos::min(1.0, Kokkos::max(0.0, snowh * 10.));
-      reliq(i, k) = reliq(i, k) + (rliqocean - reliq(i, k)) * Kokkos::min(1.0, Kokkos::max(0.0, 1.0 - landm));
-      reliq(i, k) = reliq(i, k) + (rliqice - reliq(i, k)) * Kokkos::min(1.0, Kokkos::max(0.0, icefrac));
-    }
+    rrtmg::relcalc(pver, tlay, landfrac, landm, icefrac, reliq, snowh);
   }
-  // reicalc
-  KOKKOS_INLINE_FUNCTION void reicalc(int pver) {
-    for (int k = 1; k <= pver; ++k) {
-      const int i = 1;
-      int index = int(tlay(i, k) - 179.);
-      index = Kokkos::min(Kokkos::max(index, 1), 94);
-      const Real corr = tlay(i, k) - Real(int(tlay(i, k)));
-      reice(i, k) = retab(index) * (1. - corr) + retab(index + 1) * corr;
-    }
-  }
+  KOKKOS_INLINE_FUNCTION void reicalc(int pver) { rrtmg::reicalc(pver, tlay, reice, retab); }
 
   // mcica_subcol_lw + generate_stochastic_clouds (irng = 0: KISS)
   KOKKOS_INLINE_FUNCTION void mcica_subcol_lw(int permuteseed) {

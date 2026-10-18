@@ -2,6 +2,7 @@
 // module_ra_rrtmg_sw.F, bit for bit.
 #include "physics/rrtmg/cm1k_rrtmg_lw.hpp"
 #include "physics/rrtmg/cm1k_rrtmg_lw_tables.hpp"
+#include "physics/rrtmg/cm1k_rrtmg_sw.hpp"
 #include "physics/rrtmg/cm1k_rrtmg_sw_tables.hpp"
 
 #include "cm1k_test_utils.hpp"
@@ -29,6 +30,15 @@ void cm1f_rrtmg_lwrad(int ni, int nj, int nk, int ngxy, int cldovrlp, int yr, do
                       double* xsnow, double* lwten, double* lwtenc, double* glw, double* olr, double* lwcf,
                       double* lwupt, double* lwuptc, double* lwdnt, double* lwdntc, double* lwupb, double* lwupbc,
                       double* lwdnb, double* lwdnbc, double* co2out);
+void cm1f_rrtmg_swrad(int ni, int nj, int nk, int ngxy, int cldovrlp, int yr, double julian, double solcon, double r,
+                      double g, const int* fq, double* p8w, double* p3d, double* pi3d, double* dz8w, double* t3d,
+                      double* t8w, double* rho3d, double* cldfra, double* qv, double* qc, double* qr, double* qi,
+                      double* qs, double* qg, double* o30, double* tsk, double* albd, double* xland, double* xice,
+                      double* xsnow, double* xlat, double* xlong, double* coszen, double* swten, double* swtenc,
+                      double* gsw, double* swcf, double* coszr, double* swupt, double* swuptc, double* swdnt,
+                      double* swdntc, double* swupb, double* swupbc, double* swdnb, double* swdnbc, double* swddir,
+                      double* swddni, double* swddif, double* swdownc, double* swddnic, double* swddirc,
+                      double* co2out);
 }
 
 using namespace cm1k;
@@ -140,10 +150,15 @@ struct RadDomain {
   Real julian = 172.4;
   int fq[5] = {1, 1, 0, 0, 0};
   std::map<std::string, H3> f;   // every array by its radiation_driver.F name
-  const char* names3[17] = {"p8w", "p3d", "pi3d", "dz8w", "t3d", "t8w", "rho3d", "cldfra", "qv", "qc",
-                            "qr",  "qi",  "qs",   "qg",   "o30", "lwten", "lwtenc"};
-  const char* names2[16] = {"tsk",  "emiss", "xland", "xice",   "xsnow", "glw",   "olr",   "lwcf",
-                            "lwupt", "lwuptc", "lwdnt", "lwdntc", "lwupb", "lwupbc", "lwdnb", "lwdnbc"};
+  Real solcon = 1365.3;
+  std::vector<const char*> names3 = {"p8w", "p3d", "pi3d", "dz8w", "t3d",   "t8w",   "rho3d", "cldfra", "qv", "qc",
+                                     "qr",  "qi",  "qs",   "qg",   "o30",   "lwten", "lwtenc", "swten", "swtenc"};
+  std::vector<const char*> names2 = {"tsk",    "emiss",  "xland",  "xice",   "xsnow",  "glw",    "olr",
+                                     "lwcf",   "lwupt",  "lwuptc", "lwdnt",  "lwdntc", "lwupb",  "lwupbc",
+                                     "lwdnb",  "lwdnbc", "albd",   "xlat",   "xlong",  "coszen", "gsw",
+                                     "swcf",   "coszr",  "swupt",  "swuptc", "swdnt",  "swdntc", "swupb",
+                                     "swupbc", "swdnb",  "swdnbc", "swddir", "swddni", "swddif", "swdownc",
+                                     "swddnic", "swddirc"};
   H3& operator[](const std::string& n) { return f.at(n); }
 
   void allocate() {
@@ -206,6 +221,15 @@ struct RadDomain {
         f.at("xland")(i, j, 1) = reg == 2 ? 2.0 : 1.0;
         f.at("xice")(i, j, 1) = reg == 3 ? 0.3 : 0.0;
         f.at("xsnow")(i, j, 1) = reg == 3 ? 40.0 : 0.0;
+        f.at("albd")(i, j, 1) = 0.1 + 0.1 * reg + 0.05 * u(gen);
+        f.at("xlat")(i, j, 1) = 35.0;
+        f.at("xlong")(i, j, 1) = -97.0;
+        // cosine of the zenith angle: night (<= 0) in some columns, grazing in one
+        const int cz = ((i + ngxy) + 2 * (j + ngxy)) % 7;
+        f.at("coszen")(i, j, 1) = cz == 0 ? -0.3 : (cz == 1 ? 0.0 : (cz == 2 ? 1.0e-11 : (cz == 3 ? 0.02 : 0.2 + 0.8 * u(gen))));
+        // gsw and swtenc keep their values at night: start from non-zero values
+        f.at("gsw")(i, j, 1) = 123.0 + i;
+        for (int k = 0; k <= nk + 1; ++k) f.at("swtenc")(i, j, k) = 1.0e-5 * (k + i);
       }
   }
   // rrtmg_lwinit's p_top: the buffer layers above the model top are 4 hPa
@@ -267,6 +291,49 @@ struct RadDomain {
     for (auto& [n, b] : d) Kokkos::deep_copy(f.at(n).view(), b.view());
     return co2;
   }
+
+  double run_fortran_sw() {
+    double co2 = 0;
+    auto P = [&](const char* n) { return f.at(n).data(); };
+    cm1f_rrtmg_swrad(ni, nj, nk, ngxy, cldovrlp, yr, julian, solcon, r, g, fq, P("p8w"), P("p3d"), P("pi3d"),
+                     P("dz8w"), P("t3d"), P("t8w"), P("rho3d"), P("cldfra"), P("qv"), P("qc"), P("qr"), P("qi"),
+                     P("qs"), P("qg"), P("o30"), P("tsk"), P("albd"), P("xland"), P("xice"), P("xsnow"), P("xlat"),
+                     P("xlong"), P("coszen"), P("swten"), P("swtenc"), P("gsw"), P("swcf"), P("coszr"), P("swupt"),
+                     P("swuptc"), P("swdnt"), P("swdntc"), P("swupb"), P("swupbc"), P("swdnb"), P("swdnbc"),
+                     P("swddir"), P("swddni"), P("swddif"), P("swdownc"), P("swddnic"), P("swddirc"), &co2);
+    return co2;
+  }
+
+  double run_cxx_sw(int chunk) {
+    std::map<std::string, FArray3> d;
+    for (auto& [n, a] : f) {
+      FArray3 b(n, {a.lb(0), a.lb(1), a.lb(2)}, {a.ub(0), a.ub(1), a.ub(2)});
+      b.deep_copy_from(a);
+      d.emplace(n, b);
+    }
+    rrtmg::SwRadArgs a;
+    a.rthratensw = d["swten"]; a.swtenc = d["swtenc"];
+    a.swupt = d["swupt"]; a.swuptc = d["swuptc"]; a.swdnt = d["swdnt"]; a.swdntc = d["swdntc"];
+    a.swupb = d["swupb"]; a.swupbc = d["swupbc"]; a.swdnb = d["swdnb"]; a.swdnbc = d["swdnbc"];
+    a.swcf = d["swcf"]; a.gsw = d["gsw"]; a.coszr = d["coszr"];
+    a.swddir = d["swddir"]; a.swddni = d["swddni"]; a.swddif = d["swddif"];
+    a.swdownc = d["swdownc"]; a.swddnic = d["swddnic"]; a.swddirc = d["swddirc"];
+    a.xcoszen = d["coszen"]; a.albedo = d["albd"]; a.tsk = d["tsk"]; a.xland = d["xland"]; a.xice = d["xice"];
+    a.snow = d["xsnow"];
+    a.p8w = d["p8w"]; a.p3d = d["p3d"]; a.pi3d = d["pi3d"]; a.dz8w = d["dz8w"]; a.t3d = d["t3d"];
+    a.t8w = d["t8w"]; a.rho3d = d["rho3d"]; a.cldfra3d = d["cldfra"];
+    a.qv3d = d["qv"]; a.qc3d = d["qc"]; a.qr3d = d["qr"]; a.qi3d = d["qi"]; a.qs3d = d["qs"]; a.qg3d = d["qg"];
+    a.o33d = d["o30"];
+    a.r = r; a.g = g; a.solcon = solcon; a.cldovrlp = cldovrlp;
+    a.f_qc = fq[0]; a.f_qr = fq[1]; a.f_qi = fq[2]; a.f_qs = fq[3]; a.f_qg = fq[4];
+    a.yr = yr;
+    a.its = 1; a.ite = ni; a.jts = 1; a.jte = nj; a.kts = 1; a.kte = nk;
+    a.chunk = chunk;
+    auto t = rrtmg::sw_tables(1005.7, 9.81, rrtmg::find_data_file("RRTMG_SW_DATA", CM1K_SOURCE_RUN_DIR));
+    const double co2 = rrtmg::rrtmg_swrad(*t, a);
+    for (auto& [n, b] : d) Kokkos::deep_copy(f.at(n).view(), b.view());
+    return co2;
+  }
 };
 
 void require_same_arrays(RadDomain& c, RadDomain& f, const std::vector<std::string>& names) {
@@ -297,6 +364,39 @@ TEST_CASE("rrtmg_lwrad matches module_ra_rrtmg_lw.F", "[fortran_bridge][rrtmg]")
                                  "lwupb", "lwupbc", "lwdnb", "lwdnbc", "o30"});
       // the heating is not trivially zero
       REQUIRE(std::abs(f["lwten"](2, 2, 3)) > 0);
+    }
+  }
+}
+
+TEST_CASE("rrtmg_swrad matches module_ra_rrtmg_sw.F", "[fortran_bridge][rrtmg]") {
+  static bool sw_init = false;
+  if (!sw_init) {
+    InRunDir rd;
+    cm1f_rrtmg_swinit();
+    sw_init = true;
+  }
+  for (int ovl : {2, 0, 1, 3, 4}) {
+    for (unsigned seed : {1u, 2u}) {
+      RadDomain f;
+      f.cldovrlp = ovl;
+      f.fill(seed + 10 * ovl);
+      RadDomain c = f.clone();
+      const double co2c = c.run_cxx_sw(seed == 1 ? 0 : 5);
+      const double co2f = f.run_fortran_sw();
+      INFO("cldovrlp " << ovl << " seed " << seed);
+      REQUIRE(co2f == co2c);
+      require_same_arrays(c, f, {"swten", "swtenc", "gsw", "swcf", "coszr", "swupt", "swuptc", "swdnt", "swdntc",
+                                 "swupb", "swupbc", "swdnb", "swdnbc", "swddir", "swddni", "swddif", "swdownc",
+                                 "swddnic", "swddirc", "o30"});
+      // daytime heating is not trivially zero; night columns are zeroed
+      bool day = false, night = false;
+      for (int j = 1; j <= f.nj; ++j)
+        for (int i = 1; i <= f.ni; ++i) {
+          if (f["coszen"](i, j, 1) > 0.1) { day = true; REQUIRE(std::abs(f["swten"](i, j, 3)) > 0); REQUIRE(f["gsw"](i, j, 1) > 0); }
+          if (f["coszen"](i, j, 1) <= 0) { night = true; REQUIRE(f["swten"](i, j, 3) == 0); }
+        }
+      REQUIRE(day);
+      REQUIRE(night);
     }
   }
 }
