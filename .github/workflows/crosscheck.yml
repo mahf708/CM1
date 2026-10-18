@@ -1,0 +1,294 @@
+# Cross-checks between the CM1 ports, and cm1k on a real GPU.
+#
+# Jobs:
+#   refs         Fortran CM1 (double precision) dumps for the cases below
+#                (cxx/scripts/make_refs.sh); cached, uploaded as `crosscheck-refs`.
+#   ports        cm1k (C++/Kokkos, OpenMP, Python module) and cm1x (array port,
+#                numpy and jax, checked out at CM1X_REF_SHA) run the same
+#                namelists from their own initialization, step by step, against
+#                each other and against the Fortran dumps
+#                (ports/crosscheck/crosscheck.py; report in the job summary).
+#   cuda-gpu     builds cm1k for CUDA (tests + Python module) in the nvidia/cuda
+#                container, then runs it on a Modal GPU against the Fortran dumps
+#                (cxx/scripts/modal_gpu.py -> gpu_check.sh). Needs the repository
+#                secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET; without them the
+#                build still runs and the GPU step is skipped with a notice.
+name: crosscheck
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      cm1x_ref:
+        description: "cm1x commit or branch to check out (default: CM1X_REF_SHA)"
+        required: false
+      gpu:
+        description: "Modal GPU type (T4, L4, A10G, A100)"
+        required: false
+        default: T4
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crosscheck-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # cm1x (ports/array) from the array-port branch (claude/project-thread-p9tdpk)
+  CM1X_REF_SHA: 29efb6444692a88a2863be1e5c08d54799481094
+  REF_CASES: >-
+    kessler_periodic kessler_bubble kessler_openbc kessler_tke
+    dry_shear cbl_sfc_moist pbl2_kessler ysu_kessler mynn25_kessler
+  GPU_CASES: >-
+    kessler_periodic kessler_tke kessler_openbc dry_shear
+    cbl_sfc_moist pbl2_kessler ysu_kessler mynn25_kessler
+  # glibc picks libm code paths (FMA/AVX2) by CPU, and they can differ in the
+  # last bit; refs are made on one runner and compared on another (as cm1k.yml).
+  GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX512F,-AVX2,-FMA,-FMA4
+  # numpy's own AVX-512 exp/log/pow differ from glibc's in the last bit; with
+  # them off cm1x:numpy calls glibc like CM1 and cm1k (and the open-boundary
+  # supercell, which amplifies last-bit differences, stays bitwise).
+  NPY_DISABLE_CPU_FEATURES: AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4
+  OMPI_ALLOW_RUN_AS_ROOT: 1
+  OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+  OMP_PROC_BIND: "false"
+
+jobs:
+  refs:
+    name: Fortran reference dumps
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore cached references
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: refs
+          key: crosscheck-refs-v2-${{ hashFiles('src/**', 'cxx/cases/**', 'cxx/scripts/make_refs.sh') }}-${{ env.REF_CASES }}
+
+      - name: Install Fortran toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gfortran libnetcdff-dev libopenmpi-dev
+
+      - name: Build Fortran CM1 and write reference dumps
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: JOBS=4 cxx/scripts/make_refs.sh refs $REF_CASES
+
+      - name: Show manifest
+        run: |
+          cat refs/MANIFEST.txt
+          du -sh refs/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crosscheck-refs
+          path: refs
+          if-no-files-found: error
+          retention-days: 5
+          compression-level: 6
+
+  ports:
+    name: cm1k vs cm1x vs Fortran
+    needs: refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPRESS: "true"
+      OMP_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout submodules (EKAT, Kokkos)
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule update --init --recursive --depth 1 cxx/externals/ekat
+
+      - name: Check out cm1x
+        run: |
+          ref="${{ inputs.cm1x_ref }}"
+          ref=${ref:-$CM1X_REF_SHA}
+          git fetch --no-tags --depth=1 origin "$ref"
+          git worktree add "$RUNNER_TEMP/cm1x" FETCH_HEAD
+          echo "CM1X_ROOT=$RUNNER_TEMP/cm1x" >> "$GITHUB_ENV"
+          echo "cm1x at $(git -C "$RUNNER_TEMP/cm1x" rev-parse HEAD)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install toolchain, cm1x and jax
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++ cmake ninja-build ccache libopenmpi-dev openmpi-bin
+          python -m pip install -U pip
+          pip install numpy pybind11 jax
+          pip install -e "$CM1X_ROOT/ports/array"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-crosscheck-${{ github.sha }}
+          restore-keys: |
+            ccache-crosscheck-
+
+      - name: Build the cm1k Python module (OpenMP)
+        run: |
+          ccache -z
+          cmake -S cxx -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCM1K_ENABLE_PYTHON=ON -DCM1K_ENABLE_TESTS=OFF -DCM1K_ENABLE_FORTRAN_BRIDGE=OFF \
+            -DKokkos_ENABLE_OPENMP=ON \
+            -DPython_EXECUTABLE="$(command -v python)" \
+            -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
+          cmake --build build --target _cm1k -j4
+          ccache -s
+          echo "PYTHONPATH=$GITHUB_WORKSPACE/build/python" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: crosscheck-refs
+          path: refs
+
+      - name: Cross-check
+        run: |
+          mkdir -p xc
+          echo "### cm1k vs cm1x vs Fortran" >> xc/report.md
+          echo >> xc/report.md
+          echo "cm1x at \`$(git -C "$CM1X_ROOT" rev-parse --short HEAD)\`; relative difference = max|a-b| / max(|a|,|b|) over the interior, worst field per step." >> xc/report.md
+          echo >> xc/report.md
+          status=0
+          run() {  # case steps impl...
+            c=$1; n=$2; shift 2
+            name=$(basename "$c")
+            echo "::group::$name"
+            python ports/crosscheck/crosscheck.py --case "$c" --steps "$n" "$@" \
+              --md xc/report.md --json "xc/$name.json" | tee "xc/$name.log" || status=1
+            echo "::endgroup::"
+          }
+          F() { echo --impl fortran --ref-dir "refs/$1"; }
+          run kessler_periodic 10 --impl cm1k --impl cm1x:numpy --impl cm1x:jax --impl cm1x:jax:jit $(F kessler_periodic)
+          run kessler_bubble 150 --impl cm1k --impl cm1x:numpy $(F kessler_bubble)
+          run kessler_openbc 150 --impl cm1k --impl cm1x:numpy $(F kessler_openbc)
+          run kessler_tke 150 --impl cm1k --impl cm1x:numpy $(F kessler_tke)
+          run "$CM1X_ROOT/ports/reference/supercell_kessler" 300 --impl cm1k --impl cm1x:numpy
+          run kessler_periodic_long 300 --impl cm1k --impl cm1x:numpy
+          cat xc/report.md >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crosscheck-report
+          path: xc
+          retention-days: 30
+
+  cuda-gpu:
+    name: cm1k CUDA on a GPU (Modal)
+    needs: refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    container:
+      image: nvidia/cuda:12.6.3-devel-ubuntu24.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPRESS: "true"
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      CM1K_MODAL_GPU: ${{ inputs.gpu || 'T4' }}
+    steps:
+      - name: Install toolchain
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git ca-certificates g++ cmake ninja-build ccache libopenmpi-dev openmpi-bin \
+            python3-dev python3-numpy python3-venv pybind11-dev
+
+      - uses: actions/checkout@v4
+
+      - name: Checkout submodules (EKAT, Kokkos)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule update --init --recursive --depth 1 cxx/externals/ekat
+
+      - name: Kokkos architecture of the GPU
+        run: |
+          case "$CM1K_MODAL_GPU" in
+            T4) arch=TURING75 ;;
+            L4) arch=ADA89 ;;
+            A10G) arch=AMPERE86 ;;
+            A100*) arch=AMPERE80 ;;
+            H100) arch=HOPPER90 ;;
+            *) echo "unknown GPU $CM1K_MODAL_GPU" >&2; exit 1 ;;
+          esac
+          echo "KOKKOS_ARCH=$arch" >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-crosscheck-cuda-${{ env.KOKKOS_ARCH }}-${{ github.sha }}
+          restore-keys: |
+            ccache-crosscheck-cuda-${{ env.KOKKOS_ARCH }}-
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: crosscheck-refs
+          path: refs
+
+      - name: Configure (CUDA, tests and Python module)
+        run: |
+          cmake -S cxx -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER="$GITHUB_WORKSPACE/cxx/externals/ekat/extern/kokkos/bin/nvcc_wrapper" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DKokkos_ENABLE_CUDA=ON \
+            -DKokkos_ARCH_${KOKKOS_ARCH}=ON \
+            -DCM1K_ENABLE_FORTRAN_BRIDGE=OFF \
+            -DCM1K_ENABLE_TESTS=ON \
+            -DCM1K_ENABLE_PYTHON=ON \
+            -DCM1K_REF_DIR="$GITHUB_WORKSPACE/refs" \
+            -DPython_EXECUTABLE=/usr/bin/python3
+
+      - name: Build
+        run: |
+          ccache -z
+          cmake --build build -j4
+          ccache -s
+
+      - name: Run on a Modal GPU
+        if: env.MODAL_TOKEN_ID != '' && env.MODAL_TOKEN_SECRET != ''
+        run: |
+          python3 -m venv "$RUNNER_TEMP/modal"
+          "$RUNNER_TEMP/modal/bin/pip" install -q modal
+          set +e
+          "$RUNNER_TEMP/modal/bin/modal" run cxx/scripts/modal_gpu.py \
+            --build build --refs refs --out gpu_out --cases "$(echo $GPU_CASES | tr ' ' ,)"
+          rc=$?
+          [ -f gpu_out/report.md ] && cat gpu_out/report.md >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      - name: No GPU credentials
+        if: env.MODAL_TOKEN_ID == '' || env.MODAL_TOKEN_SECRET == ''
+        run: |
+          echo "::notice title=GPU run skipped::Add the repository secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (modal.com) to run cm1k on a GPU; the CUDA build above was still checked."
+          echo "GPU run skipped: no MODAL_TOKEN_ID / MODAL_TOKEN_SECRET secrets." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-report
+          path: gpu_out
+          if-no-files-found: ignore
+          retention-days: 30
