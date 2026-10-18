@@ -135,4 +135,28 @@
           call dump3('cldfra_bl',cldfra_bl,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
           call dump3('dqke',dqke,ibmynn,iemynn,jbmynn,jemynn,kbmynn,kemynn)
         endif
+        if( sfcmodel.eq.4 )then
+          ! GFDL surface layer: the momentum roughness length it carries
+          ! across steps (znt is its thermal one) and its stability outputs
+          call dump3('mznt',mznt,ibl,iel,jbl,jel,1,1)
+          call dump3('mol',mol,ibl,iel,jbl,jel,1,1)
+          call dump3('rmol',rmol,ibl,iel,jbl,jel,1,1)
+          call dump3('zol',zol,ibl,iel,jbl,jel,1,1)
+          call dump3('br',br,ibl,iel,jbl,jel,1,1)
+          call dump3('gz1oz0',gz1oz0,ibl,iel,jbl,jel,1,1)
+          call dump3('psim',psim,ibl,iel,jbl,jel,1,1)
+          call dump3('psih',psih,ibl,iel,jbl,jel,1,1)
+        endif
+        if( use_pbl .and. ipbl.eq.3 )then
+          ! GFS-EDMF PBL: hpbl, the PBL tendencies and diffusivities that
+          ! sfc_and_turb computed from the previous state (as for kmh..khv)
+          call dump3('hpbl',hpbl,ibl,iel,jbl,jel,1,1)
+          call dump3('thpten',thpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qvpten',qvpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('qcpten',qcpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('upten',upten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('vpten',vpten,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('xkzh',xkzh,ibb,ieb,jbb,jeb,kbb,keb)
+          call dump3('xkzm',xkzm,ibb,ieb,jbb,jeb,kbb,keb)
+        endif
         call dump_end()
