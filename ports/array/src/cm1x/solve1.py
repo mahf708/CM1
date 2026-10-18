@@ -19,7 +19,10 @@ supports it) are ported, in solve1.F's order:
     qtten, qvten, qcten).
 
 With sgsmodel=0 the turbulence terms are identically zero (zero eddy
-viscosities, stresses and dissipation) and are skipped.
+viscosities, stresses and dissipation) and are skipped, except with the
+semi-slip lower boundary (bbc=3, which sfcmodel>=1 forces): then the surface
+stress acts on u, v at k=1 and idiss=1 adds the surface-layer dissipation.
+Radiation (radopt=2) adds thraten to thten1 after the dissipative heating.
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ def _check(cfg):
         ("idiff", (0,)),
         ("sgsmodel", (0, 1)),
         ("ipbl", (0,)),
-        ("radopt", (0,)),
+        ("radopt", (0, 2)),
         ("cuparam", (0,)),
         ("testcase", (0,)),
         ("rterm", (0,)),
@@ -110,6 +113,7 @@ def solve1(
     ppten=None,
     qten=None,
     turb=None,
+    thraten=None,
     **unused,
 ):
     """solve1.F ``solve1`` (active path only).
@@ -122,6 +126,14 @@ def solve1(
     vh, vf, mh, mf, the density arrays rr, rf, and the output of the previous
     cm1x.turb.sfc_and_turb call: tkea, kmh, kmv, khh, khv, nm, defv, defh,
     dissten, t11, t12, t13, t22, t23, t33.
+
+    With sgsmodel=0 and bbc=3 (sfcmodel=1) ``turb`` holds uh, uf, vh, vf,
+    mh, mf, zf, rf and the surface layer of cm1x.turb.sfc_and_turb_nosgs:
+    ust, znt, t13, t23 (surface drag on uten1/vten1, surface-layer
+    dissipative heating for idiss=1).
+
+    ``thraten`` (radopt=2): the potential-temperature tendency of the last
+    radiation call (cm1x.radiation_driver), added to thten1.
     """
     _check(cfg)
     xp = bk.xp
@@ -149,6 +161,15 @@ def solve1(
 
     # cm1setup=0: no subgrid turbulence (idoles = .false.) whatever sgsmodel
     les = int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) == 1
+    # sgsmodel=0 with the semi-slip lower boundary (bbc=3, forced by
+    # sfcmodel>=1): only the surface stress and surface-layer dissipation
+    sfc = (not les) and int(_opt(cfg, "bbc", 1)) == 3
+    if sfc:
+        from .turb import dissheat, sfc_drag_tendencies
+
+        if turb is None:
+            raise ValueError("solve1: bbc=3 needs the turb dict (surface layer)")
+        T = turb
     tketen = None
     if les:
         from .turb import dissheat, tke_source, turb_tendencies
@@ -231,19 +252,28 @@ def solve1(
         uten1 = bk.set(uten1, R, uten1[R] - fcor * (vs + vmove))
         vten1 = bk.set(vten1, R, vten1[R] + fcor * (us + umove))
 
+    # ---- dissipative heating (sgsmodel=1, idiss=1) ---------------------------
+    if (les or sfc) and int(_opt(cfg, "idiss", 1)) == 1:
+        thten1 = dissheat(
+            bk,
+            g,
+            cfg,
+            pi0=pi0,
+            ppi=ppi,
+            qa=qa,
+            dissten=T["dissten"] if les else None,
+            thten1=thten1,
+            ust=T.get("ust"),
+            znt=T.get("znt"),
+            zf=T.get("zf"),
+        )["thten1"]
+
+    # ---- radiation tendency (radopt=2) ----------------------------------------
+    if thraten is not None:
+        thten1 = bk.set(thten1, S, thten1[S] + thraten[S])
+
     # ---- subgrid turbulence (sgsmodel=1) ------------------------------------
     if les:
-        if int(_opt(cfg, "idiss", 1)) == 1:
-            thten1 = dissheat(
-                bk,
-                g,
-                cfg,
-                pi0=pi0,
-                ppi=ppi,
-                qa=qa,
-                dissten=T["dissten"],
-                thten1=thten1,
-            )["thten1"]
         tt = turb_tendencies(
             bk,
             g,
@@ -288,6 +318,29 @@ def solve1(
             tt["thten1"],
         )
         qten = list(tt["qten"])
+    elif sfc:
+        sd = sfc_drag_tendencies(
+            bk,
+            g,
+            cfg,
+            dt=dt,
+            uf=T["uf"],
+            vh=T["vh"],
+            uh=T["uh"],
+            vf=T["vf"],
+            mh=T["mh"],
+            mf=T["mf"],
+            rho=rho,
+            rf=T["rf"],
+            ua=ua,
+            va=va,
+            wa=wa,
+            uten1=uten1,
+            vten1=vten1,
+            t13=T["t13"],
+            t23=T["t23"],
+        )
+        uten1, vten1 = sd["uten1"], sd["vten1"]
 
     # ---- pressure tendency for mass conservation (eqtset=2) ---------------
     rdt = 1.0 / dt

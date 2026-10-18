@@ -8,10 +8,15 @@
 Per time step (cm1.F ``timeloop``):  solve1 (pre-RK tendencies) -> solve2
 (RK3 + acoustic steps) -> mp_driver (Kessler microphysics) -> solve3
 (BCs, diabatic tendencies for next step, equate time levels) ->
-sfc_and_turb (sgsmodel=1 only: eddy viscosities, stresses and TKE
-dissipation for the next step; it also runs once at t=0).  With sgsmodel=0,
-ipbl=0, isfcflx=0 sfc_and_turb leaves every array that the dynamics read
-unchanged (zero eddy viscosities / stresses / dissipation) and is skipped.
+radiation_driver (radopt=2: RRTMG on the new state when the radiation
+time is reached, and once at t=0; its potential-temperature tendency
+thraten enters solve1 until the next call) -> sfc_and_turb (sgsmodel=1:
+eddy viscosities, stresses and TKE dissipation for the next step;
+sgsmodel=0 with sfcmodel=1: the surface layer, i.e. u*, z0 and the surface
+stress of the semi-slip lower boundary bbc=3 that param.F forces; both
+also run once at t=0).  With sgsmodel=0, sfcmodel=0, ipbl=0, isfcflx=0
+sfc_and_turb leaves every array that the dynamics read unchanged (zero eddy
+viscosities / stresses / dissipation) and is skipped.
 
 Lateral boundaries come from the namelist (periodic, open with irbc=4
 radiative phase speeds, or walls); the radbc* phase speeds are persistent
@@ -67,6 +72,20 @@ FIELDS = (
     "qc",
     "qr",
     "rho",
+)
+# radopt=2 output (writeout.F: output_radten=1 / output_sfcparams=1)
+RAD3D = ("swten", "lwten", "cldfra")
+RAD2D = (
+    "lwupt",
+    "lwdnt",
+    "lwupb",
+    "lwdnb",
+    "swupt",
+    "swdnt",
+    "swupb",
+    "swdnb",
+    "lwcf",
+    "swcf",
 )
 
 
@@ -172,12 +191,20 @@ class Model:
             self.base["cm0"] = tc["cm0"]
             for k in ("cme", "csm", "ce1", "ce2"):
                 s[k] = tc[k]
+        self.sfc = self._init_surface(s)
+        self.rad = self._init_radiation(s)
         nrain = 2 if int(cfg.imove) == 1 else 1
         s["rain"] = bk.zeros((nrain,) + tuple(g.s_shape[1:]))
         s["prate"] = bk.zeros(g.s_shape[1:])
         s["qbudget"] = bk.zeros((10,))
         s["asq"] = bk.zeros((numq,))
         self.state = s
+        if self.sfc:
+            s.update(self._sfclayer(s, self.base))
+        if self.rad:
+            # cm1.F startup: radiation on the initial state (dorad = .true.)
+            s.update(self._radiation(s, self.base, **self._solar(0.0)))
+            self._advance_radtim(0.0)
         if self.les:
             self._sfc_and_turb(
                 rtime=0.0,
@@ -194,6 +221,115 @@ class Model:
         )
 
     # ------------------------------------------------------------------
+    def _init_surface(self, s):
+        """sfcmodel>=1: param.F forces the semi-slip lower boundary (bbc=3);
+        init_surface.F sets tsk, albd, emiss, xland and z0 (state ``znt``).
+        Returns True when the sgsmodel=0 surface layer (surface drag) runs."""
+        cfg, bk, g = self.cfg, self.bk, self.grid
+        if int(cfg.get("sfcmodel", 0)) < 1:
+            return False
+        from .init_surface import init_surface
+
+        cfg.bbc = 3
+        sf = init_surface(bk, g, cfg)
+        s["znt"] = sf.pop("znt")
+        self.base.update(sf)
+        if self.les:
+            raise NotImplementedError(
+                "sfcmodel>=1 (bbc=3) with sgsmodel=1 is not ported"
+            )
+        return True
+
+    def _sfclayer(self, s, b):
+        """cm1.F ``sfc_and_turb`` for sgsmodel=0 with bbc=3 on the state
+        ``s``: u*, z0 and the surface stress for the next solve1."""
+        from .turb import sfc_and_turb_nosgs
+
+        return sfc_and_turb_nosgs(
+            self.bk,
+            self.grid,
+            self.cfg,
+            ua=s["ua"],
+            va=s["va"],
+            u0=b["u0"],
+            v0=b["v0"],
+            rf=s["rf"],
+            zh=b["zh"],
+            xland=b["xland"],
+            znt=s["znt"],
+        )
+
+    def _init_radiation(self, s):
+        """radopt=2: surface parameters (init_surface.F), the RRTMG layer
+        count (init_physics.F p_top -> rrtmg_lwinit) and the radiation
+        state.  Returns False when radiation is off."""
+        cfg, bk, g = self.cfg, self.bk, self.grid
+        radopt = int(cfg.get("radopt", 0))
+        if radopt == 0:
+            return False
+        if radopt != 2:
+            raise NotImplementedError(f"radopt={radopt}: only radopt=2 is ported")
+        from . import module_ra_rrtmg_lw as lw
+        from . import radiation_driver as rd
+
+        rd._check(cfg)
+        if not self.sfc:
+            raise NotImplementedError("radopt=2 needs a surface model (sfcmodel>=1)")
+        self.nlayers = lw.nlayers_lw(g.nk, rd.p_top(self.base, g.nk))
+        # radiation_driver: dtrad = max(dtrad, dt)
+        self.dtrad = max(float(cfg.get("dtrad", 300.0)), self.dt)
+        self.radtim = 0.0  # param.F
+        s["swtenc"] = bk.zeros(g.s_shape)
+        return True
+
+    def _solar(self, mtime):
+        from .radiation_driver import solar
+
+        r = solar(self.cfg, mtime, self.dtrad)
+        return {"coszen": r["coszen"], "solcon": r["solcon"]}
+
+    def _dorad(self):
+        """cm1.F: radiation at the end of this step?"""
+        dt = self.dt
+        return self.rad and (self.mtime + dt) >= (self.radtim - 0.1 * dt)
+
+    def _advance_radtim(self, mtime):
+        while True:
+            self.radtim += self.dtrad
+            if self.radtim > mtime:
+                break
+
+    def _radiation(self, s, b, *, coszen, solcon):
+        """cm1.F: ``radiation_driver`` on the state ``s`` (radopt=2)."""
+        from .radiation_driver import radiation_driver
+
+        cg = {k: b[k] for k in ("cgs1", "cgs2", "cgs3", "cgt1", "cgt2", "cgt3")}
+        return radiation_driver(
+            self.bk,
+            self.grid,
+            self.cfg,
+            coszen=coszen,
+            solcon=solcon,
+            nlayers=self.nlayers,
+            c1=b["c1"],
+            c2=b["c2"],
+            rmh=b["rmh"],
+            pi0=b["pi0"],
+            th0=b["th0"],
+            prs=s["prs"],
+            ppi=s["ppi"],
+            tha=s["tha"],
+            qa=s["qa"],
+            tsk=b["tsk"],
+            albd=b["albd"],
+            emiss=b["emiss"],
+            xland=b["xland"],
+            xice=b["xice"],
+            xsnow=b["xsnow"],
+            swtenc=s["swtenc"],
+            cg=cg,
+        )
+
     def _sfc_and_turb(self, s=None, b=None, *, rtime, u3d, v3d, w3d, pp3d, th3d, q3d):
         """cm1.F: ``sfc_and_turb`` on the new time level (LES path).  Updates
         the state dict ``s`` (default ``self.state``) in place."""
@@ -262,10 +398,13 @@ class Model:
     # ------------------------------------------------------------------
     def step(self, hooks=None):
         """Advance one time step (dt = dtl).  With ``jit=True`` (and no
-        ``hooks``) the compiled step is used."""
+        ``hooks``) the compiled step is used (with radiation: one compiled
+        variant for steps with and one for steps without a radiation call)."""
         mtime = self.mtime + self.dt
+        dorad = self._dorad()
+        sol = self._solar(mtime) if dorad else {"coszen": 0.0, "solcon": 0.0}
         if self.jit and hooks is None:
-            fn = self._compiled_step()
+            fn = self._compiled_step(dorad)
             barr = {k: v for k, v in self.base.items() if is_array(v)}
             self.state = fn(
                 self.state,
@@ -273,33 +412,67 @@ class Model:
                 self.dtu0,
                 self.dtv0,
                 self.bk.scalar(mtime),
+                self.bk.scalar(sol["coszen"]),
+                self.bk.scalar(sol["solcon"]),
             )
         else:
             self.state = self._advance(
-                self.state, self.base, self.dtu0, self.dtv0, mtime, hooks=hooks
+                self.state,
+                self.base,
+                self.dtu0,
+                self.dtv0,
+                mtime,
+                hooks=hooks,
+                dorad=dorad,
+                **sol,
             )
         self.state = self.bk.materialize(self.state)
         self.nstep += 1
         self.mtime = mtime
+        if dorad:
+            self._advance_radtim(mtime)
         return self
 
-    def _compiled_step(self):
+    def _compiled_step(self, dorad=False):
         """The whole time step as one compiled function
-        ``(state, base_arrays, dtu0, dtv0, mtime) -> state`` (Backend.compile:
-        jax.jit, torch.compile, or the plain function elsewhere)."""
-        if "step" not in self._jit_cache:
+        ``(state, base_arrays, dtu0, dtv0, mtime, coszen, solcon) -> state``
+        (Backend.compile: jax.jit, torch.compile, or the plain function
+        elsewhere); ``dorad`` selects the variant with a radiation call."""
+        key = ("step", bool(dorad)) if dorad else "step"
+        if key not in self._jit_cache:
             bstatic = {k: v for k, v in self.base.items() if not is_array(v)}
 
-            def fn(s, barr, dtu0, dtv0, mtime):
-                return self._advance(s, {**bstatic, **barr}, dtu0, dtv0, mtime)
+            def fn(s, barr, dtu0, dtv0, mtime, coszen, solcon):
+                return self._advance(
+                    s,
+                    {**bstatic, **barr},
+                    dtu0,
+                    dtv0,
+                    mtime,
+                    dorad=dorad,
+                    coszen=coszen,
+                    solcon=solcon,
+                )
 
-            self._jit_cache["step"] = self.bk.compile(fn, **self.jit_options)
-        return self._jit_cache["step"]
+            self._jit_cache[key] = self.bk.compile(fn, **self.jit_options)
+        return self._jit_cache[key]
 
-    def _advance(self, s, b, dtu0, dtv0, mtime, hooks=None):
+    def _advance(
+        self,
+        s,
+        b,
+        dtu0,
+        dtv0,
+        mtime,
+        hooks=None,
+        dorad=False,
+        coszen=0.0,
+        solcon=0.0,
+    ):
         """Pure time step: returns the state dict after one step from ``s``
         (``b`` = base dict, ``mtime`` = model time at the end of the step,
-        Python float or 0-d array).  On numpy/torch arrays of ``s`` may be
+        Python float or 0-d array; ``dorad``: call radiation at the end of
+        the step with cos(zenith) ``coszen`` and solar constant ``solcon``).  On numpy/torch arrays of ``s`` may be
         updated in place, as before."""
         bk, g, cfg = self.bk, self.grid, self.cfg
         s = dict(s)
@@ -332,7 +505,8 @@ class Model:
             qtten=s["qtten"],
             qvten=s["qvten"],
             qcten=s["qcten"],
-            turb=self._turb_inputs(s, b) if self.les else None,
+            turb=self._turb_inputs(s, b) if self.les else self._sfc_inputs(s, b),
+            thraten=s.get("thraten"),
         )
 
         r2 = solve2(
@@ -482,6 +656,12 @@ class Model:
             "qa",
         ):
             s[k] = r3[k]
+        if dorad:
+            s.update(self._radiation(s, b, coszen=coszen, solcon=solcon))
+            if hooks is not None:
+                hooks("post_radiation", 0, s)
+        if self.sfc:
+            s.update(self._sfclayer(s, b))
         if self.les:
             s["tkea"], s["tke3d"] = r3["tkea"], r2["tke3d"]
             self._sfc_and_turb(
@@ -525,6 +705,14 @@ class Model:
             th3d=r2["th3d"],
             q3d=xp.stack(r2["q3d"], axis=0),
         )
+
+    def _sfc_inputs(self, s, b):
+        if not self.sfc:
+            return None
+        d = {k: b[k] for k in ("uh", "uf", "vh", "vf", "mh", "mf", "zf")}
+        for k in ("rf", "ust", "znt", "t13", "t23"):
+            d[k] = s[k]
+        return d
 
     def _turb_inputs(self, s=None, b=None):
         s = self.state if s is None else s
@@ -570,7 +758,9 @@ class Model:
     def fields(self):
         """Interior fields as numpy arrays, laid out like CM1's netCDF output
         (u: [nk, nj, ni+1], v: [nk, nj+1, ni], w, and with sgsmodel=1 tke, kmh,
-        kmv, khh, khv: [nk+1, nj, ni], others [nk, nj, ni]).  Definitions
+        kmv, khh, khv: [nk+1, nj, ni], others [nk, nj, ni]; with radopt=2
+        also RAD3D [nk, nj, ni] and the radiative fluxes RAD2D [nj, ni] of
+        the last radiation call).  Definitions
         follow writeout.F (u, v are grid-relative, as CM1 writes them)."""
         bk, g, b, s = self.bk, self.grid, self.base, self.state
         K, J, I = g.K, g.J, g.I
@@ -594,4 +784,9 @@ class Model:
             out["tke"] = s["tkea"][g.KF, J, I]
             for name in ("kmh", "kmv", "khh", "khv"):
                 out[name] = s[name][g.KF, J, I]
+        if self.rad:  # output_radten=1 [nk, nj, ni]; output_sfcparams=1 [nj, ni]
+            for name in RAD3D:
+                out[name] = s[name][K, J, I]
+            for name in RAD2D:
+                out[name] = s[name]
         return {k: bk.to_numpy(v) for k, v in out.items()}

@@ -263,7 +263,7 @@
 
       module rrsw_kg16
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng16
 
 !     implicit none
@@ -289,13 +289,13 @@
 
       integer(kind=im), parameter :: no16 = 16
 
-      real(kind=rb) :: kao(9,5,13,no16)
-      real(kind=rb) :: kbo(5,13:59,no16)
-      real(kind=rb) :: selfrefo(10,no16), forrefo(3,no16)
-      real(kind=rb) :: sfluxrefo(no16)
+      real(kind=rf) :: kao(9,5,13,no16)
+      real(kind=rf) :: kbo(5,13:59,no16)
+      real(kind=rf) :: selfrefo(10,no16), forrefo(3,no16)
+      real(kind=rf) :: sfluxrefo(no16)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: rayl, strrat1
+      real(kind=rf) :: rayl, strrat1
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 16
@@ -328,7 +328,7 @@
 
       module rrsw_kg17
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng17
 
 !     implicit none
@@ -354,13 +354,13 @@
 
       integer(kind=im), parameter :: no17 = 16
 
-      real(kind=rb) :: kao(9,5,13,no17)
-      real(kind=rb) :: kbo(5,5,13:59,no17)
-      real(kind=rb) :: selfrefo(10,no17), forrefo(4,no17)
-      real(kind=rb) :: sfluxrefo(no17,5)
+      real(kind=rf) :: kao(9,5,13,no17)
+      real(kind=rf) :: kbo(5,5,13:59,no17)
+      real(kind=rf) :: selfrefo(10,no17), forrefo(4,no17)
+      real(kind=rf) :: sfluxrefo(no17,5)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: rayl, strrat
+      real(kind=rf) :: rayl, strrat
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 17
@@ -393,7 +393,7 @@
 
       module rrsw_kg18
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng18
 
 !     implicit none
@@ -419,13 +419,13 @@
 
       integer(kind=im), parameter :: no18 = 16
 
-      real(kind=rb) :: kao(9,5,13,no18)
-      real(kind=rb) :: kbo(5,13:59,no18)
-      real(kind=rb) :: selfrefo(10,no18), forrefo(3,no18)
-      real(kind=rb) :: sfluxrefo(no18,9)
+      real(kind=rf) :: kao(9,5,13,no18)
+      real(kind=rf) :: kbo(5,13:59,no18)
+      real(kind=rf) :: selfrefo(10,no18), forrefo(3,no18)
+      real(kind=rf) :: sfluxrefo(no18,9)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: rayl, strrat
+      real(kind=rf) :: rayl, strrat
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 18
@@ -458,7 +458,7 @@
 
       module rrsw_kg19
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng19
 
 !     implicit none
@@ -484,13 +484,13 @@
 
       integer(kind=im), parameter :: no19 = 16
 
-      real(kind=rb) :: kao(9,5,13,no19)
-      real(kind=rb) :: kbo(5,13:59,no19)
-      real(kind=rb) :: selfrefo(10,no19), forrefo(3,no19)
-      real(kind=rb) :: sfluxrefo(no19,9)
+      real(kind=rf) :: kao(9,5,13,no19)
+      real(kind=rf) :: kbo(5,13:59,no19)
+      real(kind=rf) :: selfrefo(10,no19), forrefo(3,no19)
+      real(kind=rf) :: sfluxrefo(no19,9)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: rayl, strrat
+      real(kind=rf) :: rayl, strrat
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 19
@@ -523,7 +523,7 @@
 
       module rrsw_kg20
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng20
 
 !     implicit none
@@ -550,14 +550,14 @@
 
       integer(kind=im), parameter :: no20 = 16
 
-      real(kind=rb) :: kao(5,13,no20)
-      real(kind=rb) :: kbo(5,13:59,no20)
-      real(kind=rb) :: selfrefo(10,no20), forrefo(4,no20)
-      real(kind=rb) :: sfluxrefo(no20)
-      real(kind=rb) :: absch4o(no20)
+      real(kind=rf) :: kao(5,13,no20)
+      real(kind=rf) :: kbo(5,13:59,no20)
+      real(kind=rf) :: selfrefo(10,no20), forrefo(4,no20)
+      real(kind=rf) :: sfluxrefo(no20)
+      real(kind=rf) :: absch4o(no20)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: rayl 
+      real(kind=rf) :: rayl
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 20
@@ -592,7 +592,7 @@
 
       module rrsw_kg21
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng21
 
 !     implicit none
@@ -618,13 +618,13 @@
 
       integer(kind=im), parameter :: no21 = 16
 
-      real(kind=rb) :: kao(9,5,13,no21)
-      real(kind=rb) :: kbo(5,5,13:59,no21)
-      real(kind=rb) :: selfrefo(10,no21), forrefo(4,no21)
-      real(kind=rb) :: sfluxrefo(no21,9)
+      real(kind=rf) :: kao(9,5,13,no21)
+      real(kind=rf) :: kbo(5,5,13:59,no21)
+      real(kind=rf) :: selfrefo(10,no21), forrefo(4,no21)
+      real(kind=rf) :: sfluxrefo(no21,9)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: rayl, strrat
+      real(kind=rf) :: rayl, strrat
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 21
@@ -657,7 +657,7 @@
 
       module rrsw_kg22
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng22
 
 !     implicit none
@@ -683,13 +683,13 @@
 
       integer(kind=im), parameter :: no22 = 16
 
-      real(kind=rb) :: kao(9,5,13,no22)
-      real(kind=rb) :: kbo(5,13:59,no22)
-      real(kind=rb) :: selfrefo(10,no22), forrefo(3,no22)
-      real(kind=rb) :: sfluxrefo(no22,9)
+      real(kind=rf) :: kao(9,5,13,no22)
+      real(kind=rf) :: kbo(5,13:59,no22)
+      real(kind=rf) :: selfrefo(10,no22), forrefo(3,no22)
+      real(kind=rf) :: sfluxrefo(no22,9)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: rayl, strrat
+      real(kind=rf) :: rayl, strrat
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 22
@@ -722,7 +722,7 @@
 
       module rrsw_kg23
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng23
 
 !     implicit none
@@ -748,13 +748,13 @@
 
       integer(kind=im), parameter :: no23 = 16
 
-      real(kind=rb) :: kao(5,13,no23)
-      real(kind=rb) :: selfrefo(10,no23), forrefo(3,no23)
-      real(kind=rb) :: sfluxrefo(no23)
-      real(kind=rb) :: raylo(no23)
+      real(kind=rf) :: kao(5,13,no23)
+      real(kind=rf) :: selfrefo(10,no23), forrefo(3,no23)
+      real(kind=rf) :: sfluxrefo(no23)
+      real(kind=rf) :: raylo(no23)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: givfac
+      real(kind=rf) :: givfac
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 23
@@ -786,7 +786,7 @@
 
       module rrsw_kg24
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng24
 
 !     implicit none
@@ -816,15 +816,15 @@
 
       integer(kind=im), parameter :: no24 = 16
 
-      real(kind=rb) :: kao(9,5,13,no24)
-      real(kind=rb) :: kbo(5,13:59,no24)
-      real(kind=rb) :: selfrefo(10,no24), forrefo(3,no24)
-      real(kind=rb) :: sfluxrefo(no24,9)
-      real(kind=rb) :: abso3ao(no24), abso3bo(no24)
-      real(kind=rb) :: raylao(no24,9), raylbo(no24)
+      real(kind=rf) :: kao(9,5,13,no24)
+      real(kind=rf) :: kbo(5,13:59,no24)
+      real(kind=rf) :: selfrefo(10,no24), forrefo(3,no24)
+      real(kind=rf) :: sfluxrefo(no24,9)
+      real(kind=rf) :: abso3ao(no24), abso3bo(no24)
+      real(kind=rf) :: raylao(no24,9), raylbo(no24)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: strrat
+      real(kind=rf) :: strrat
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 24
@@ -863,7 +863,7 @@
 
       module rrsw_kg25
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng25
 
 !     implicit none
@@ -889,10 +889,10 @@
 
       integer(kind=im), parameter :: no25 = 16
 
-      real(kind=rb) :: kao(5,13,no25)
-      real(kind=rb) :: sfluxrefo(no25)
-      real(kind=rb) :: abso3ao(no25), abso3bo(no25)
-      real(kind=rb) :: raylo(no25)
+      real(kind=rf) :: kao(5,13,no25)
+      real(kind=rf) :: sfluxrefo(no25)
+      real(kind=rf) :: abso3ao(no25), abso3bo(no25)
+      real(kind=rf) :: raylo(no25)
 
       integer(kind=im) :: layreffr
 
@@ -926,7 +926,7 @@
 
       module rrsw_kg26
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng26
 
 !     implicit none
@@ -949,8 +949,8 @@
 
       integer(kind=im), parameter :: no26 = 16
 
-      real(kind=rb) :: sfluxrefo(no26)
-      real(kind=rb) :: raylo(no26)
+      real(kind=rf) :: sfluxrefo(no26)
+      real(kind=rf) :: raylo(no26)
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 26
@@ -974,7 +974,7 @@
 
       module rrsw_kg27
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng27
 
 !     implicit none
@@ -999,13 +999,13 @@
 
       integer(kind=im), parameter :: no27 = 16
 
-      real(kind=rb) :: kao(5,13,no27)
-      real(kind=rb) :: kbo(5,13:59,no27)
-      real(kind=rb) :: sfluxrefo(no27)
-      real(kind=rb) :: raylo(no27)
+      real(kind=rf) :: kao(5,13,no27)
+      real(kind=rf) :: kbo(5,13:59,no27)
+      real(kind=rf) :: sfluxrefo(no27)
+      real(kind=rf) :: raylo(no27)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: scalekur
+      real(kind=rf) :: scalekur
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 27
@@ -1037,7 +1037,7 @@
 
       module rrsw_kg28
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng28
 
 !     implicit none
@@ -1061,12 +1061,12 @@
 
       integer(kind=im), parameter :: no28 = 16
 
-      real(kind=rb) :: kao(9,5,13,no28)
-      real(kind=rb) :: kbo(5,5,13:59,no28)
-      real(kind=rb) :: sfluxrefo(no28,5)
+      real(kind=rf) :: kao(9,5,13,no28)
+      real(kind=rf) :: kbo(5,5,13:59,no28)
+      real(kind=rf) :: sfluxrefo(no28,5)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: rayl, strrat
+      real(kind=rf) :: rayl, strrat
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 28
@@ -1094,7 +1094,7 @@
 
       module rrsw_kg29
 
-      use parkind ,only : im => kind_im, rb => kind_rb
+      use parkind ,only : im => kind_im, rb => kind_rb, rf => kind_rf
       use parrrsw, only : ng29
 
 !     implicit none
@@ -1122,14 +1122,14 @@
 
       integer(kind=im), parameter :: no29 = 16
 
-      real(kind=rb) :: kao(5,13,no29)
-      real(kind=rb) :: kbo(5,13:59,no29)
-      real(kind=rb) :: selfrefo(10,no29), forrefo(4,no29)
-      real(kind=rb) :: sfluxrefo(no29)
-      real(kind=rb) :: absh2oo(no29), absco2o(no29)
+      real(kind=rf) :: kao(5,13,no29)
+      real(kind=rf) :: kbo(5,13:59,no29)
+      real(kind=rf) :: selfrefo(10,no29), forrefo(4,no29)
+      real(kind=rf) :: sfluxrefo(no29)
+      real(kind=rf) :: absh2oo(no29), absco2o(no29)
 
       integer(kind=im) :: layreffr
-      real(kind=rb) :: rayl
+      real(kind=rf) :: rayl
 
 !-----------------------------------------------------------------
 ! rrtmg_sw COMBINED abs. coefficients for interval 29

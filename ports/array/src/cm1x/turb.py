@@ -5,19 +5,23 @@ turb.F
   ``sfc_and_turb`` (the LES path only: ramp of the "constants" for
   ramp_sgs>=1, dissten=0, calcnm, calcdef, tkekm, tkebc, the tke3d boundary
   copy, gettau), ``calcnm``, ``calcdef``, ``tkekm``, ``tkebc``, ``gettau``
-  (with ``sfcstress`` for bbc=1);
+  (with ``sfcstress`` for bbc=1); for sgsmodel=0 with the semi-slip lower
+  boundary (bbc=3, sfcmodel=1, isfcflx=0): ``sfcstress`` (bbc=3),
+  ``sfc_and_turb_nosgs`` (the surface-layer part of sfc_and_turb) and
+  ``sfc_drag_tendencies`` (turbu/turbv at zero eddy viscosity);
 init3d.F
   ``turb_constants`` (cm0 = c_m and cme/ce1/ce2/csm, cm1setup=1);
 solve1.F (inline code, no subroutine of its own in CM1)
   ``tke_source`` (shear/buoyancy production - dissipation), ``dissheat``
-  (dissipative heating, idiss=1, with cvm), ``vimpl_coefs`` (dum7/dum8 for
-  implicit turbs), ``turb_tendencies`` (the ``doturb`` block: turbu, turbv,
-  turbw, vimpl arrays, turbs on theta-th0r and on every moisture species);
+  (dissipative heating, idiss=1, with cvm; bbc=3 surface-layer term),
+  ``vimpl_coefs`` (dum7/dum8 for implicit turbs), ``turb_tendencies`` (the
+  ``doturb`` block: turbu, turbv, turbw, vimpl arrays, turbs on theta-th0r
+  and on every moisture species);
 solve2.F / solve3.F
   ``tke_rk_update`` (tke3d = tkea + dt*tten, floor at 1e-10, bcw) and
   ``tke_copy`` (tkea = tke3d after the RK loop);
 bc.F (non-MPI branches, as the turbulence code calls them)
-  ``bcw`` and ``bc2d_level``.
+  ``bcw``, ``bc2d_level`` and ``bc2d``.
 
 Supported: cm1setup=1, sgsmodel=1, ipbl=0, horizturb=0, tconfig=1/2,
 bcturbs=1/2, doimpl=0/1, idiss=0/1, ramp_sgs>=0, bbc=1, tbc=1, lateral BCs
@@ -995,6 +999,133 @@ def gettau(bk, g, cfg=None, *, kmh, kmv, t11, t12, t13, t22, t23, t33, **unused)
 
 
 # ---------------------------------------------------------------------------
+# semi-slip lower boundary (bbc=3) without a subgrid model (sgsmodel=0)
+
+
+def sfcstress(bk, g, cfg=None, *, ust, u1, v1, s1, rf, t13, t23, **unused):
+    """turb.F ``sfcstress`` for bbc=3 (Cartesian, no use_avg_sfc, testcase
+    /= 7): the surface stress t13, t23 at k=1 on i=1..ni+1, j=1..nj+1 from
+    u* and the lowest-level wind direction (2-D ``ust, u1, v1, s1`` [j, i]
+    with halos).  Returns {"t13", "t23"}."""
+    if int(_opt(cfg, "bbc", 1)) != 3 or int(_opt(cfg, "testcase", 0)) == 7:
+        raise NotImplementedError("sfcstress: only bbc=3 (testcase /= 7) here")
+    xp = bk.xp
+    ni, nj, n = g.ni, g.nj, g.ngxy
+    J = slice(n, n + nj + 1)
+    I = slice(n, n + ni + 1)
+    Jm = slice(n - 1, n + nj)
+    Im = slice(n - 1, n + ni)
+    k1 = g.ngz  # Fortran k = 1
+
+    def f(a, J, I):
+        return (ust[J, I] ** 2) * (a[J, I] / xp.clip(s1[J, I], 0.01, None))
+
+    tx = 0.25 * (f(u1, J, Im) + f(u1, J, I)) * (rf[k1, J, Im] + rf[k1, J, I])
+    ty = 0.25 * (f(v1, Jm, I) + f(v1, J, I)) * (rf[k1, Jm, I] + rf[k1, J, I])
+    return {
+        "t13": bk.set(bk.copy(t13), (k1, J, I), tx),
+        "t23": bk.set(bk.copy(t23), (k1, J, I), ty),
+    }
+
+
+def bc2d(bk, g, cfg, a):
+    """bc.F ``bc2d`` on a 2-D [j, i] array."""
+    return bc2d_level(bk, g, cfg, a[None], 1 - g.ngz)[0]
+
+
+def sfc_and_turb_nosgs(
+    bk, g, cfg=None, *, ua, va, u0=None, v0=None, rf, zh, xland, znt, **unused
+):
+    """turb.F ``sfc_and_turb`` for cm1setup=1 with sgsmodel=0 (implicit
+    LES), bbc=3 (forced by sfcmodel>=1), sfcmodel=1, isfcflx=0, ipbl=0: the
+    lowest-level ground-relative winds u1, v1, s1 at scalar points,
+    ``sfcphys.getcecd`` (u*, z0), the bc2d of ust, u1, v1, s1, znt and, from
+    gettau, zero stresses except the surface stress of ``sfcstress``.
+
+    ``znt`` (2-D, roughness length of the previous call) and ``xland`` are
+    [j, i] with halos, ``zh`` the 3-D height of the scalar levels.  Returns
+    ust, znt, u1, v1, s1 (2-D with halos) and t13, t23 (``g.s_shape``,
+    zero except at k=1)."""
+    from .sfcphys import getcecd
+
+    if int(_opt(cfg, "sfcmodel", 0)) != 1 or int(_opt(cfg, "isfcflx", 0)) != 0:
+        raise NotImplementedError("sfc_and_turb_nosgs: sfcmodel=1, isfcflx=0 only")
+    if int(_opt(cfg, "ipbl", 0)) != 0 or int(_opt(cfg, "tbc", 1)) == 3:
+        raise NotImplementedError("sfc_and_turb_nosgs: ipbl=0, tbc/=3 only")
+    if int(_opt(cfg, "imove", 0)) == 1:
+        um, vm = float(_opt(cfg, "umove", 0.0)), float(_opt(cfg, "vmove", 0.0))
+        ugr, vgr = ua + um, va + vm
+    elif int(_opt(cfg, "pertflx", 0)) == 1:
+        ugr, vgr = ua - u0, va - v0
+    else:
+        ugr, vgr = ua, va
+    ni, nj, n = g.ni, g.nj, g.ngxy
+    k1 = g.ngz
+    J, I = slice(n, n + nj), slice(n, n + ni)
+    Jp, Ip = slice(n + 1, n + nj + 1), slice(n + 1, n + ni + 1)
+    u1i = 0.5 * (ugr[k1, J, I] + ugr[k1, J, Ip])
+    v1i = 0.5 * (vgr[k1, J, I] + vgr[k1, Jp, I])
+    s1i = bk.xp.sqrt(u1i**2 + v1i**2)
+    r = getcecd(
+        bk,
+        cfg,
+        u1=u1i,
+        v1=v1i,
+        s1=s1i,
+        za=zh[k1, J, I],
+        xland=xland[J, I],
+        znt=znt[J, I],
+    )
+    z2 = bk.zeros(g.s_shape[1:])
+    out = {}
+    for name, val in (
+        ("ust", r["ust"]),
+        ("u1", u1i),
+        ("v1", v1i),
+        ("s1", s1i),
+        ("znt", r["znt"]),
+    ):
+        base = znt if name == "znt" else z2
+        out[name] = bc2d(bk, g, cfg, bk.set(bk.copy(base), (J, I), val))
+    z3 = bk.zeros(g.s_shape)
+    out.update(
+        sfcstress(
+            bk,
+            g,
+            cfg,
+            ust=out["ust"],
+            u1=out["u1"],
+            v1=out["v1"],
+            s1=out["s1"],
+            rf=rf,
+            t13=z3,
+            t23=z3,
+        )
+    )
+    return out
+
+
+def sfc_drag_tendencies(
+    bk, g, cfg=None, *, dt, uf, vh, uh, vf, mh, mf, rho, rf, ua, va, wa, uten1,
+    vten1, t13, t23, **unused,
+):  # fmt: skip
+    """solve1.F ``doturb`` block for sgsmodel=0 with bbc=3: turbu / turbv
+    with zero eddy viscosity, so only the surface stress t13, t23 (k=1)
+    acts.  (turbw and turbs add exact zeros: no stress above the surface,
+    no surface fluxes.)  Returns uten1, vten1."""
+    zs, zw = bk.zeros(g.s_shape), bk.zeros(g.w_shape)
+    uten1 = turbu(
+        bk, g, cfg, dt=dt, uf=uf, vh=vh, mh=mh, mf=mf, rho=rho, rf=rf, u=ua,
+        uten=uten1, w=wa, t11=zs, t12=zs, t13=t13, kmv=zw,
+    )["uten"]  # fmt: skip
+    vten1 = turbv(
+        bk, g, cfg, dt=dt, uh=uh, vf=vf, mh=mh, mf=mf, rho=rho, rf=rf, v=va,
+        vten=vten1, w=wa, t12=zs, t22=zs, t23=t23, kmv=zw,
+    )["vten"]  # fmt: skip
+    return {"uten1": uten1, "vten1": vten1}
+
+
+# ---------------------------------------------------------------------------
 # sfc_and_turb (LES path)
 
 
@@ -1205,10 +1336,17 @@ def tke_source(
     return {"tketen": bk.set(tketen, R.idx, v)}
 
 
-def dissheat(bk, g, cfg=None, *, pi0, ppi, qa=None, dissten, thten1, **unused):
+def dissheat(
+    bk, g, cfg=None, *, pi0, ppi, qa=None, dissten, thten1, ust=None, znt=None,
+    zf=None, **unused,
+):  # fmt: skip
     """solve1.F: dissipative heating (idiss=1), ``thten1(1:ni,1:nj,1:nk) +=
-    epsilon/(cp_v pi)`` with cvm from qa for eqtset=2, imoist=1 (bbc=1, so
-    k1=1).  Returns {"thten1", "cvm"} (cvm = solve1's dum1 on the interior)."""
+    epsilon/(cp_v pi)`` with cvm from qa for eqtset=2, imoist=1.  With bbc=3
+    the subgrid term starts at k=2 and k=1 gets the surface-layer
+    dissipation u*^3 ln((dz1+z0)/z0)/(karman dz1) (2-D ``ust``, ``znt``
+    [j, i] with halos, ``zf`` the 3-D w-level heights); ``dissten=None``
+    means no subgrid dissipation (sgsmodel=0).  Returns {"thten1", "cvm"}
+    (cvm = solve1's dum1 on the interior)."""
     xp = bk.xp
     idiss = int(_opt(cfg, "idiss", 1))
     eqtset = int(_opt(cfg, "eqtset", 2))
@@ -1234,14 +1372,32 @@ def dissheat(bk, g, cfg=None, *, pi0, ppi, qa=None, dissten, thten1, **unused):
     out = {"cvm": cvm, "thten1": thten1}
     if idiss != 1:
         return out
-    if int(_opt(cfg, "bbc", 1)) == 3:
-        raise NotImplementedError("dissheat: bbc=3 not ported")
-    epsd = 0.5 * (R(dissten) + R(dissten, dk=1))
-    if m["imoist"] == 1 and eqtset == 2:
-        dheat = epsd / (C.cpdcv * cvm * (R(pi0) + R(ppi)))
-    else:
-        dheat = epsd / (C.cp * (R(pi0) + R(ppi)))
-    out["thten1"] = bk.set(bk.copy(thten1), R.idx, R(thten1) + dheat)
+    moist2 = m["imoist"] == 1 and eqtset == 2
+    bbc3 = int(_opt(cfg, "bbc", 1)) == 3
+    thten1 = bk.copy(thten1)
+    if dissten is not None:
+        k1 = 2 if bbc3 else 1
+        Rk = Reg(g, (k1, g.nk), (1, g.nj), (1, g.ni))
+        epsd = 0.5 * (Rk(dissten) + Rk(dissten, dk=1))
+        if moist2:
+            dheat = epsd / (C.cpdcv * cvm[k1 - 1 :] * (Rk(pi0) + Rk(ppi)))
+        else:
+            dheat = epsd / (C.cp * (Rk(pi0) + Rk(ppi)))
+        thten1 = bk.set(thten1, Rk.idx, Rk(thten1) + dheat)
+    if bbc3:
+        xp = bk.xp
+        R1 = Reg(g, (1, 1), (1, g.nj), (1, g.ni))
+        n = g.ngxy
+        J, I = slice(n, n + g.nj), slice(n, n + g.ni)
+        dz1 = R1(zf, dk=1) - R1(zf)
+        z0 = znt[J, I][None]
+        epsd = (ust[J, I][None] ** 3) * xp.log((dz1 + z0) / z0) / (C.karman * dz1)
+        if moist2:
+            dheat = epsd / (C.cpdcv * cvm[:1] * (R1(pi0) + R1(ppi)))
+        else:
+            dheat = epsd / (C.cp * (R1(pi0) + R1(ppi)))
+        thten1 = bk.set(thten1, R1.idx, R1(thten1) + dheat)
+    out["thten1"] = thten1
     return out
 
 
