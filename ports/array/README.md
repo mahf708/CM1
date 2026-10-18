@@ -107,6 +107,35 @@ and radiation_driver.F accept radopt=2 with ptype=1 (WRF's mp_physics=1), and
 the RRTMG table arrays are 4-byte reals (`kind_rf`), so a `-fdefault-real-8`
 build reads the 4-byte data files unchanged.
 
+## Boundary layer (cm1setup=2) and surface layers
+
+`pbl.py` holds the mesoscale path of `turb.F sfc_and_turb` (`sfc_and_turb_pbl`:
+dissten=0, the surface layer, bc2d of the surface arrays, calcnm, calcdef,
+`turbparam_horiz` (horizturb=1), `turbparam_vert` (ipbl=2), gettau, the PBL
+scheme, bcs(upten/vpten)), the solve1 `use_pbl` blocks and the param.F option
+adjustments (`pbl.options`: bbc=3, isfcflx, tconfig=2, l_inf, dohturb/dovturb,
+use_pbl, dosfcflx). PBL schemes and surface layers plug in through a registry
+in `pbl.py`; adding one is a one-line entry:
+
+```python
+PBL_SCHEMES = {2: "cm1x.pbl", 1: "cm1x.pbl_ysu", ...}          # ipbl -> module
+SURFACE_LAYERS = {1: "cm1x.sfcphys", 2: "cm1x.sfclay", ...}    # sfcmodel -> module
+```
+
+The module defines `pbl(ctx)` (or `surface_layer(ctx)`) returning a dict of
+state updates, and optionally `options(cfg)` (param.F adjustments, run once),
+`check(cfg)`, `init_state(ctx)` (arrays carried across steps), `WRF_INPUTS =
+True` and `DUMP_KEYS`. `ctx` (`pbl.Context`) carries `bk, g, cfg, dt, nstep,
+update_sfc, rtime`, the model state `s` (surface arrays 2-D `[j, i]` with
+halos; K arrays, `dissten`, the PBL tendencies `thpten, qvpten, qcpten,
+qipten, upten, vpten` 3-D), the base state `b`, the new time level `u3d, v3d,
+w3d, pp3d, th3d, q3d` with `rho, rr, rf, prs`, and `ctx.w`, the WRF column
+inputs of turb.F (`pbl.wrf_inputs`: u, v at scalar points, th, pi, t, dz8w,
+p3di, qv, qc, qi, rthraten). PBL tendencies are rho-weighted as in CM1 and
+filled on the interior; the core applies bcs to upten/vpten and adds them in
+solve1. `tests/test_model_dumps_pbl.py` compares every array a CM1 dump holds
+(`CM1X_DUMP_DIR_PBL`, layout `<case>/step_NNNNNN`).
+
 ## Performance
 
 `Model(nml, backend="jax", jit=True)` compiles the whole time step into one
