@@ -205,14 +205,16 @@ def _parse_values(text: str):
     return vals
 
 
-def parse_namelist(text: str) -> dict:
-    """Parse Fortran namelist text -> {group: {var: value}} (lower-case names)."""
+def parse_namelist(text: str, strict: bool = True) -> dict:
+    """Parse Fortran namelist text -> {group: {var: value}} (lower-case names).
+
+    ``strict`` (default): groups and variables must be ones CM1 reads."""
     groups: dict = {}
     body = "\n".join(_strip_comment(line) for line in text.splitlines())
     for gm in re.finditer(r"&(\w+)(.*?)(?:^\s*/|/\s*$|&end)", body, re.S | re.M | re.I):
         gname = gm.group(1).lower()
         content = gm.group(2)
-        if gname not in NAMELIST_GROUPS:
+        if strict and gname not in NAMELIST_GROUPS:
             raise ValueError(f"namelist group &{gname} is not read by CM1")
         g = groups.setdefault(gname, {})
         # split on "name =" (optionally name(idx) =)
@@ -220,7 +222,7 @@ def parse_namelist(text: str) -> dict:
         # parts = [junk, name1, vals1, name2, vals2, ...]
         for name, vals in zip(parts[1::2], parts[2::2]):
             base = name.split("(")[0].lower()
-            if base not in NAMELIST_GROUPS[gname]:
+            if strict and base not in NAMELIST_GROUPS[gname]:
                 where = _GROUP_OF.get(base)
                 hint = f" (it belongs to &{where})" if where else ""
                 raise ValueError(f"&{gname}: unknown namelist variable {name!r}{hint}")

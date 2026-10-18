@@ -68,14 +68,17 @@ def test_namelist_reference(cfg):
 
 
 def test_namelist_parser_misc():
-    g = parse_namelist("""
+    g = parse_namelist(
+        """
  &a
   x = 1, y = 2.5d0 ! comment, z = 3
   s = 'it''s', l = .false.,
   arr = 1, 2, 3*4,
  /
  &b n=7 /
-""")
+""",
+        strict=False,
+    )
     assert g["a"] == {"x": 1, "y": 2.5, "s": "it's", "l": False, "arr": [1, 2, 4, 4, 4]}
     assert g["b"] == {"n": 7}
 
