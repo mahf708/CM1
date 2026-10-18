@@ -63,35 +63,36 @@ _pi = 3.1415926535897932384626433  # constants.F (real, parameter)
 
 def _check(cfg, who):
     bad = []
+    pbl = int(_opt(cfg, "cm1setup", 1)) == 2
     for name, ok in (
-        ("cm1setup", (1,)),
-        ("sgsmodel", (1,)),
-        ("ipbl", (0,)),
-        ("horizturb", (0,)),
+        ("cm1setup", (1, 2)),
+        ("sgsmodel", (0,) if pbl else (1,)),
+        ("horizturb", (0, 1) if pbl else (0,)),
         ("cuparam", (0,)),
         ("tconfig", (1, 2)),
         ("bcturbs", (1, 2)),
         ("doimpl", (0, 1)),
         ("idiss", (0, 1)),
-        ("bbc", (1,)),
+        ("bbc", (1, 3)),
         ("tbc", (1,)),
         ("axisymm", (0,)),
-        ("isfcflx", (0,)),
+        ("isfcflx", (0, 1)),
         ("iice", (0,)),
     ):
         v = int(_opt(cfg, name, ok[0]))
         if v not in ok:
             bad.append(f"{name}={v}")
+    if not pbl and int(_opt(cfg, "ipbl", 0)) != 0:
+        bad.append(f"ipbl={int(_opt(cfg, 'ipbl', 0))} with the LES")
     sfcmodel = int(_opt(cfg, "sfcmodel", 0))
-    if sfcmodel in (2, 3, 4, 6, 7):
-        bad.append(f"sfcmodel={sfcmodel} (surface fluxes)")
+    if not pbl and sfcmodel not in (0, 1):
+        bad.append(f"sfcmodel={sfcmodel} with the LES")
     for n in ("wbc", "ebc", "sbc", "nbc"):
         v = int(_opt(cfg, n, 1))
         if v not in (1, 2, 3, 4):
             bad.append(f"{n}={v}")
-    for n in ("do_ib", "dosfcflx"):
-        if _opt(cfg, n, False):
-            bad.append(f"{n}=T")
+    if _opt(cfg, "do_ib", False):
+        bad.append("do_ib=T")
     if bad:
         raise NotImplementedError(f"{who}: options not ported: " + ", ".join(bad))
 
@@ -870,15 +871,23 @@ def tkekm(
     }
 
 
-def tkebc(bk, g, cfg=None, *, tkea, kmh, kmv, khh, khv, **unused):
-    """turb.F ``tkebc`` (bbc=1 free slip, tbc=1): TKE and K at k=1.
-    Returns dict tkea, kmh, kmv, khh, khv."""
-    if int(_opt(cfg, "bbc", 1)) != 1 or int(_opt(cfg, "tbc", 1)) != 1:
-        raise NotImplementedError("tkebc: only bbc=1, tbc=1 ported")
+def tkebc(bk, g, cfg=None, *, tkea, kmh, kmv, khh, khv, zntmp=None, ust=None, **unused):
+    """turb.F ``tkebc`` (bbc=1 free slip or bbc=3 semi slip, tbc=1): TKE
+    and K at k=1; with bbc=3 kmh(1) = karman z0 u* (2-D ``zntmp``, ``ust``
+    [j, i] with halos).  Returns dict tkea, kmh, kmv, khh, khv."""
+    bbc = int(_opt(cfg, "bbc", 1))
+    if bbc not in (1, 3) or int(_opt(cfg, "tbc", 1)) != 1:
+        raise NotImplementedError("tkebc: only bbc=1, 3, tbc=1 ported")
     ni, nj = g.ni, g.nj
     r = Reg(g, (1, 1), (1, nj), (1, ni))
+    if bbc == 3:
+        n = g.ngxy
+        J, I = slice(n, n + nj), slice(n, n + ni)
+        km1 = (C.karman * zntmp[J, I] * ust[J, I])[None]
+    else:
+        km1 = 0.0
     tkea = bc2d_level(bk, g, cfg, bk.set(bk.copy(tkea), r.idx, 0.0), 1)
-    kmh = bc2d_level(bk, g, cfg, bk.set(bk.copy(kmh), r.idx, 0.0), 1)
+    kmh = bc2d_level(bk, g, cfg, bk.set(bk.copy(kmh), r.idx, km1), 1)
     r = Reg(g, (1, 1), (0, nj + 1), (0, ni + 1))
     kmv = bk.set(bk.copy(kmv), r.idx, r(kmh))
     khv = bk.set(
@@ -894,12 +903,18 @@ def tkebc(bk, g, cfg=None, *, tkea, kmh, kmv, khh, khv, **unused):
 # gettau (+ sfcstress, bbc=1)
 
 
-def gettau(bk, g, cfg=None, *, kmh, kmv, t11, t12, t13, t22, t23, t33, **unused):
-    """turb.F ``gettau`` (Cartesian; bbc=1 via ``sfcstress``; tbc=1):
-    t_ij = (rho S_ij) * 2K plus boundary values.  On entry t_ij hold calcdef's
-    rho*S_ij.  Returns dict t11, t12, t13, t22, t23, t33."""
-    if int(_opt(cfg, "bbc", 1)) != 1 or int(_opt(cfg, "tbc", 1)) != 1:
-        raise NotImplementedError("gettau: only bbc=1, tbc=1 ported")
+def gettau(
+    bk, g, cfg=None, *, kmh, kmv, t11, t12, t13, t22, t23, t33, sfc=None, rf=None,
+    **unused,
+):  # fmt: skip
+    """turb.F ``gettau`` (Cartesian; tbc=1): t_ij = (rho S_ij) * 2K plus
+    boundary values.  On entry t_ij hold calcdef's rho*S_ij.  The surface
+    stress: bbc=1 free slip, bbc=3 ``sfcstress`` from ``sfc`` (dict with the
+    2-D ust, u1, v1, s1) and ``rf``.  Returns dict t11, t12, t13, t22, t23,
+    t33."""
+    bbc = int(_opt(cfg, "bbc", 1))
+    if bbc not in (1, 3) or int(_opt(cfg, "tbc", 1)) != 1:
+        raise NotImplementedError("gettau: only bbc=1, 3, tbc=1 ported")
     ni, nj, nk = g.ni, g.nj, g.nk
     b = _bcflags(cfg)
     t11, t12, t13 = bk.copy(t11), bk.copy(t12), bk.copy(t13)
@@ -990,9 +1005,16 @@ def gettau(bk, g, cfg=None, *, kmh, kmv, t11, t12, t13, t22, t23, t33, **unused)
             )
 
     H = ((1, nj + 1), (1, ni + 1))
-    # sfcstress, bbc=1 (free slip); then tbc=1 (free slip)
-    t13 = cp(t13, ((1, 1),) + H, ((2, 2),) + H)
-    t23 = cp(t23, ((1, 1),) + H, ((2, 2),) + H)
+    # sfcstress (bbc=1: free slip); then tbc=1 (free slip)
+    if bbc == 3:
+        r = sfcstress(
+            bk, g, cfg, ust=sfc["ust"], u1=sfc["u1"], v1=sfc["v1"], s1=sfc["s1"],
+            rf=rf, t13=t13, t23=t23,
+        )  # fmt: skip
+        t13, t23 = r["t13"], r["t23"]
+    else:
+        t13 = cp(t13, ((1, 1),) + H, ((2, 2),) + H)
+        t23 = cp(t23, ((1, 1),) + H, ((2, 2),) + H)
     t13 = cp(t13, ((nk + 1, nk + 1),) + H, ((nk, nk),) + H)
     t23 = cp(t23, ((nk + 1, nk + 1),) + H, ((nk, nk),) + H)
     return {"t11": t11, "t12": t12, "t13": t13, "t22": t22, "t23": t23, "t33": t33}
@@ -1180,10 +1202,12 @@ def sfc_and_turb(
     t23=None,
     t33=None,
     terrain=None,
+    sfc=None,
     **unused,
 ):
-    """turb.F ``sfc_and_turb`` for cm1setup=1, sgsmodel=1 (no surface layer,
-    no PBL).  Inputs are the state of the *new* time level (CM1 calls it at
+    """turb.F ``sfc_and_turb`` for cm1setup=1, sgsmodel=1 (no PBL; with
+    bbc=3 ``sfc`` holds the surface arrays after the surface layer, see
+    ``cm1x.pbl.surface``: ust, zntmp, u1, v1, s1).  Inputs are the state of the *new* time level (CM1 calls it at
     the end of each step: u3d, v3d, w3d, pp3d, th3d, q3d as ua..qa, with prs,
     rho, rf) and ``rtime`` = model time at the end of the step (Python float,
     used by ramp_sgs).
@@ -1272,9 +1296,11 @@ def sfc_and_turb(
         lenscl=lenscl,
         dissten=dissten,
     )
+    sf = sfc or {}
     bc = tkebc(
-        bk, g, cfg, tkea=tkea, kmh=k["kmh"], kmv=k["kmv"], khh=k["khh"], khv=k["khv"]
-    )
+        bk, g, cfg, tkea=tkea, kmh=k["kmh"], kmv=k["kmv"], khh=k["khh"], khv=k["khv"],
+        zntmp=sf.get("zntmp"), ust=sf.get("ust"),
+    )  # fmt: skip
     tkea = bc["tkea"]
     tke3d = bk.copy(tke3d)
     for kk in (1, nk + 1):
@@ -1292,6 +1318,8 @@ def sfc_and_turb(
         t22=d["s22"],
         t23=d["s23"],
         t33=d["s33"],
+        sfc=sfc,
+        rf=rf,
     )
     out.update(
         tkea=tkea,
@@ -1391,7 +1419,8 @@ def dissheat(
         J, I = slice(n, n + g.nj), slice(n, n + g.ni)
         dz1 = R1(zf, dk=1) - R1(zf)
         z0 = znt[J, I][None]
-        epsd = (ust[J, I][None] ** 3) * xp.log((dz1 + z0) / z0) / (C.karman * dz1)
+        u = ust[J, I][None]
+        epsd = ((u * u) * u) * xp.log((dz1 + z0) / z0) / (C.karman * dz1)
         if moist2:
             dheat = epsd / (C.cpdcv * cvm[:1] * (R1(pi0) + R1(ppi)))
         else:
@@ -1451,9 +1480,13 @@ def turb_tendencies(
     t23,
     t33,
     terrain=None,
+    thflux=None,
+    qvflux=None,
     **unused,
 ):
-    """solve1.F ``doturb`` block (sgsmodel=1): turbu(ua)->uten1,
+    """solve1.F ``doturb`` block (sgsmodel=1, or cm1setup=2 with
+    horizturb=1; ``thflux``/``qvflux`` are the 2-D surface fluxes used with
+    dosfcflx): turbu(ua)->uten1,
     turbv(va)->vten1, turbw(wa)->wten1, vimpl arrays (doimpl=1),
     turbs(tha + th0(1,1,k) - th0r)->thten1, turbs(qa(n))->qten(n) for
     n=1..numq (imoist=1).  Returns dict uten1, vten1, wten1, thten1, qten
@@ -1555,7 +1588,9 @@ def turb_tendencies(
         "dum8": dum8,
         "terrain": terrain,
     }
-    thten1 = turbs_(bk, g, cfg, iflux=1, s=sadv, sten=thten1, **common)["sten"]
+    thten1 = turbs_(bk, g, cfg, iflux=1, s=sadv, sten=thten1, sflux=thflux, **common)[
+        "sten"
+    ]
     qout = None
     if m["imoist"] == 1:
         qout = []
@@ -1568,6 +1603,7 @@ def turb_tendencies(
                     iflux=1 if nn == m["nqv"] else 0,
                     s=_q(qa, nn),
                     sten=_q(qten, nn),
+                    sflux=qvflux,
                     **common,
                 )["sten"]
             )

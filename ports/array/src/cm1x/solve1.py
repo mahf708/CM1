@@ -48,7 +48,6 @@ def _check(cfg):
         ("lspgrad", (0, 1)),
         ("idiff", (0,)),
         ("sgsmodel", (0, 1)),
-        ("ipbl", (0,)),
         ("radopt", (0, 2)),
         ("cuparam", (0,)),
         ("testcase", (0,)),
@@ -56,7 +55,7 @@ def _check(cfg):
         ("eqtset", (2,)),
         ("psolver", (3,)),
         ("imoist", (0, 1)),
-        ("isfcflx", (0,)),
+        ("isfcflx", (0, 1)),
         ("axisymm", (0,)),
     ):
         v = _opt(cfg, name, ok[0])
@@ -71,11 +70,13 @@ def _check(cfg):
     ):
         if _opt(cfg, name, False):
             bad.append(f"{name}=T")
-    if int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) not in (
-        0,
-        1,
-    ):
-        bad.append(f"sgsmodel=1 with cm1setup={_opt(cfg, 'cm1setup', 1)}")
+    cm1setup = int(_opt(cfg, "cm1setup", 1))
+    if int(_opt(cfg, "sgsmodel", 0)) == 1 and cm1setup not in (0, 1):
+        bad.append(f"sgsmodel=1 with cm1setup={cm1setup}")
+    if cm1setup not in (0, 1, 2):
+        bad.append(f"cm1setup={cm1setup}")
+    if int(_opt(cfg, "ipbl", 0)) != 0 and cm1setup != 2:
+        bad.append(f"ipbl={_opt(cfg, 'ipbl', 0)} with cm1setup={cm1setup}")
     if int(_opt(cfg, "lspgrad", 0)) == 1 and int(_opt(cfg, "imove", 0)) != 0:
         bad.append("lspgrad=1 with imove=1")
     if bad:
@@ -161,9 +162,18 @@ def solve1(
 
     # cm1setup=0: no subgrid turbulence (idoles = .false.) whatever sgsmodel
     les = int(_opt(cfg, "sgsmodel", 0)) == 1 and int(_opt(cfg, "cm1setup", 1)) == 1
+    # cm1setup=2: the PBL path (cm1x.pbl): dissipative heating from dissten,
+    # thpten/upten/... (use_pbl) and, with horizturb=1, the horizontal doturb
+    meso = int(_opt(cfg, "cm1setup", 1)) == 2
+    use_pbl = meso and bool(_opt(cfg, "use_pbl", False))
+    dohturb = bool(_opt(cfg, "dohturb", les))
+    if meso:
+        if turb is None:
+            raise ValueError("solve1: cm1setup=2 needs the turb dict")
+        T = turb
     # sgsmodel=0 with the semi-slip lower boundary (bbc=3, forced by
     # sfcmodel>=1): only the surface stress and surface-layer dissipation
-    sfc = (not les) and int(_opt(cfg, "bbc", 1)) == 3
+    sfc = (not les) and (not meso) and int(_opt(cfg, "bbc", 1)) == 3
     if sfc:
         from .turb import dissheat, sfc_drag_tendencies
 
@@ -253,7 +263,9 @@ def solve1(
         vten1 = bk.set(vten1, R, vten1[R] + fcor * (us + umove))
 
     # ---- dissipative heating (sgsmodel=1, idiss=1) ---------------------------
-    if (les or sfc) and int(_opt(cfg, "idiss", 1)) == 1:
+    if (les or sfc or meso) and int(_opt(cfg, "idiss", 1)) == 1:
+        from .turb import dissheat
+
         thten1 = dissheat(
             bk,
             g,
@@ -261,7 +273,7 @@ def solve1(
             pi0=pi0,
             ppi=ppi,
             qa=qa,
-            dissten=T["dissten"] if les else None,
+            dissten=T["dissten"] if (les or meso) else None,
             thten1=thten1,
             ust=T.get("ust"),
             znt=T.get("znt"),
@@ -272,8 +284,16 @@ def solve1(
     if thraten is not None:
         thten1 = bk.set(thten1, S, thten1[S] + thraten[S])
 
-    # ---- subgrid turbulence (sgsmodel=1) ------------------------------------
-    if les:
+    # ---- PBL theta tendency (use_pbl) ----------------------------------------
+    if use_pbl:
+        from .pbl import add_theta_tendency
+
+        thten1 = add_theta_tendency(bk, g, thten1=thten1, thpten=T["thpten"])
+
+    # ---- subgrid turbulence (sgsmodel=1; cm1setup=2 with horizturb=1) -------
+    if les or (meso and dohturb):
+        from .turb import turb_tendencies
+
         tt = turb_tendencies(
             bk,
             g,
@@ -310,6 +330,8 @@ def solve1(
             t23=T["t23"],
             t33=T["t33"],
             terrain=T.get("terrain"),
+            thflux=T.get("thflux"),
+            qvflux=T.get("qvflux"),
         )
         uten1, vten1, wten1, thten1 = (
             tt["uten1"],
@@ -317,7 +339,8 @@ def solve1(
             tt["wten1"],
             tt["thten1"],
         )
-        qten = list(tt["qten"])
+        if tt["qten"] is not None:
+            qten = list(tt["qten"])
     elif sfc:
         sd = sfc_drag_tendencies(
             bk,
@@ -341,6 +364,13 @@ def solve1(
             t23=T["t23"],
         )
         uten1, vten1 = sd["uten1"], sd["vten1"]
+
+    # ---- PBL tendencies of u, v and moisture (use_pbl) -----------------------
+    if use_pbl:
+        from .pbl import add_tendencies
+
+        at = add_tendencies(bk, g, cfg, uten1=uten1, vten1=vten1, qten=qten, s=T)
+        uten1, vten1, qten = at["uten1"], at["vten1"], at["qten"]
 
     # ---- pressure tendency for mass conservation (eqtset=2) ---------------
     rdt = 1.0 / dt
