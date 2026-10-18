@@ -1000,8 +1000,11 @@ def surface_layer(ctx):
         rf1 = ctx.rf[z, J, I]
         v["thflux"] = v["hfx"] / (v["cpmm"] * rf1)
         v["qvflux"] = v["qfx"] / rf1
-    return {
-        k: bk.set(s[k] + 0.0 if k in s else bk.zeros(g.s_shape[1:]), (J, I), a)
-        for k, a in v.items()
-        if not k.startswith("_")
-    }
+    out = {}
+    for k, a in v.items():
+        if a.ndim == 3:  # tslb [nsoil, j, i]
+            out[k] = bk.set(s[k] + 0.0, (slice(None), J, I), a)
+        else:
+            base = s[k] + 0.0 if k in s else bk.zeros(g.s_shape[1:])
+            out[k] = bk.set(base, (J, I), a)
+    return out
