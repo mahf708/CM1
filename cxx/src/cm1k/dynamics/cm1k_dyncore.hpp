@@ -113,7 +113,7 @@ public:
   // Model::step calls it at the start of each step, which is the same point
   // in the sequence (between mtime=mtime+dt and the next solve1).
   //   update_sfc: cm1.F's update_sfc, .false. only in the startup pass
-  //   (nstep = 0): with sfcmodel=2,3 the SLAB land model then does not run.
+  //   (nstep = 0): with sfcmodel=2,3,6 the SLAB land model then does not run.
   bool turb_enabled() const { return m_cfg.turb; }
   // nstep: the model step (CM1's nstep at that call: 0 in the startup pass,
   // where update_sfc = .false.); update_sfc = (nstep > 0).
