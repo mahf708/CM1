@@ -348,6 +348,12 @@ TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke from Model
   run_case("kessler_terrain_tke", 0.0, true, true);
 }
 
+TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke_openbc (open E/W, walls S/N)",
+          "[dyn][step][init][terrain][kessler][turb][openbc]") {
+  run_case("kessler_terrain_tke_openbc", 0.0, false, true);
+  run_case("kessler_terrain_tke_openbc", 0.0, true, true);
+}
+
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
   run_case("dry_bubble", 1e-12, true);
 }

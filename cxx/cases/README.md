@@ -35,6 +35,7 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `nh_mountain_waves` | 100×1×100, 200 m, 200 m | 100 steps (200 s, `dtl = 2 s`) | every 10 steps | terrain-following coordinate (`terrain_flag = .true.`, `itern = 1`: 400 m bell, half width 1 km), nonhydrostatic mountain waves: 2D, open E/W boundaries (`irbc = 4`), `isnd = 9` (N = 0.01/s), `iwnd = 6` (U = 10 m/s), `cm1setup = 0`, WENO scalars (`advwenos = 2`), Coriolis with `lspgrad = 1`, Rayleigh damping (`irdamp = 1`, `zd = 14 km`); also dumps the terrain metrics (`zs`, `gz`, `rgzu`, `dzdx`, `gx`, ...) |
 | `nh_mountain_waves_long` | 100×1×100, 200 m, 200 m | 900 steps (1800 s, `dtl = 2 s`) | every 150 steps | `nh_mountain_waves` run for 30 min, for long-run drift checks |
 | `kessler_terrain_tke` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | `kessler_tke` over a 3D hill (`terrain_flag = .true.`, `itern = 3`: 500 m, half width 20 km): terrain branches of the TKE scheme (implicit vertical diffusion, `idiss = 1`), Kessler, advection, sound and the warm bubble on sigma levels |
+| `kessler_terrain_tke_openbc` | 32×32×20, 2 km, 500 m | 50 steps (300 s) | every 10 steps | `kessler_terrain_tke` with open-radiative E/W boundaries and free-slip/no-slip walls S/N (`wbc = ebc = 2`, `sbc = 3`, `nbc = 4`, as `kessler_tke_openbc`): `ssopenbc*` and the open-boundary pieces of the terrain turbulence branches |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 

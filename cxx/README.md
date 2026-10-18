@@ -103,10 +103,10 @@ Kessler, and the LES TKE scheme (`sgsmodel = 1`, `doimpl = 0/1`, bbc = 1).
 Unported combinations throw: `difforder = 2` (diff2.F stops), `imove = 1`,
 `itern = 0` or 4, the surface layer (`sfcmodel >= 1`), PBL schemes
 (`cm1setup = 2`), and everything param.F already refuses with terrain.
-Tests: cases `nh_mountain_waves`, `nh_mountain_waves_long` and
-`kessler_terrain_tke` (init, step from dump, step from `Model::init`), and
-the `[terrain]` component tests (adv.F, turb.F/turbtend.F with random
-metrics). Periodic halo copies wrap their source index (`pwrap` in
+Tests: cases `nh_mountain_waves`, `nh_mountain_waves_long`,
+`kessler_terrain_tke` and `kessler_terrain_tke_openbc` (init, step from
+dump, step from `Model::init`), and the `[terrain]` component tests
+(adv.F, turb.F/turbtend.F with random metrics). Periodic halo copies wrap their source index (`pwrap` in
 `dynamics/cm1k_bc.hpp`), which also makes them correct for `nj < ngxy`
 (the 2D `ny = 1` case).
 
