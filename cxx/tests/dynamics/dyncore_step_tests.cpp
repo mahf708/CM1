@@ -670,3 +670,13 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
     }
   }
 }
+
+TEST_CASE("dyncore + Morrison: morrison_saturated vs Fortran, every step", "[dyn][step][morrison]") {
+  // ptype=5, ihail=0, efall=1, eqtset=1: ice, snow and graupel from step 1
+  run_case("morrison_saturated", 0.0);
+}
+
+TEST_CASE("dyncore + Morrison: morrison_bubble vs Fortran", "[dyn][step][morrison]") {
+  // ptype=5, ihail=1 (hail), eqtset=2: warm rain, then ice by 1800 s
+  run_case("morrison_bubble", 0.0);
+}
