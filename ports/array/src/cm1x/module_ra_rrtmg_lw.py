@@ -1643,7 +1643,8 @@ def RRTMG_LWRAD(
     vark1 = take(bk, tprof, clip(bk, klev, 1, npl - 1))
     pk = take(bk, pprof, klev - 1)
     pk1 = take(bk, pprof, clip(bk, klev, 1, npl - 1))
-    wght = xp.where(inside, (plev - pk) / (pk1 - pk), 0.0)
+    den = xp.where(inside, pk1 - pk, xp.ones_like(pk))
+    wght = xp.where(inside, (plev - pk) / den, 0.0)
     vark1 = xp.where(inside, vark1, vark)
     varint = wght * (vark1 - vark) + vark
     tlev_top = varint[nk:] + _e0(tw1d[nk - 1] - varint[nk - 1])
