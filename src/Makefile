@@ -163,6 +163,14 @@ ifeq (${FC},gfortran)
     ifeq (${CODE_COVERAGE_L},true)
         OPTS     += -fprofile-arcs -ftest-coverage
     endif
+    ifeq (${USE_DOUBLE_L},true)
+        OPTS     += -fdefault-real-8 -fdefault-double-8 -ffp-contract=off
+        DP       += -DDP
+    endif
+    ifeq (${DEBUG_L},true)
+        OPTS     += -g -fbacktrace
+        DM       += -D_B4B
+    endif
 endif
 
 #-----------------------------------------------------------------------------
@@ -206,6 +214,7 @@ $(info $$DM is [${DM}])
 #-----------------------------------------------------------------------------
 
 SRC   = constants.F \
+	cm1dump.F \
 	input.F \
 	adv.F \
 	adv_routines.F \
@@ -318,7 +327,7 @@ all : cm1
 
 #			$(FC) $(OBJS) $(FFLAGS) $(OUTPUTINC) $(OUTPUTLIB) $(LINKOPTS) -o ../run/cm1.exe
 cm1:			$(OBJS)
-			$(FC) $(LINKOPTS) $(FFLAGS) $(OBJS) $(OUTPUTINC) $(OUTPUTLIB) -o ../run/cm1.exe
+			$(FC) $(FFLAGS) $(OBJS) $(OUTPUTINC) $(OUTPUTLIB) $(LINKOPTS) -o ../run/cm1.exe
 			$(AR) onefile.F $(SRC)
 			mv onefile.F ../run
 
@@ -350,7 +359,8 @@ anelp.o: constants.o input.o misclibs.o bc.o poiss.o
 azimavg.o: input.o constants.o cm1libs.o writeout_nc.o comm.o bc.o
 base.o: constants.o input.o bc.o comm.o goddard.o cm1libs.o getcape.o
 bc.o: constants.o input.o
-cm1.o: constants.o input.o param.o base.o init3d.o misclibs.o solve1.o solve2.o solve3.o pdcomp.o diff2.o turb.o statpack.o writeout.o restart_write.o restart_read.o radiation_driver.o radtrns3d.o domaindiag.o azimavg.o hifrq.o parcel.o init_physics.o init_surface.o mp_driver.o ib_module.o eddy_recycle.o lsnudge.o
+cm1.f90: cm1dump_state.inc
+cm1.o: cm1dump.o constants.o input.o param.o base.o init3d.o misclibs.o solve1.o solve2.o solve3.o pdcomp.o diff2.o turb.o statpack.o writeout.o restart_write.o restart_read.o radiation_driver.o radtrns3d.o domaindiag.o azimavg.o hifrq.o parcel.o init_physics.o init_surface.o mp_driver.o ib_module.o eddy_recycle.o lsnudge.o
 cm1libs.o: input.o constants.o
 comm.o: input.o bc.o
 diff2.o: constants.o input.o

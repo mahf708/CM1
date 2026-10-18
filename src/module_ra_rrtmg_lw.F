@@ -36,7 +36,11 @@
 !      integer, parameter :: kind_rb = selected_real_kind(12) ! 8 byte real
 !#endif
 !#if (RWORDSIZE == 4)
+#ifdef DP
+      integer, parameter :: kind_rb = selected_real_kind(12) ! 8 byte real (USE_DOUBLE)
+#else
       integer, parameter :: kind_rb = selected_real_kind(6)  ! 4 byte real
+#endif
 !#endif
 !#else
 !       integer, parameter :: kind_rb = kind(1.0)              ! native real

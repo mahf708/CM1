@@ -1,3 +1,6 @@
 [submodule "themes"]
 	path = themes
 	url = https://github.com/NCAR/NCAR_mkdocs_material_themes
+[submodule "cxx/externals/ekat"]
+	path = cxx/externals/ekat
+	url = https://github.com/E3SM-Project/EKAT

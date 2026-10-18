@@ -631,7 +631,7 @@
       open(unit=60,file=string,form='unformatted',access='direct',   &
            recl=4*nstat,status='unknown')
 #ifdef DP
-      write(60,rec=nrec) (sngl(rstat(n)),n=1,nstat)
+      write(60,rec=nrec) (real(rstat(n),4),n=1,nstat)
 #else
       write(60,rec=nrec) (rstat(n),n=1,nstat)
 #endif

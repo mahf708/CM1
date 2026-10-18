@@ -48,6 +48,7 @@
       use ib_module
       use eddy_recycle
       use lsnudge_module
+      use cm1dump
 #ifdef MPI
       use mpi
 #endif
@@ -3160,6 +3161,11 @@
       endif
 
 
+      ! reference dump of the initial state (only if CM1_DUMP_DIR is set):
+      IF( dump_due(nstep) )THEN
+#include "cm1dump_state.inc"
+      ENDIF
+
     !c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c-c!
     timeloop:  &
     DO WHILE( mtime.lt.timax )
@@ -3508,6 +3514,11 @@
         !   (NOTE:  do not change mtime anywhere else!)
 
         mtime = mtime + dbldt
+
+        ! reference dump (only if CM1_DUMP_DIR is set):
+        IF( dump_due(nstep) )THEN
+#include "cm1dump_state.inc"
+        ENDIF
 
         domainlocx = domainlocx + dbldt*dble(umove)
         domainlocy = domainlocy + dbldt*dble(vmove)
