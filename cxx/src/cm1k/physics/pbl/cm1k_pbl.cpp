@@ -68,10 +68,18 @@ Options Options::from_namelist(const Namelist& nl) {
 void Options::check() const {
   auto fail = [](const std::string& m) { throw std::runtime_error("cm1k pbl: " + m); };
   if (cm1setup != 2) fail("cm1setup=" + std::to_string(cm1setup) + " is not ported (only 2)");
-  if (ipbl != 2 && ipbl != 4 && ipbl != 5)
-    fail("ipbl=" + std::to_string(ipbl) + " is not ported (only 2, the simple PBL scheme, and 4, 5, MYNN)");
+  if (ipbl != 1 && ipbl != 2 && ipbl != 4 && ipbl != 5)
+    fail("ipbl=" + std::to_string(ipbl) +
+         " is not ported (only 1, YSU, 2, the simple PBL scheme, and 4, 5, MYNN)");
   if (horizturb != 0 && horizturb != 1) fail("horizturb must be 0 or 1");
-  if (ipbl == 2 && sfcmodel != 1) fail("ipbl=2 needs the surface layer sfcmodel=1 (the only one ported)");
+  // ipbl=2 with sfcmodel=1 (physics/sfc) or 2, 3 (physics/sfclay); YSU with
+  // sfcmodel=2, 3 (with sfcmodel=1 turb.F computes YSU's hfx/qfx/cpmm from
+  // sfcmodel=1's fluxes: not ported); MYNN with its own surface layer,
+  // sfcmodel=6
+  if (ipbl == 2 && (sfcmodel < 1 || sfcmodel > 3))
+    fail("ipbl=2 needs a ported surface layer (sfcmodel=1, 2, 3)");
+  if (ipbl == 1 && sfcmodel != 2 && sfcmodel != 3)
+    fail("ipbl=1 (YSU) with sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only sfcmodel=2, 3)");
   if ((ipbl == 4 || ipbl == 5) && sfcmodel != 6)
     fail("ipbl=" + std::to_string(ipbl) + " needs the MYNN surface layer sfcmodel=6 (the only one ported)");
   if (idiss != 0 && idiss != 1) fail("idiss must be 0 or 1");

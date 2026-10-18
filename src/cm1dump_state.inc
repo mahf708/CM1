@@ -84,10 +84,16 @@
           call dump3('qsfc',qsfc,ibl,iel,jbl,jel,1,1)
           call dump3('wspd',wspd,ibl,iel,jbl,jel,1,1)
         endif
-        if( use_pbl .and. ipbl.eq.2 )then
-          ! simple PBL scheme (cm1setup=2, ipbl=2): boundary-layer depth
-          ! (gethpbl2) and the PBL tendencies that sfc_and_turb computed
-          ! from the previous state (as for kmh..khv)
+        if( sfcmodel.eq.2 .or. sfcmodel.eq.3 )then
+          ! WRF/MM5 surface layers: the Monin-Obukhov scale they carry
+          ! across steps and the SLAB soil temperatures
+          call dump3('mol',mol,ibl,iel,jbl,jel,1,1)
+          call dump3('tslb',tslb,ibl,iel,jbl,jel,1,num_soil_layers)
+        endif
+        if( use_pbl .and. ( ipbl.eq.1 .or. ipbl.eq.2 ) )then
+          ! YSU (ipbl=1) or the simple PBL scheme (ipbl=2): boundary-layer
+          ! depth (YSU, or gethpbl2) and the PBL tendencies that
+          ! sfc_and_turb computed from the previous state (as for kmh..khv)
           call dump3('hpbl',hpbl,ibl,iel,jbl,jel,1,1)
           call dump3('thpten',thpten,ibb,ieb,jbb,jeb,kbb,keb)
           call dump3('qvpten',qvpten,ibb,ieb,jbb,jeb,kbb,keb)

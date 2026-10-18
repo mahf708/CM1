@@ -19,31 +19,39 @@
 // 1/(karman (z + z0))^2, and K_v(k=1) = karman z0 u* (bbc=3).
 //
 // Supported (Options::check throws for anything else):
-//   * cm1setup = 2 with ipbl = 2 (param.F: sgsmodel = 0, tconfig = 2,
-//     dovturb = .false., dohturb = (horizturb = 1), bbc = 3)
+//   * cm1setup = 2 with ipbl = 2 or ipbl = 1 (YSU, physics/pbl_ysu)
+//     (param.F: sgsmodel = 0, tconfig = 2, dovturb = .false., dohturb =
+//     (horizturb = 1), bbc = 3; ipbl = 1 sets l_inf = 0)
 //   * horizturb = 0, 1; idiss = 0, 1; doimpl = 0, 1; bcturbs = 1, 2
-//   * sfcmodel = 1 (physics/sfc, with isfcflx = 0/1)
-//   * cm1setup = 2 with ipbl = 4, 5 (MYNN-EDMF, physics/pbl_mynn) and the
-//     MYNN surface layer sfcmodel = 6 (physics/sfc_mynn) over water; the
-//     glue is physics/pbl_mynn/cm1k_mynn_coupling.hpp
+//   * ipbl = 2: sfcmodel = 1 (physics/sfc, with isfcflx = 0/1), or 2, 3
+//     (the WRF/MM5 surface layers + SLAB, physics/sfclay, physics/slab)
+//   * ipbl = 1: sfcmodel = 2, 3
+//   * ipbl = 4, 5 (MYNN-EDMF, physics/pbl_mynn) with the MYNN surface layer
+//     sfcmodel = 6 (physics/sfc_mynn) over water; the glue is
+//     physics/pbl_mynn/cm1k_mynn_coupling.hpp
 //   * imoist = 0, or 1 with ptype = 1 (Kessler: qv, qc; no qi)
 //   * no terrain (zs = 0), axisymm = 0
 //
 // Where each piece runs (Dyncore, cm1.F:3748 sfc_and_turb at the start of
 // every Model::step, then solve1):
-//   Dyncore::sfc_and_turb (cm1setup=2): dissten = 0; sfc::sfc_layer (with
-//     gethpbl2), or pbl_mynn::surface_layer (sfcmodel=6); turb::sfc_bcs;
-//     turb::calcnm; turb::calcdef; turbparam_horiz (horizturb=1);
-//     turbparam_vert (ipbl=2); turb::gettau (ipbl=2 or horizturb=1); then
-//     Dyncore::pbl, the dispatch hook below: ipbl=2 -> br09, ipbl=4/5 ->
-//     pbl_mynn::pbl, followed by bcs(upten), bcs(vpten) (use_pbl).
+//   Dyncore::sfc_and_turb (cm1setup=2): dissten = 0; the surface layer
+//     (sfcmodel=1: sfc::sfc_layer, with gethpbl2 for ipbl=2; sfcmodel=2,3:
+//     sfc::sfc_prelude, wrfphys::pbl_prep/pbl_moist,
+//     sfclay::wrf_surface_layer incl. SLAB; sfcmodel=6:
+//     pbl_mynn::surface_layer); turb::sfc_bcs; turb::calcnm;
+//     turb::calcdef; turbparam_horiz (horizturb=1); turbparam_vert
+//     (ipbl=2); turb::gettau (ipbl=2 or horizturb=1); then Dyncore::pbl,
+//     the dispatch hook: ipbl=2 -> br09, ipbl=1 -> pbl_ysu::ysu (+
+//     ysu_dissten for idiss=1), ipbl=4/5 -> pbl_mynn::pbl, followed by
+//     bcs(upten), bcs(vpten).
 //   Dyncore::solve2 (ipbl=4/5): the qke advection of every RK stage.
 //   Dyncore::solve1: turb::dissheat (idiss=1); add_theta_tendency;
 //     turb::turb_tendencies (only with horizturb=1: dohturb); add_tendencies.
 //
 // Not ported: budgets (tdiag/udiag/vdiag/qdiag td_pbl...), the nstep=1 print
-// of turbparam_vert, output_dissten, the other PBL schemes (YSU, GFS-EDMF,
-// MYJ: ipbl = 1, 3, 6) and cm1setup = 4.
+// of turbparam_vert, output_dissten, YSU's xkzh/xkzm outputs (computed, not
+// stored), the other PBL schemes (GFS-EDMF, MYJ: ipbl = 3, 6) and
+// cm1setup = 4.
 
 #include "physics/sfc/cm1k_sfc.hpp"
 #include "physics/turb/cm1k_turb.hpp"

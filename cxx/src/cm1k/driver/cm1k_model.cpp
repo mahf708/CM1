@@ -32,10 +32,12 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   }
   m_dt = nl.getr("dtl", 0.0);
   m_sfc_opt = sfc::Options::from_namelist(nl);
-  if (m_sfc_opt.active()) {
+  if (m_sfc_opt.has_layer()) {
     m_sfc.allocate(b);
     sfc::set_defaults(m_sfc);   // cm1.F
   }
+  // sfcmodel=2,3: the WRF surface-layer state (tables, tmn, emiss, thc)
+  if (m_sfc_opt.wrf()) m_wsfc.setup(m_sfc_opt, sfclay::Options::from_namelist(nl), b, m_sfc);
   // PBL tendency arrays: allocated from the dynamical core's configuration
   // (DynConfig::pbl, param.F use_pbl); zero at start as in cm1.F
   {
@@ -45,7 +47,7 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     if (m_use_pbl) m_pbl.allocate(b);
     // MYNN: carried arrays (zero at start, cm1.F), aliasing the surface and
     // PBL arrays CM1 shares with it
-    m_use_mynn = cfg.mynn && m_sfc_opt.active();
+    m_use_mynn = cfg.mynn && m_sfc_opt.mynn();
     if (m_use_mynn) m_mynn.allocate(b, m_sfc, m_pbl);
   }
   build_registry();
@@ -70,10 +72,12 @@ void Model::build_registry() {
   for (auto* a : {&s.ua, &s.va, &s.wa, &s.ppi, &s.tha, &s.rho, &s.prs, &s.tkea, &s.kmh, &s.kmv,
                   &s.khh, &s.khv, &s.rain})
     m_reg.add(a->label(), *a);
-  if (m_sfc_opt.active())
+  if (m_sfc_opt.has_layer())
     for (auto& [name, a] : m_sfc.dumped()) m_reg.add(name, a);
-  if (m_use_pbl && m_ipbl == 2) {
-    if (m_sfc_opt.active()) m_reg.add("hpbl", m_sfc.hpbl);
+  if (m_sfc_opt.wrf())
+    for (auto& [name, a] : m_wsfc.dumped()) m_reg.add(name, a);
+  if (m_use_pbl && (m_ipbl == 1 || m_ipbl == 2)) {
+    if (m_sfc_opt.has_layer()) m_reg.add("hpbl", m_sfc.hpbl);
     for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
   }
   if (m_use_mynn) {
@@ -87,8 +91,8 @@ void Model::build_registry() {
 
 std::vector<std::string> Model::pbl_field_names() const {
   std::vector<std::string> n;
-  if (m_use_pbl && m_ipbl == 2) {
-    if (m_sfc_opt.active()) n.push_back("hpbl");
+  if (m_use_pbl && (m_ipbl == 1 || m_ipbl == 2)) {
+    if (m_sfc_opt.has_layer()) n.push_back("hpbl");
     for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
   }
   if (m_use_mynn) {
@@ -148,7 +152,7 @@ void Model::init_from_dump(const std::string& step_dir) {
     if (field_rank(name) == 1) r.read_into<1>(name, field1(name));
     else                       r.read_into<3>(name, field3(name));
   }
-  if (m_sfc_opt.active()) sfc::set_dsxy(m_sfc_opt, m_grid, m_sfc);   // not in the dumps
+  if (m_sfc_opt.has_layer()) sfc::set_dsxy(m_sfc_opt, m_grid, m_sfc);   // not in the dumps
   m_nstep = r.nstep();
   m_mtime = r.mtime();
   m_dyn.reset();           // the dynamical core is set up again from these arrays
@@ -169,7 +173,8 @@ void Model::init() {
   auto info = init::init_grid(m_nl, m_grid);
   init::init_base(m_nl, m_c, m_grid, info, m_base);
   init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
-  if (m_sfc_opt.active()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
+  if (m_sfc_opt.has_layer()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
+  if (m_sfc_opt.wrf()) sfclay::init_soil(m_grid.b, m_wsfc);                 // tslb
   m_nstep = 0;
   m_mtime = 0;
   m_dyn.reset();            // the dynamical core is set up again from the new grid
@@ -180,7 +185,8 @@ Dyncore& Model::dyncore() {
   if (!m_dyn) {
     m_dyn = std::make_unique<Dyncore>();
     m_dyn->setup(m_nl, m_c, m_grid, m_base, m_state);
-    if (m_sfc_opt.active()) m_dyn->set_surface(m_sfc);
+    if (m_sfc_opt.has_layer()) m_dyn->set_surface(m_sfc);
+    if (m_sfc_opt.wrf()) m_dyn->set_wrf_surface(m_wsfc);
     if (m_use_pbl) m_dyn->set_pbl(m_pbl);
     if (m_use_mynn) m_dyn->set_mynn(m_mynn);
   }
@@ -206,6 +212,7 @@ void Model::step() {
     dyn.start_from_state();
     m_dyn_started = true;
   }
+  // nstep: cm1.F's update_sfc is .false. in the startup pass (nstep = 0)
   dyn.sfc_and_turb(m_mtime, m_nstep);            // no-op unless sgsmodel=1 or a PBL scheme
   dyn.diff2_stress();                            // no-op unless idiff=1, difforder=2
   m_nstep = m_nstep + 1;
