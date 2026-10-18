@@ -11,6 +11,14 @@ fields are stored as float32, so only that rounding is tolerated:
   CM1X_REF_DIR_NHMW_LONG  the namelist as is (36 min, an output every 108
                           steps; numpy only)
 
+and for ports/reference/kessler_hill (moist 3-D terrain: the kessler_periodic
+warm bubble on a 24x20x40 grid over CM1's itern=3 hill, open x / periodic y
+boundaries, prognostic TKE sgsmodel=1, Kessler):
+
+  CM1X_REF_DIR_KH         timax=60, tapfrq=6 (an output every step; 10 steps)
+  CM1X_REF_DIR_KH_LONG    the namelist as is (15 min, an output every 10
+                          steps; numpy only)
+
     CM1X_REF_DIR_NHMW=/tmp/nhmw_r8 pytest ports/array/tests/test_model_terrain.py
 """
 
@@ -137,6 +145,100 @@ def test_nh_mountain_waves_jit_matches_eager(backend):
     ov = {"nx": 24}
     me = Model(NAMELIST, backend=backend, overrides=ov)
     mj = Model(NAMELIST, backend=backend, overrides=ov, jit=True)
+    me.run(3)
+    mj.run(3)
+    fe, fj = me.fields(), mj.fields()
+    for k in fe:
+        scale = max(float(np.abs(fe[k]).max()), 1.0e-30)
+        err = float(np.abs(fe[k] - fj[k]).max())
+        assert err <= 1.0e-10 * scale, f"{k}: {err:.3e} (max {scale:.3e})"
+
+
+# ---------------------------------------------------------------------------
+# kessler_hill
+
+NAMELIST_KH = NAMELIST.parents[1] / "kessler_hill" / "namelist.input"
+REF_DIR_KH = os.environ.get("CM1X_REF_DIR_KH")
+REF_DIR_KH_LONG = os.environ.get("CM1X_REF_DIR_KH_LONG")
+FIELDS_KH = ("u", "v", "w", "th", "prs", "pipert", "rho", "qv", "qc", "qr")
+TURB = ("tke", "kmh", "kmv", "khh", "khv")
+FLOOR_KH = {"w": 1.0e-3, "qc": 1.0e-6, "qr": 1.0e-6, "tke": 1.0e-6}
+FLOOR_KH.update({k: 1.0e-3 for k in TURB[1:]})
+
+
+def _compare_kh(fm, ds, t):
+    bad = []
+    for k in FIELDS_KH + TURB:
+        r = np.asarray(ds[k][t], dtype=np.float64)
+        err = np.abs(fm[k] - r).max()
+        if k in FULL or k == "qv":
+            tol = ULPS * float(np.spacing(np.float32(np.abs(r).max())))
+        else:
+            tol = RTOL * max(np.abs(r).max(), FLOOR_KH.get(k, FLOOR.get(k, 1e-12)))
+        if not err <= tol:
+            bad.append(f"{k}: max|diff|={err:.3e} > tol={tol:.3e}")
+    return bad
+
+
+def test_kessler_hill_setup():
+    m = Model(NAMELIST_KH)
+    g = m.grid
+    assert (g.ni, g.nj, g.nk) == (24, 20, 40)
+    assert m.terrain and m.moist and m.les
+    zs = np.asarray(m.bk.to_numpy(m.base["zs"]))[g.J, g.I]
+    assert 150.0 < zs.min() < zs.max() < 500.0  # a 3-D hill, not a ridge
+    assert np.ptp(zs, axis=0).max() > 50.0 and np.ptp(zs, axis=1).max() > 50.0
+
+
+@pytest.mark.reference
+@pytest.mark.skipif(
+    not REF_DIR_KH, reason="set CM1X_REF_DIR_KH to the 10-step kessler_hill run"
+)
+@pytest.mark.parametrize("backend", ["numpy", "jax", "torch"])
+def test_kessler_hill_vs_cm1(backend):
+    if backend != "numpy":
+        pytest.importorskip(backend)
+        if os.environ.get("CM1X_TEST_ALL_BACKENDS") != "1":
+            pytest.skip("set CM1X_TEST_ALL_BACKENDS=1 for the non-numpy backends")
+    netCDF4 = pytest.importorskip("netCDF4")
+    m = Model(NAMELIST_KH, backend=backend, dtype="float64")
+    with netCDF4.Dataset(Path(REF_DIR_KH) / "cm1out.nc") as ds:
+        assert ds["time"].shape[0] >= NSTEPS + 1
+        failures = []
+        for t in range(NSTEPS + 1):
+            if t:
+                m.step()
+            assert abs(m.mtime - float(ds["time"][t])) < 1e-6
+            failures += [f"t={t}: {b}" for b in _compare_kh(m.fields(), ds, t)]
+    assert not failures, "\n".join(failures)
+
+
+@pytest.mark.reference
+@pytest.mark.skipif(
+    not REF_DIR_KH_LONG, reason="set CM1X_REF_DIR_KH_LONG to the 15-min run"
+)
+@pytest.mark.skipif(
+    "numpy" not in os.environ.get("CM1X_BACKENDS", "numpy"), reason="numpy-only test"
+)
+def test_kessler_hill_long_vs_cm1():
+    netCDF4 = pytest.importorskip("netCDF4")
+    m = Model(NAMELIST_KH, backend="numpy")
+    with netCDF4.Dataset(Path(REF_DIR_KH_LONG) / "cm1out.nc") as ds:
+        times = np.asarray(ds["time"][:])
+        failures = []
+        for it in range(1, len(times)):
+            m.run(int(round((times[it] - times[it - 1]) / m.dt)))
+            f = m.fields()
+            failures += [f"t={times[it]:.0f}s: {b}" for b in _compare_kh(f, ds, it)]
+    assert not failures, "\n".join(failures)
+    # cloud and resolved turbulence must have developed
+    assert f["qc"].max() > 1e-4 and f["tke"].max() > 1.0
+
+
+def test_kessler_hill_jit_matches_eager():
+    pytest.importorskip("jax")
+    me = Model(NAMELIST_KH, backend="jax")
+    mj = Model(NAMELIST_KH, backend="jax", jit=True)
     me.run(3)
     mj.run(3)
     fe, fj = me.fields(), mj.fields()
