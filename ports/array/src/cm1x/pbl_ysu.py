@@ -519,6 +519,15 @@ def check(cfg):
         raise NotImplementedError("ipbl=1: only cm1setup=2 is ported")
 
 
+def init_state(ctx):
+    """The YSU diagnostics carried in the state (zero until the first call):
+    kpbl2d, wstar, delta (2-D) and xkzh, xkzm (3-D)."""
+    bk, g = ctx.bk, ctx.g
+    out = {k: bk.zeros(g.s_shape[1:]) for k in ("kpbl2d", "wstar", "delta")}
+    out.update({k: bk.zeros(g.s_shape) for k in ("xkzh", "xkzm")})
+    return out
+
+
 def ysudiss(bk, *, dz, rmh, mf, upten, vpten, dum1, dum2, dissten):
     """turb.F ``ysudiss`` (idiss=1): the column stresses t13 = -sum(upten dz
     rmh), t23 (from the top down, zero at nk+1) times the shear of the
