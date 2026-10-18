@@ -32,6 +32,7 @@ double run_bitwise(const std::string& case_name, Model& m, const std::string& re
     if (n.rfind("step_", 0) == 0 && std::stoi(n.substr(5)) > m.nstep()) steps.push_back(std::stoi(n.substr(5)));
   }
   std::sort(steps.begin(), steps.end());
+  cm1k::testing::limit_steps(steps);
   REQUIRE(!steps.empty());
   double worst = 0;
   for (int step : steps) {

@@ -103,16 +103,20 @@ jobs:
             build_type: Release
             cmake_args: -DKokkos_ENABLE_OPENMP=ON
             python: true
+            max_step: ""
           - name: serial-debug
             build_type: Debug
             cmake_args: -DKokkos_ENABLE_DEBUG_BOUNDS_CHECK=ON
             python: false
+            # bounds-checked Debug is ~20x slower: compare dumps up to step 10
+            max_step: "10"
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
       CCACHE_COMPRESS: "true"
       OMP_NUM_THREADS: 2
       CM1K_REQUIRE_REFS: 1
+      CM1K_MAX_STEP: ${{ matrix.max_step }}
       OMP_PROC_BIND: "false"
     steps:
       - uses: actions/checkout@v4

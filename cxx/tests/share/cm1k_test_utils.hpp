@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace cm1k::testing {
 
@@ -43,6 +44,22 @@ inline std::string case_ref(const std::string& case_name) {
     return "";
   }
   return p.string();
+}
+
+// Last dumped step a step test compares (CM1K_MAX_STEP; default: all). The
+// slow bounds-checked debug build uses it to keep run times bounded; the
+// first dump after the start is always compared.
+inline int max_step() {
+  const char* e = std::getenv("CM1K_MAX_STEP");
+  return (e && *e) ? std::atoi(e) : 1 << 30;
+}
+
+inline void limit_steps(std::vector<int>& steps) {
+  const int lim = max_step();
+  std::vector<int> kept;
+  for (size_t n = 0; n < steps.size(); ++n)
+    if (n == 0 || steps[n] <= lim) kept.push_back(steps[n]);
+  steps.swap(kept);
 }
 
 inline std::string case_namelist(const std::string& case_name) {

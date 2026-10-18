@@ -44,6 +44,7 @@ double run_case(const std::string& case_name, double tol, bool native_init = fal
     if (n.rfind("step_", 0) == 0 && std::stoi(n.substr(5)) > start_step) steps.push_back(std::stoi(n.substr(5)));
   }
   std::sort(steps.begin(), steps.end());
+  cm1k::testing::limit_steps(steps);
   REQUIRE(!steps.empty());
   const int nsteps = int(steps.size());
   double worst = 0;
