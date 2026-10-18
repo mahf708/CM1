@@ -12,7 +12,7 @@ from cm1x.init_terrain import terrain_metrics
 from fortran import requires_gfortran, run_driver
 from test_adv import DT, G, _cmp, _regions, make_inputs
 
-TM_KEYS = "gz rgz gzu rgzu gzv rgzv dzdx dzdy rds rdsf sigma sigmaf".split()
+TM_KEYS = "gz rgz gzu rgzu gzv rgzv dzdx dzdy gx gxu gy gyv rds rdsf".split()
 
 
 def make_metrics(g, seed, cfg):

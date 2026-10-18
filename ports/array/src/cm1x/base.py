@@ -534,9 +534,10 @@ def base(
         thsurf = tsurf / ((psurf * rp00) ** rovcp)
 
     # ---------------- base-state wind (iwnd)
-    # computed on every column, then bcu/bcv and k = 0, nk+1 extrapolation
-    # (CM1 sets each profile on a sub-range and fills the rest with bcu/bcv;
-    # the halo values it overwrites are identical).
+    # computed on every column, then cut to the (i, j) range CM1 sets for
+    # this iwnd (zero elsewhere, as CM1's initial u0/v0), then bcu/bcv and
+    # the k = 0, nk+1 extrapolation (with mixed open/periodic boundaries
+    # the halo corners keep those zeros, as in CM1).
     zfull = xp.concat([zc[:, :, :1], zc, zc[:, :, -1:]], axis=2)
     zu = half * (zfull[:, :, :-1] + zfull[:, :, 1:])  # u points
     zfull = xp.concat([zc[:, :1, :], zc, zc[:, -1:, :]], axis=1)
@@ -590,6 +591,22 @@ def base(
             raise NotImplementedError("imove=1 with terrain")
         u_in = u_in - S(float(cfg.umove))
         v_in = v_in - S(float(cfg.vmove))
+
+    # Fortran (j, i) ranges set by each iwnd option; Python index = Fortran + 2
+    rng = {
+        1: (((0, g.nj + 1), (0, g.ni + 2)), ((0, g.nj + 2), (0, g.ni + 1))),
+        2: (((1, g.nj), (1, g.ni + 1)), ((1, g.nj + 1), (1, g.ni))),
+    }.get(int(cfg.iwnd or 0))
+    if rng is not None:
+
+        def _cut(a, jr, ir):
+            m = bk.zeros(a.shape[1:])
+            m = bk.set(
+                m, (slice(jr[0] + 2, jr[1] + 3), slice(ir[0] + 2, ir[1] + 3)), 1.0
+            )
+            return a * m[None]
+
+        u_in, v_in = _cut(u_in, *rng[0]), _cut(v_in, *rng[1])
 
     u0 = xp.concat([bk.zeros((1,) + shp_u[1:]), u_in, bk.zeros((1,) + shp_u[1:])])
     v0 = xp.concat([bk.zeros((1,) + shp_v[1:]), v_in, bk.zeros((1,) + shp_v[1:])])
