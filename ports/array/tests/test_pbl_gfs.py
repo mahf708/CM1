@@ -209,3 +209,19 @@ def test_undefined_wspm():
     ins["xland"] = ins["xland"] * 0 + 2.0
     with pytest.raises(UndefinedWspm):
         bl_gfsedmf(bk, dt=DT, ust=None, **ins)
+
+
+def test_bl_gfsedmf_grad():
+    """Reverse-mode gradients of the tendencies are finite."""
+    jax = pytest.importorskip("jax")
+    from cm1x import get_backend
+
+    bk = get_backend("jax")
+    ins = {k: bk.asarray(v) for k, v in make_inputs().items()}
+
+    def f(t, u):
+        r = bl_gfsedmf(bk, dt=DT, ust=None, **{**ins, "t3d": t, "u3d": u})
+        return bk.xp.sum(r["rthblten"] ** 2) + bk.xp.sum(r["rublten"] ** 2)
+
+    g = jax.grad(f, argnums=(0, 1))(ins["t3d"], ins["u3d"])
+    assert all(bool(bk.xp.all(bk.xp.isfinite(a))) for a in g)
