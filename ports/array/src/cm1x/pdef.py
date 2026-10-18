@@ -65,3 +65,64 @@ def pdefq(bk, g, cfg=None, *, rmax, asq, ruh, rvh, rmh, rho, q3d):
 
     out = bk.set(bk.copy(q3d), (K, J, I), qn)
     return {"q3d": out, "asq": asq + dmass * tem}
+
+
+def pdefqtest(bk, g, cfg=None, *, rmax, asq, ruh, rvh, rmh, rho, q3d):
+    """misclibs.F ``pdefqtest`` (mp_driver.F, Morrison): ``pdefq`` with the
+    column sums accumulated in double precision (``dum2d1..5``), level by
+    level in CM1's order (k = 1..nk, sequential on every backend, so the
+    column rescaling factor is bitwise CM1's).  Arguments and return as
+    ``pdefq``."""
+    xp = bk.xp
+    K, J, I = g.K, g.J, g.I
+    pdscheme = int(_opt(cfg, "pdscheme"))
+    tem = g.dx * g.dy * g.dz
+
+    q = q3d[K, J, I]
+    r = rho[K, J, I]
+    w = _hbcast(ruh, "i")[..., I] * _hbcast(rvh, "j")[..., J, :] * rmh[K, J, I]
+    rmax = float(rmax)
+    nk = q.shape[0]
+    qz = xp.where(q < rmax, xp.zeros_like(q), q)
+
+    if pdscheme == 1:
+        rq = r * q
+        rqw = rq * w
+        rqz = r * qz
+        t1, a1, t2 = rq[0], rqw[0], rqz[0]
+        for k in range(1, nk):
+            t1 = t1 + rq[k]
+            a1 = a1 + rqw[k]
+            t2 = t2 + rqz[k]
+        t3 = (t1 + 1.0e-20) / (t2 + 1.0e-20)
+        t3 = xp.where(t3 < 0.0, xp.ones_like(t3), t3)
+        qn = t3[None, :, :] * qz
+        a2l = r * qn * w
+        a2 = a2l[0]
+        for k in range(1, nk):
+            a2 = a2 + a2l[k]
+        # budj(j) = sum_i (a2 - a1), then asq += budj(j)*tem in j order
+        bud = _row_sums(bk, a2 - a1)
+        dasq = bud[0] * tem
+        out_asq = asq + dasq
+        for j in range(1, bud.shape[0]):
+            out_asq = out_asq + bud[j] * tem
+    else:
+        a1 = r * q * w
+        qn = qz
+        a2 = r * qn * w
+        d = a2 - a1  # budk(k) = sum_j sum_i (a2 - a1)
+        out_asq = asq
+        for k in range(nk):
+            out_asq = out_asq + _row_sums(bk, xp.reshape(d[k], (1, -1)))[0] * tem
+
+    out = bk.set(bk.copy(q3d), (K, J, I), qn)
+    return {"q3d": out, "asq": out_asq}
+
+
+def _row_sums(bk, x):
+    """Sequential sums along the last axis of a 2-D array (i fastest, as a
+    Fortran ``do i`` accumulation)."""
+    from .misc import level_sums
+
+    return level_sums(bk, x)
