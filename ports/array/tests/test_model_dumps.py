@@ -28,9 +28,11 @@ INTERIOR = (slice(1, -1), slice(3, -3), slice(3, -3))
 
 
 def _tol(step):
-    # Round-off for the first steps; from step 5 differences grow to ~1e-8
-    # (two Fortran builds with different flags differ by the same amount).
-    return 1e-10 if step <= 4 else 1e-6
+    # Round-off (~2e-11) through step 10.  Regression guard for solve1's
+    # ppten threshold: with the single-precision tsmall/qsmall instead of
+    # the -DDP ones, the Rayleigh-damped top levels jumped to ~1e-8 from
+    # step 5 on.
+    return 1e-10
 
 
 @pytest.mark.reference
