@@ -21,7 +21,7 @@ if [[ ! -x "$build/cm1.exe" ]]; then
   fflags=$(nf-config --fflags); flibs=$(nf-config --flibs)
   # CM1's Makefile puts -lnetcdf before the objects, which fails with --as-needed
   # linkers, so let make compile and then link explicitly.
-  make -j"$(nproc)" FC=gfortran USE_NETCDF=true NETCDFBASE="$(nf-config --prefix)" \
+  make -j"${CM1X_MAKE_JOBS:-$(nproc)}" FC=gfortran USE_NETCDF=true NETCDFBASE="$(nf-config --prefix)" \
     "OPTS=-ffree-form -ffree-line-length-none -O2 -fallow-argument-mismatch $extra $fflags" \
     >"$build/build.log" 2>&1 || true
   objs=$(ls *.o)
@@ -34,5 +34,7 @@ for kv in "$@"; do
   sed -i -E "s/^(\s*$k\s*=\s*)[^,]*,/\1$v,/" namelist.input
 done
 cp "$root/run/LANDUSE.TBL" . 2>/dev/null || true
+# RRTMG k-distribution tables (radopt=2)
+cp "$root/run/RRTMG_LW_DATA" "$root/run/RRTMG_SW_DATA" . 2>/dev/null || true
 "$build/cm1.exe" > cm1.log 2>&1
 tail -1 cm1.log

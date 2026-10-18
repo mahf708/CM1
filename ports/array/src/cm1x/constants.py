@@ -9,6 +9,7 @@ p00 = 1.0e5
 rp00 = 1.0 / p00
 clwsat = 1.0e-6
 epsilon = 1.0e-18
+karman = 0.40
 
 g = 9.81
 rd = 287.04

@@ -9,6 +9,7 @@ import pytest
 from fortran import requires_gfortran, run_driver
 
 from cm1x import _ftables as ft
+from cm1x import init_surface
 from cm1x import module_ra_rrtmg_lw as lw
 from cm1x import radiation_driver as rd
 from cm1x.model import Model
@@ -50,7 +51,7 @@ def _case(mtime):
     qr = np.where(rng.random(shp) < 0.3, 10.0 ** rng.uniform(-6, -3, shp), 0.0)
     qv = np.where(cloud & (rng.random(shp) < 0.5), 1.5 * qv, qv)
     qa = np.stack([qv, qc, qr])
-    sf = rd.getlanduse(int(cfg.season), int(cfg.lu0))
+    sf = init_surface.getlanduse(int(cfg.season), int(cfg.lu0))
     shp2 = shp[1:]
     tsk = float(cfg.tsk0) + rng.uniform(-2, 2, shp2)
     surf = {
