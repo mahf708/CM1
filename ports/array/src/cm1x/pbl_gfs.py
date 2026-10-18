@@ -1065,3 +1065,103 @@ def bl_gfsedmf(
     }
     out["flags"] = {k: m[k] for k in ("pcnvflg", "ublflg", "scuflg", "wspm_adj")}
     return out
+
+
+# ---------------------------------------------------------------------------
+# CM1 glue (registered as ipbl=3 in cm1x.pbl)
+WRF_INPUTS = True
+DUMP_KEYS = ("xkzh", "xkzm")
+
+
+def _cfg(cfg, name, default):
+    get = getattr(cfg, "get", None)
+    return get(name, default) if get else getattr(cfg, name, default)
+
+
+def options(cfg):
+    """param.F: the dissipative heating is part of the GFS-EDMF theta
+    tendency, so idiss = 0 (cm1setup /= 4)."""
+    if int(_cfg(cfg, "cm1setup", 1)) != 4:
+        cfg.idiss = 0
+
+
+def check(cfg):
+    sfc = int(_cfg(cfg, "sfcmodel", 0))
+    if sfc not in (2, 3, 4):
+        raise NotImplementedError(
+            f"ipbl=3 (GFS-EDMF) with sfcmodel={sfc} is not ported"
+        )
+    if int(_cfg(cfg, "nk", 10)) < 4:
+        raise NotImplementedError("ipbl=3 needs nk >= 4")
+
+
+def init_state(ctx):
+    """cm1.F: xkzh, xkzm (DKT3D, DKU3D) allocated with zeros."""
+    z = ctx.bk.zeros(ctx.g.s_shape)
+    return {"xkzh": z, "xkzm": ctx.bk.copy(z)}
+
+
+def pbl(ctx):
+    """turb.F dogfsedmf: BL_GFSEDMF on the interior columns with the turb.F
+    inputs (``ctx.w``), the surface layer's 2-D fields and, for sfcmodel=4,
+    the GFDL momentum roughness mznt (else mznt = znt).  Returns the PBL
+    tendencies (as BL_GFSEDMF gives them), xkzh/xkzm (levels 2..nk),
+    dissten (1..nk), ust, wspd, hpbl."""
+    bk, g, cfg, s, w = ctx.bk, ctx.g, ctx.cfg, ctx.s, ctx.w
+    ni, nj, nk, n, z = g.ni, g.nj, g.nk, g.ngxy, g.ngz
+    K, J, I = slice(z, z + nk), slice(n, n + nj), slice(n, n + ni)
+
+    def c3(a):
+        return a[K, J, I]
+
+    def c2(a):
+        return a[J, I]
+
+    imoist = int(_cfg(cfg, "imoist", 0)) == 1
+    qi = imoist and int(_cfg(cfg, "nqi", 0)) >= 1
+    znt = s["mznt"] if int(_cfg(cfg, "sfcmodel", 0)) == 4 else s["znt"]
+    r = bl_gfsedmf(
+        bk,
+        u3d=c3(w["u"]),
+        v3d=c3(w["v"]),
+        t3d=c3(w["t"]),
+        qv3d=c3(w["qv"]),
+        qc3d=c3(w["qc"]),
+        qi3d=c3(w["qi"]),
+        p3d=c3(ctx.prs),
+        pi3d=c3(w["pi"]),
+        dz8w=c3(w["dz8w"]),
+        z=ctx.b["zf"][K, J, I],
+        rthraten=c3(w["rthraten"]),
+        psfc=c2(s["psfc"]),
+        psim=c2(s["psim"]),
+        psih=c2(s["psih"]),
+        hfx=c2(s["hfx"]),
+        qfx=c2(s["qfx"]),
+        tsk=c2(s["tsk"]),
+        gz1oz0=c2(s["gz1oz0"]),
+        br=c2(s["br"]),
+        u10=c2(s["u10"]),
+        v10=c2(s["v10"]),
+        znt=c2(znt),
+        xland=c2(s["xland"]),
+        ust=c2(s["ust"]),
+        wspd=c2(s["wspd"]),
+        dt=ctx.dt,
+        qi=qi,
+    )
+    out = {}
+    names = [("upten", "rublten"), ("vpten", "rvblten"), ("thpten", "rthblten")]
+    if imoist:
+        names += [("qvpten", "rqvblten"), ("qcpten", "rqcblten")]
+        if qi:
+            names.append(("qipten", "rqiblten"))
+    for name, key in names:
+        out[name] = bk.set(bk.copy(s[name]), (K, J, I), r[key])
+    K2 = slice(z + 1, z + nk)  # k = 2..nk
+    out["xkzm"] = bk.set(bk.copy(s["xkzm"]), (K2, J, I), r["dku3d"])
+    out["xkzh"] = bk.set(bk.copy(s["xkzh"]), (K2, J, I), r["dkt3d"])
+    out["dissten"] = bk.set(bk.copy(s["dissten"]), (K, J, I), r["dissten"])
+    for name in ("ust", "wspd", "hpbl"):
+        out[name] = bk.set(bk.copy(s[name]), (J, I), r[name])
+    return out

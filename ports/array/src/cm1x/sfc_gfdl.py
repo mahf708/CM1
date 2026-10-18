@@ -813,3 +813,164 @@ def sf_gfdl(
         out["qfx"] = qfx
         out["lh"] = xlv * qfx
     return out
+
+
+# ---------------------------------------------------------------------------
+# CM1 glue (registered as sfcmodel=4 in cm1x.pbl)
+WRF_INPUTS = True
+DUMP_KEYS = ("mznt", "mol", "rmol", "zol", "br", "gz1oz0", "psim", "psih")
+_OWN = [
+    "mznt",
+    "chs",
+    "chs2",
+    "cqs2",
+    "cpmm",
+    "lh",
+    "taux",
+    "tauy",
+    "flhc",
+    "flqc",
+    "qgh",
+    "swspd",
+    "zkmax",
+    "cd_out",
+    "ch_out",
+    "mol",
+    "zol",
+    "z0t",
+    "fm",
+    "fh",
+    "psim",
+    "psih",
+    "gz1oz0",
+    "br",
+    "rmol",
+]
+
+
+def _cfg(cfg, name, default):
+    get = getattr(cfg, "get", None)
+    return get(name, default) if get else getattr(cfg, name, default)
+
+
+def check(cfg):
+    if int(_cfg(cfg, "ipbl", 0)) not in (0, 3):
+        raise NotImplementedError("sfcmodel=4 is ported with ipbl=3 (GFS-EDMF) only")
+    if float(_cfg(cfg, "xland0", 2.0)) < 1.5:
+        raise NotImplementedError(
+            "sfcmodel=4 over land is not ported (SF_GFDL reads smois out of bounds)"
+        )
+    if int(_cfg(cfg, "imove", 0)) == 1:
+        raise NotImplementedError("sfcmodel=4 with imove=1 is not ported")
+
+
+def init_state(ctx):
+    """The 2-D arrays only SF_GFDL uses (cm1.F allocates them with zeros);
+    over land SF_GFDL is undefined in CM1, so every point must be water."""
+    bk = ctx.bk
+    xl = bk.to_numpy(ctx.s["xland"])
+    if (xl < 1.5).any():
+        raise NotImplementedError("sfcmodel=4 over land is not ported")
+    z = bk.zeros(ctx.g.s_shape[1:])
+    return {k: bk.copy(z) for k in _OWN if k not in ctx.s}
+
+
+def surface_layer(ctx):
+    """turb.F sfc_and_turb, sfcmodel=4: cd_out = ch_out = mol = zol = 0,
+    zkmax = zh(:,:,1), SF_GFDL, u* = max(u*, 1e-8), wspd = swspd; then (all
+    water: SLAB only diagnoses qsfc there, like the update_sfc=.false.
+    branch) qsfc = qv1 + qfx/flqc; cd = cd_out, ch = cq = ch_out,
+    s10 = |(u10, v10)|, rmol = 1/mol (+-1e20 where |mol| <= smeps), and
+    thflux/qvflux with dosfcflx or output_sfcflx."""
+    bk, g, cfg, s, w = ctx.bk, ctx.g, ctx.cfg, ctx.s, ctx.w
+    xp = bk.xp
+    ni, nj, n, z = g.ni, g.nj, g.ngxy, g.ngz
+    J, I = slice(n, n + nj), slice(n, n + ni)
+
+    def c2(a):
+        return a[J, I]
+
+    def c1(a):
+        return a[z, J, I]
+
+    zkmax = ctx.b["zh"][z, J, I]
+    gz = bk.zeros(g.s_shape[1:])
+    r = sf_gfdl(
+        bk,
+        u3d=c1(w["u"]),
+        v3d=c1(w["v"]),
+        t3d=c1(w["t"]),
+        qv3d=c1(w["qv"]),
+        p3d=c1(ctx.prs),
+        psfc=c2(s["psfc"]),
+        xland=c2(s["xland"]),
+        gsw=c2(s.get("gsw", gz)),
+        glw=c2(s.get("glw", gz)),
+        tsk=c2(s["tsk"]),
+        znt=c2(s["znt"]),
+        u10=c2(s["u10"]),
+        v10=c2(s["v10"]),
+        zkmax=zkmax,
+        dt=ctx.dt,
+    )
+    ust = _mx(xp, r["ust"], 1.0e-8)
+    qv1 = c1(w["qv"])
+    flqc = r["flqc"]
+    qsfc = xp.where(flqc != 0.0, qv1 + r["qfx"] / xp.where(flqc != 0.0, flqc, 1.0), qv1)
+    mol = r["mol"]
+    smeps = float(_cfg(cfg, "smeps", 1.0e-30))
+    rmol = xp.where(
+        xp.abs(mol) <= smeps,
+        xp.where(mol < 0.0, -1.0e20, 1.0e20) + 0.0 * mol,
+        1.0 / xp.where(xp.abs(mol) <= smeps, 1.0, mol),
+    )
+    u10, v10 = r["u10"], r["v10"]
+    vals = {
+        "tsk": r["tsk"],
+        "znt": r["znt"],
+        "mznt": r["mznt"],
+        "ust": ust,
+        "u10": u10,
+        "v10": v10,
+        "chs": r["chs"],
+        "chs2": r["chs2"],
+        "cqs2": r["cqs2"],
+        "cpmm": r["cpm"],
+        "psim": r["psim"],
+        "psih": r["psih"],
+        "hfx": r["hfx"],
+        "qfx": r["qfx"],
+        "lh": r["lh"],
+        "taux": r["taux"],
+        "tauy": r["tauy"],
+        "flhc": r["flhc"],
+        "flqc": flqc,
+        "qgh": r["qgh"],
+        "qsfc": qsfc,
+        "gz1oz0": r["gz1oz0"],
+        "swspd": r["wspd"],
+        "wspd": r["wspd"],
+        "br": r["br"],
+        "cd_out": r["cd_out"],
+        "ch_out": r["ch_out"],
+        "mol": mol,
+        "zol": r["zol"],
+        "z0t": r["z0t"],
+        "fm": r["fm"],
+        "fh": r["fh"],
+        "zkmax": zkmax,
+        "cd": r["cd_out"],
+        "ch": r["ch_out"],
+        "cq": r["ch_out"],
+        "s10": xp.sqrt(u10 * u10 + v10 * v10),
+        "rmol": rmol,
+    }
+    if bool(_cfg(cfg, "dosfcflx", False)) or int(_cfg(cfg, "output_sfcflx", 0)) == 1:
+        rf1 = ctx.rf[z, J, I]
+        vals["thflux"] = r["hfx"] / (r["cpm"] * rf1)
+        vals["qvflux"] = r["qfx"] / rf1
+    out = {}
+    for k, v in vals.items():
+        base = s.get(k, gz)
+        out[k] = bk.set(bk.copy(base), (J, I), v)
+    return out
