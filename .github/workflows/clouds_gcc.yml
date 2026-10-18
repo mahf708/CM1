@@ -9,6 +9,8 @@ on:
 
 jobs:
   setup:
+    # NCAR self-hosted CIRRUS runners exist only for NCAR/CM1, not this fork
+    if: github.repository == 'NCAR/CM1'
     runs-on:
       group: CIRRUS-4x8
     container:

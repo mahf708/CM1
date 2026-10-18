@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cm1x"
+version = "0.0.1"
+description = "Array-backend (numpy/jax/torch/...) port of the CM1 cloud model"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26", "array-api-compat>=1.9"]
+
+[project.optional-dependencies]
+jax = ["jax"]
+torch = ["torch"]
+test = ["pytest", "netCDF4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "fortran: needs gfortran to build a per-routine Fortran harness",
+  "reference: needs CM1 Fortran reference output (CM1X_REF_DIR)",
+]
+
+[tool.ruff.lint]
+# I, J, K are the grid's interior index slices, mirroring CM1's i/j/k loops
+ignore = ["E741"]

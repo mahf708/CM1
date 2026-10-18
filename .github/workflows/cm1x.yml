@@ -1,0 +1,150 @@
+name: cm1x array-backend port
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cm1x-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reference:
+    name: Fortran reference runs
+    runs-on: ubuntu-latest
+    env:
+      # Pin glibc libm to its baseline code paths so Fortran references built on
+      # one runner CPU match comparisons run on another (same fix as cm1k.yml).
+      GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX512F,-AVX2,-FMA,-FMA4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gfortran and netCDF-Fortran
+        run: sudo apt-get update -q && sudo apt-get install -y -q gfortran libnetcdff-dev
+      - name: Cache CM1 builds
+        uses: actions/cache@v4
+        with:
+          path: ~/cm1build
+          key: cm1-ref-${{ runner.os }}-${{ hashFiles('src/**', 'ports/reference/run_reference.sh') }}
+      - name: Run kessler_periodic (double and single precision, 10 steps)
+        run: |
+          for p in r8 r4; do
+            CM1_BUILD_DIR=$HOME/cm1build/$p ports/reference/run_reference.sh \
+              ports/reference/kessler_periodic ref/kessler_periodic_$p $p
+          done
+          rm -rf ref/*/build_*
+      - name: Run kessler_periodic long (double precision, 30 min)
+        run: |
+          CM1_BUILD_DIR=$HOME/cm1build/r8 ports/reference/run_reference.sh \
+            ports/reference/kessler_periodic ref/kessler_periodic_long_r8 r8 timax=1800.0 tapfrq=300.0
+          rm -rf ref/*/build_*
+      - name: Run supercell_kessler (double precision, 10 steps and 30 min)
+        run: |
+          CM1_BUILD_DIR=$HOME/cm1build/r8 ports/reference/run_reference.sh \
+            ports/reference/supercell_kessler ref/supercell_kessler_r8 r8 timax=60.0 tapfrq=6.0
+          CM1_BUILD_DIR=$HOME/cm1build/r8 ports/reference/run_reference.sh \
+            ports/reference/supercell_kessler ref/supercell_kessler_long_r8 r8
+          rm -rf ref/*/build_*
+      - name: Float64 state dumps (cm1dump, from the C++/Kokkos branch)
+        env:
+          # pinned commit of claude/project-thread-uq9w9c with src/cm1dump.F
+          # and cxx/scripts/make_refs.sh (-DDP gfortran build)
+          KOKKOS_REF_SHA: 6e13594cdc9223d7cd945b4c9e847703c4ecc816
+        run: |
+          git fetch --no-tags --depth=1 origin "$KOKKOS_REF_SHA"
+          git worktree add ../kokkos-ref FETCH_HEAD
+          # supercell_kessler (open radiative boundaries): 10 steps, dumped
+          # at steps 0, 5 and 10 to keep the artifact small
+          sc=../kokkos-ref/cxx/cases/supercell_kessler
+          mkdir -p "$sc"
+          sed -e 's/^ *timax *=.*/ timax  =  60.0,/' -e 's/^ *tapfrq *=.*/ tapfrq =  60.0,/' \
+            ports/reference/supercell_kessler/namelist.input > "$sc/namelist.input"
+          echo 5 > "$sc/every"
+          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler
+          rm -f ref/dumps/*/cm1out*.nc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cm1-ref
+          path: ref/
+          retention-days: 30
+
+  test:
+    name: pytest (${{ matrix.backend }})
+    needs: reference
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [numpy, jax, torch]
+    env:
+      CM1X_BACKENDS: ${{ matrix.backend }}
+      # Pin glibc libm to its baseline code paths so Fortran references built on
+      # one runner CPU match comparisons run on another (same fix as cm1k.yml).
+      GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX512F,-AVX2,-FMA,-FMA4
+      CM1X_TEST_ALL_BACKENDS: "1"
+      CM1X_FORTRAN_CACHE: ${{ github.workspace }}/.fortran_cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install gfortran
+        run: sudo apt-get update -q && sudo apt-get install -y -q gfortran
+      - name: Install cm1x
+        run: |
+          python -m pip install -U pip
+          if [ "${{ matrix.backend }}" = torch ]; then
+            pip install torch --index-url https://download.pytorch.org/whl/cpu
+          elif [ "${{ matrix.backend }}" = jax ]; then
+            pip install jax
+          fi
+          pip install -e "ports/array[test]"
+      - name: Cache Fortran harness objects
+        uses: actions/cache@v4
+        with:
+          path: .fortran_cache
+          key: cm1x-harness-${{ runner.os }}-${{ hashFiles('src/**', 'ports/array/fortran_harness/build_objs.sh') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cm1-ref
+          path: ref
+      - name: Run tests
+        env:
+          CM1X_REF_DIR: ${{ github.workspace }}/ref/kessler_periodic_r8
+          CM1X_REF_DIR_R4: ${{ github.workspace }}/ref/kessler_periodic_r4
+          CM1X_REF_DIR_LONG: ${{ github.workspace }}/ref/kessler_periodic_long_r8
+          CM1X_DUMP_DIR: ${{ github.workspace }}/ref/dumps/kessler_periodic
+          CM1X_DUMP_DIR_SC: ${{ github.workspace }}/ref/dumps/supercell_kessler
+          CM1X_REF_DIR_SC: ${{ github.workspace }}/ref/supercell_kessler_r8
+          CM1X_REF_DIR_SC_LONG: ${{ github.workspace }}/ref/supercell_kessler_long_r8
+        run: python -m pytest ports/array -v -rs --durations=15
+
+  bench:
+    name: performance sweep (CPU, small)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install cm1x with jax and torch (CPU)
+        run: |
+          python -m pip install -U pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install jax
+          pip install -e ports/array
+      # torch jit = torch.compile of the hot routines (cold inductor cache,
+      # ~3-4 min compile per grid on 4 CPUs; see bench/results_cpu.md)
+      - name: Sweep (supercell_kessler, 20^3 and 40^3, eager, jax.jit, torch.compile)
+        run: |
+          python ports/array/bench/sweep.py --backends numpy,jax,torch \
+            --modes eager,jit --grids 20,40 --steps 3 --skip-eager-jax \
+            --timeout 1500 --out bench_out/results_ci
+          cat bench_out/results_ci.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cm1x-bench-cpu
+          path: bench_out/
+          retention-days: 30
