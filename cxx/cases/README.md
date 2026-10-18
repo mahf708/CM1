@@ -12,7 +12,7 @@ diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lat
 except the `*_openbc*` cases),
 free-slip top and bottom, a warm bubble (`iinit = 1`) with no random
 perturbations (`irandp = 0`), and the time-split compressible solver
-(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*` cases (see the table).
+(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*` and `pbl2_*` cases (see the table).
 
 | Case | Grid (nx×ny×nz, dx, dz) | Length | Dumps | What it exercises |
 |---|---|---|---|---|
@@ -25,6 +25,8 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `cbl_sfc` | 32×32×40, 100 m, 50 m | 150 steps (300 s, `dtl = 2 s`) | every 10 steps | dry convective boundary layer: surface layer (`sfcmodel = 1`, semi-slip `bbc = 3`, `isfcflx = 1`) with a constant heat flux (`set_flx = 1`) and roughness (`set_znt = 1`), `cecd = 3`, `pertflx = 1`; TKE turbulence (`sgsmodel = 1`, `idiss = 1`, implicit vertical diffusion); random θ perturbations (`irandp = 1`); also dumps the surface arrays (`tsk`, `znt`, `ust`, `thflux`, ...) |
 | `cbl_sfc_moist` | 32×32×40, 100 m, 50 m | 150 steps (300 s, `dtl = 2 s`) | every 10 steps | as `cbl_sfc` with Kessler microphysics over water (`lu0 = 16`, `tsk0 = 305 K`): bulk heat and moisture fluxes (`cecd = 2`, z0 from the 10-m wind), Weisman-Klemp sounding and winds |
 | `kessler_periodic_long` | 40×40×40, 1 km, 500 m | 300 steps (1800 s) | every 50 steps | `kessler_periodic` run for 30 min: a deep convective cloud with rain, for long-run drift checks |
+| `pbl2_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | simple PBL scheme (`cm1setup = 2`, `ipbl = 2`: Bryan-Rotunno/Louis vertical eddy viscosity, bulk-Ri `hpbl`, implicit vertical diffusion) with the surface layer over land (`sfcmodel = 1`, `bbc = 3`, `isfcflx = 1`, `lu0 = 3`, `tsk0 = 305 K`, `cecd = 3`), no horizontal turbulence (`horizturb = 0`), dry, Weisman-Klemp sounding and winds; also dumps the surface arrays, `hpbl` and the PBL tendencies (`thpten`, `upten`, ...) |
+| `pbl2_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | as `pbl2_dry` with Kessler microphysics over water (`lu0 = 16`, `cecd = 2`), horizontal Smagorinsky turbulence (`horizturb = 1`) and dissipative heating (`idiss = 1`) |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 

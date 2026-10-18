@@ -1,6 +1,7 @@
 #ifndef CM1K_MODEL_HPP
 #define CM1K_MODEL_HPP
 
+#include "physics/pbl/cm1k_pbl.hpp"
 #include "physics/sfc/cm1k_sfc.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
@@ -62,6 +63,13 @@ public:
   // registered fields then).
   bool has_surface() const { return m_sfc_opt.active(); }
   sfc::SfcState& surface() { return m_sfc; }
+  // PBL tendencies (allocated only for use_pbl, i.e. cm1setup=2 with
+  // ipbl>=1; for ipbl=2 they and the surface layer's hpbl are registered
+  // fields, as src/cm1dump_state.inc dumps them).
+  bool has_pbl() const { return m_use_pbl; }
+  pbl::Tendencies& pbl_tendencies() { return m_pbl; }
+  // Names of the PBL fields in the dumps (empty without ipbl=2).
+  std::vector<std::string> pbl_field_names() const;
   // The dynamical core (set up on the first step()).
   Dyncore& dyncore();
 
@@ -80,6 +88,9 @@ private:
   State m_state;
   sfc::Options m_sfc_opt;
   sfc::SfcState m_sfc;
+  bool m_use_pbl = false;
+  int m_ipbl = 0;
+  pbl::Tendencies m_pbl;
   FieldRegistry m_reg;
 
   int m_nstep = 0;

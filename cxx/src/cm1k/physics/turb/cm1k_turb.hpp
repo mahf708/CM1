@@ -238,6 +238,28 @@ void turbv(const Options& o, const Grid& g, Real dt, const FArray3& rho, const F
 void turbw(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
            const FArray3& w, const FArray3& wten, const FArray3& t13, const FArray3& t23,
            const FArray3& t33, const FArray3& kmh, const Work& wk);
+// The horizontal parts of turbu/turbv/turbs run only with dohturb, the
+// vertical parts (turbuz/turbvz/turbsz) only with dovturb; turbw's vertical
+// part also runs for cm1setup=2 with ipbl=2 (turbtend.F).
+
+// turbtend.F turbuz/turbvz: vertical subgrid flux divergence of u/v into
+// turbz (i=1..ni+1 resp. j=1..nj+1; not divided by rho). dum1..dum3, dum7:
+// scratch. Called by turbu/turbv (LES) and by pbl::br09 (ipbl=2).
+void turbuz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
+            const FArray3& u, const FArray3& w, const FArray3& t13, const FArray3& kmv,
+            const FArray3& turbz, const FArray3& dum1, const FArray3& dum2, const FArray3& dum3,
+            const FArray3& dum7);
+void turbvz(const Options& o, const Grid& g, Real dt, const FArray3& rho, const FArray3& rf,
+            const FArray3& v, const FArray3& w, const FArray3& t23, const FArray3& kmv,
+            const FArray3& turbz, const FArray3& dum1, const FArray3& dum2, const FArray3& dum3,
+            const FArray3& dum7);
+// turbtend.F turbsz: vertical subgrid flux divergence of s into turbz
+// (1..ni,1..nj,1..nk; rho-weighted, the caller multiplies by rr). dum7/dum8:
+// vimpl coefficients (doimpl=1); iflux=1 with dosfcflx uses sflux at k=1.
+void turbsz(const Options& o, const Grid& g, int iflux, Real dt, const FArray3& rho,
+            const FArray3& rr, const FArray3& rf, const FArray3& s, const FArray3& khv,
+            const FArray3& dum7, const FArray3& dum8, const FArray3& turbz, const FArray3& dum1,
+            const FArray3& dum2, const FArray3& dumz, const FArray3& sflux = FArray3());
 
 // solve1.F: vimpl coefficient arrays for turbs (doimpl=1):
 //   dum7 = khv(k)*mf(k)*rf(k)*mh*rr, dum8 = khv(k+1)*mf(k+1)*rf(k+1)*mh*rr

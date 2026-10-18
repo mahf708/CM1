@@ -36,6 +36,14 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     m_sfc.allocate(b);
     sfc::set_defaults(m_sfc);   // cm1.F
   }
+  // PBL tendency arrays: allocated from the dynamical core's configuration
+  // (DynConfig::pbl, param.F use_pbl); zero at start as in cm1.F
+  {
+    const auto cfg = DynConfig::from_namelist(nl);
+    m_use_pbl = cfg.pbl;
+    m_ipbl = cfg.pbl_opt.ipbl;
+    if (m_use_pbl) m_pbl.allocate(b);
+  }
   build_registry();
 }
 
@@ -60,6 +68,18 @@ void Model::build_registry() {
     m_reg.add(a->label(), *a);
   if (m_sfc_opt.active())
     for (auto& [name, a] : m_sfc.dumped()) m_reg.add(name, a);
+  if (m_use_pbl && m_ipbl == 2) {
+    if (m_sfc_opt.active()) m_reg.add("hpbl", m_sfc.hpbl);
+    for (auto& [name, a] : m_pbl.dumped()) m_reg.add(name, a);
+  }
+}
+
+std::vector<std::string> Model::pbl_field_names() const {
+  std::vector<std::string> n;
+  if (!(m_use_pbl && m_ipbl == 2)) return n;
+  if (m_sfc_opt.active()) n.push_back("hpbl");
+  for (auto& [name, a] : m_pbl.dumped()) n.push_back(name);
+  return n;
 }
 
 bool Model::has_field(const std::string& name) const {
@@ -141,6 +161,7 @@ Dyncore& Model::dyncore() {
     m_dyn = std::make_unique<Dyncore>();
     m_dyn->setup(m_nl, m_c, m_grid, m_base, m_state);
     if (m_sfc_opt.active()) m_dyn->set_surface(m_sfc);
+    if (m_use_pbl) m_dyn->set_pbl(m_pbl);
   }
   return *m_dyn;
 }
@@ -164,7 +185,7 @@ void Model::step() {
     dyn.start_from_state();
     m_dyn_started = true;
   }
-  dyn.sfc_and_turb(m_mtime);                     // no-op unless sgsmodel=1
+  dyn.sfc_and_turb(m_mtime);                     // no-op unless sgsmodel=1 or a PBL scheme
   dyn.diff2_stress();                            // no-op unless idiff=1, difforder=2
   m_nstep = m_nstep + 1;
   dyn.solve1();                                  // pre-RK tendencies

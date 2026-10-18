@@ -124,8 +124,11 @@ void Options::check() const {
   if (imove != 0) fail("imove=1 (ground-relative winds with a moving domain) is not ported");
   if (axisymm != 0) fail("axisymm=1 is not ported");
   if (terrain_flag) fail("terrain is not ported");
-  if (ipbl != 0) fail("ipbl>0 is not ported");
-  if (cm1setup != 1) fail("cm1setup=" + std::to_string(cm1setup) + " is not ported (only 1, LES)");
+  // with the LES (cm1setup=1, ipbl=0) or with the simple PBL scheme
+  // (cm1setup=2, ipbl=2: gethpbl2)
+  if (!(cm1setup == 1 && ipbl == 0) && !(cm1setup == 2 && ipbl == 2))
+    fail("cm1setup=" + std::to_string(cm1setup) + " with ipbl=" + std::to_string(ipbl) +
+         " is not ported (only cm1setup=1 with ipbl=0, or cm1setup=2 with ipbl=2)");
   if (imoist == 1 && ptype != 0 && ptype != 1)
     fail("imoist=1 with ptype=" + std::to_string(ptype) + " is not ported");
   if (tsk0 < 100.0) fail("tsk is less than 100 K");   // init_surface.F stops
@@ -314,6 +317,92 @@ void getcecd(const Options& o, const Bounds& b, const FArray3& zh, const SfcStat
     throw std::runtime_error("cm1k sfc::getcecd: the z0 iteration did not converge in 20 steps (CM1 stops)");
 }
 
+void gethpbl2(const Options& o, const Constants& c, const Bounds& b, const FArray3& zh,
+              const FArray3& th0, const FArray3& tha, const FArray4& qa, const FArray3& ua,
+              const FArray3& va, const FArray3& u0, const FArray3& v0, const SfcState& s) {
+  const int nk = b.nk, ni = b.ni, nj = b.nj, ptype = o.ptype;
+  const bool moist = (o.imoist == 1);
+  const bool pert = (o.pertflx == 1);
+  const Real repsm1 = c.repsm1, g = c.g, rovcp = c.rovcp, eps = c.eps;
+  constexpr Real p00 = phys::p00, karman = phys::karman;
+  constexpr Real bric = 0.125;   // critical bulk Richardson number
+  const auto psfc = s.psfc, qsfc = s.qsfc, thflux = s.thflux, qvflux = s.qvflux, ust = s.ust;
+  const auto tsk = s.tsk, hpbl = s.hpbl;
+  // per-column work (Fortran thv1, thvsfc, govthv, brilast): w(i,j,1..4)
+  FArray3 w("gethpbl2_work", {b.ib, b.jb, 1}, {b.ie, b.je, 4});
+  // divx: qv (imoist=1) or 0; ugr/vgr: ground-relative winds (pertflx)
+#define CM1K_QV(k) (moist ? qa(i, j, k, 1) : 0.0)
+#define CM1K_UGR(ii, k) (pert ? ua(ii, j, k) - u0(ii, j, k) : ua(ii, j, k))
+#define CM1K_VGR(jj, k) (pert ? va(i, jj, k) - v0(i, jj, k) : va(i, jj, k))
+  Kokkos::parallel_for("sfc_gethpbl2_init", box2(1, ni, 1, nj), KOKKOS_LAMBDA(int i, int j) {
+    qsfc(i, j, 1) = moist ? cm1libs::rslf(ptype, eps, psfc(i, j, 1), tsk(i, j, 1)) : 0.0;
+    const Real thv = (th0(i, j, 1) + tha(i, j, 1)) * (1.0 + repsm1 * CM1K_QV(1));
+    w(i, j, 3) = g / thv;   // govthv
+  });
+  for (int nloop = 1; nloop <= 2; ++nloop) {
+    Kokkos::parallel_for("sfc_gethpbl2_k1", box2(1, ni, 1, nj), KOKKOS_LAMBDA(int i, int j) {
+      const int k = 1;
+      const Real govthv = w(i, j, 3);
+      const Real thv = (th0(i, j, 1) + tha(i, j, 1)) * (1.0 + repsm1 * CM1K_QV(1));
+      const Real uavg = 0.5 * (CM1K_UGR(i, k) + CM1K_UGR(i + 1, k));
+      const Real vavg = 0.5 * (CM1K_VGR(j, k) + CM1K_VGR(j + 1, k));
+      if (nloop == 1) {
+        w(i, j, 2) = tsk(i, j, 1) * Kokkos::pow(p00 / psfc(i, j, 1), rovcp) * (1.0 + repsm1 * qsfc(i, j, 1));
+        w(i, j, 4) = govthv * zh(i, j, 1) * (thv - w(i, j, 2)) / fmax2(1.0, uavg * uavg + vavg * vavg);
+        w(i, j, 1) = thv;
+      } else {
+        const Real thf1 = (1.0 + repsm1 * CM1K_QV(1));
+        const Real thf2 = repsm1 * (th0(i, j, 1) + tha(i, j, 1));
+        const Real thvflux = fmax2(0.0, thf1 * thflux(i, j, 1) + thf2 * qvflux(i, j, 1));
+        const Real u = ust(i, j, 1);
+        // hpbl: the first pass's value (-1 where it found none)
+        Real ws = Kokkos::pow((u * u) * u + 8.0 * karman * 0.5 * govthv * thvflux * hpbl(i, j, 1), 0.3333333);
+        ws = fmin2(ws, u * 16.0);
+        ws = fmax2(ws, u / 5.0);
+        ws = fmax2(ws, 0.0001);
+        const Real gamfac = 6.8 / ws;
+        const Real tmpprt = fmax2(0.0, fmin2(gamfac * thflux(i, j, 1), 3.0) * thf1
+                                         + fmin2(gamfac * qvflux(i, j, 1), 2.0e-3) * thf2);
+        w(i, j, 1) = thv + tmpprt;
+        w(i, j, 4) = govthv * zh(i, j, 1) * (thv - w(i, j, 2)) / fmax2(1.0, uavg * uavg + vavg * vavg);
+      }
+    });
+    // hpbl = -1.0 on the whole array (halos included). The search goes up
+    // level by level over all columns and, as in sfcphys.F, stops once
+    // ntot (the number of times any column found its top, on this rank)
+    // reaches ni*nj. A column whose interpolated hpbl comes out negative
+    // keeps searching and counts again, so the stop can come before every
+    // column has a top: ntot is a global count, not a per-column test.
+    hpbl.fill(-1.0);
+    int ntot = 0;
+    for (int k = 2; k <= nk; ++k) {
+      int nnew = 0;
+      Kokkos::parallel_reduce("sfc_gethpbl2_k", box2(1, ni, 1, nj), KOKKOS_LAMBDA(int i, int j, int& cnt) {
+        if (hpbl(i, j, 1) < 0.0) {
+          const Real thv = (th0(i, j, k) + tha(i, j, k)) * (1.0 + repsm1 * CM1K_QV(k));
+          const Real uavg = 0.5 * (CM1K_UGR(i, k) + CM1K_UGR(i + 1, k));
+          const Real vavg = 0.5 * (CM1K_VGR(j, k) + CM1K_VGR(j + 1, k));
+          const Real brilast = w(i, j, 4);
+          const Real bri = w(i, j, 3) * zh(i, j, k) * (thv - w(i, j, 1)) / fmax2(1.0, uavg * uavg + vavg * vavg);
+          if (bri > bric) {
+            if (Kokkos::fabs(bri - brilast) < 0.000001)
+              hpbl(i, j, 1) = zh(i, j, k);
+            else
+              hpbl(i, j, 1) = zh(i, j, k - 1) + (zh(i, j, k) - zh(i, j, k - 1)) * (bric - brilast) / (bri - brilast);
+            cnt += 1;
+          }
+          w(i, j, 4) = bri;
+        }
+      }, nnew);
+      ntot += nnew;
+      if (ntot == ni * nj) break;
+    }
+  }
+#undef CM1K_QV
+#undef CM1K_UGR
+#undef CM1K_VGR
+}
+
 void sfcflux(const Options& o, const Constants& c, const Bounds& b, const FArray3& th0,
              const FArray3& tha, const FArray4& qa, const SfcState& s) {
   const auto thflux = s.thflux, qvflux = s.qvflux, qsfc = s.qsfc;
@@ -414,6 +503,8 @@ void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseSt
     s1(i, j, 1) = Kokkos::sqrt(u1(i, j, 1) * u1(i, j, 1) + v1(i, j, 1) * v1(i, j, 1));
     t1(i, j, 1) = th0(i, j, 1) + tha(i, j, 1);
   });
+  // bulk-Ri boundary-layer depth (testcase=0), before getcecd
+  if (o.ipbl == 2) gethpbl2(o, c, b, g.zh, th0, tha, qa, ua, va, u0, v0, s);
   getcecd(o, b, g.zh, s);
   if (o.isfcflx == 1) sfcflux(o, c, b, th0, tha, qa, s);
   sfcdiags(o, c, b, g.zh, th0, tha, qa, rf, s);

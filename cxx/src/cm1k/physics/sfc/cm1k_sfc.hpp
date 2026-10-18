@@ -24,8 +24,11 @@
 //   * cecd = 1, 2, 3; set_znt = 0/1, set_ust = 0/1, set_flx = 0/1;
 //     pertflx = 0/1; cnstce, cnstcd, cnst_znt, cnst_ust, cnst_shflx, cnst_lhflx
 //   * initsfc = 1 (tsk0, lu0 -> LANDUSE.TBL), season = 1, 2
-//   * testcase = 0 (so use_avg_sfc = .false. and hpbl stays at its initial
-//     100 m), imove = 0, no terrain, axisymm = 0
+//   * cm1setup = 1 with ipbl = 0 (LES), or cm1setup = 2 with ipbl = 2 (the
+//     simple PBL scheme, physics/pbl), which adds gethpbl2 (bulk-Ri
+//     boundary-layer depth hpbl, before getcecd)
+//   * testcase = 0 (so use_avg_sfc = .false.; without ipbl=2, hpbl stays at
+//     its initial 100 m), imove = 0, no terrain, axisymm = 0
 //   * imoist = 0, or imoist = 1 with qv = qa(:,:,:,1)
 //
 // Not ported (diagnostics that never feed back): the qv budget in sfcflux
@@ -96,7 +99,8 @@ void init_surface(const Options& o, const Grid& g, const SfcState& s);
 void set_dsxy(const Options& o, const Grid& g, const SfcState& s);
 
 // The bbc=3/sfcmodel=1 block of turb.F sfc_and_turb, on the new state:
-// psfc, u1/v1/s1/t1 at k=1 (ground-relative winds, pertflx), getcecd,
+// psfc, u1/v1/s1/t1 at k=1 (ground-relative winds, pertflx), gethpbl2
+// (ipbl=2), getcecd,
 // sfcflux (isfcflx=1), sfcdiags. Interior points (1..ni,1..nj) only; the
 // halos of ust, u1, v1, s1, znt, wspd and zntmp are set by
 // turb::sfc_and_turb (CM1's "bc/comms" block).
@@ -105,6 +109,14 @@ void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseSt
                Real cgs1, Real cgs2, Real cgs3, const FArray3& ua, const FArray3& va,
                const FArray3& tha, const FArray4& qa, const FArray3& prs, const FArray3& rf,
                const SfcState& s);
+
+// sfcphys.F gethpbl2 (ipbl=2), as turb.F calls it: qsfc (rslf, or 0 when
+// imoist=0) and hpbl from the bulk Richardson number (bric = 0.125) with the
+// previous step's ust, thflux, qvflux and tsk; hpbl = -1 on the halos (and
+// in columns without a crossing). ua/va minus u0/v0 with pertflx=1 (ugr/vgr).
+void gethpbl2(const Options& o, const Constants& c, const Bounds& b, const FArray3& zh,
+              const FArray3& th0, const FArray3& tha, const FArray4& qa, const FArray3& ua,
+              const FArray3& va, const FArray3& u0, const FArray3& v0, const SfcState& s);
 
 // sfcphys.F getcecd (use_avg_sfc = .false.). za: height of the lowest
 // model level above the surface, here zh(i,j,1).

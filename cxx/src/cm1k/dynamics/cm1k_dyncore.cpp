@@ -119,15 +119,27 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   // subgrid turbulence (LES): only sgsmodel=1 is ported (physics/turb)
   c.turb = (c.idoles && c.sgsmodel >= 1);
   if (c.turb && c.sgsmodel == 1) c.turb_opt = turb::Options::from_namelist(nl);
+  // boundary-layer schemes (param.F use_pbl)
+  c.pbl_opt = pbl::Options::from_namelist(nl);
+  c.pbl = c.pbl_opt.use_pbl;
+  if (c.pbl) c.turb_opt = turb::Options::from_namelist(nl);
   return c;
 }
 
 void DynConfig::check() const {
   if (psolver != 3) unsupported("psolver=" + std::to_string(psolver) + " (only 3)");
-  if (cm1setup != 0 && cm1setup != 1) unsupported("cm1setup=" + std::to_string(cm1setup) + " (only 0,1)");
+  if (cm1setup != 0 && cm1setup != 1 && cm1setup != 2)
+    unsupported("cm1setup=" + std::to_string(cm1setup) + " (only 0, 1, 2)");
   if (sgsmodel != 0 && sgsmodel != 1) unsupported("sgsmodel=" + std::to_string(sgsmodel) + " (only 0, 1)");
   if (turb) turb_opt.check();   // throws for every turbulence option that is not ported
-  if (ipbl != 0) unsupported("ipbl");
+  // boundary-layer schemes: cm1setup=2 with ipbl=2 (param.F: ipbl>=1 needs
+  // cm1setup=2,4, and cm1setup=2 needs ipbl>=1)
+  if (ipbl != 0 && !pbl) unsupported("ipbl=" + std::to_string(ipbl) + " with cm1setup=" + std::to_string(cm1setup));
+  if (cm1setup == 2 && ipbl <= 0) unsupported("cm1setup=2 without a PBL scheme (param.F: idopbl requires ipbl >= 1)");
+  if (pbl) {
+    pbl_opt.check();   // throws for every PBL option that is not ported (only ipbl=2)
+    turb_opt.check();
+  }
   if (idiff != 0 && idiff != 1) unsupported("idiff=" + std::to_string(idiff) + " (only 0, 1)");
   if (idiff == 1 && difforder != 2 && difforder != 6)
     unsupported("difforder=" + std::to_string(difforder) + " with idiff=1 (only 2, 6)");
@@ -152,14 +164,15 @@ void DynConfig::check() const {
   // turbulence / PBL schemes set: with sgsmodel=0 and ipbl=0 it is exactly
   // zero and the term is a no-op; with sgsmodel=1 it is turb::dissheat
   // (bbc=3 adds the surface-layer term, from physics/sfc).
-  if (idiss != 0 && ipbl != 0) unsupported("idiss=1 with PBL dissipation");
+  // With ipbl=2 dissten is set by turbparam_vert/turbparam_horiz.
+  if (idiss != 0 && ipbl != 0 && ipbl != 2) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
   if (rterm != 0) unsupported("rterm");
   if (adapt_dt != 0) unsupported("adapt_dt");
   // surface layer: sfcmodel=0, or sfcmodel=1 (bbc=3, isfcflx=0/1) with the
   // LES TKE scheme; sfc_opt.check throws for every option not ported
   sfc_opt.check();
-  if (sfc_opt.active() && !(turb && sgsmodel == 1))
-    unsupported("the surface layer (sfcmodel=1) without the LES TKE scheme (sgsmodel=1)");
+  if (sfc_opt.active() && !(turb && sgsmodel == 1) && !pbl)
+    unsupported("the surface layer (sfcmodel=1) without the LES TKE scheme (sgsmodel=1) or a PBL scheme");
   if (terrain_flag) unsupported("terrain_flag");
   if (do_ib) unsupported("do_ib");
   if (do_lsnudge) unsupported("do_lsnudge");
@@ -276,6 +289,14 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
     m_tw.allocate(B);
   }
 
+  if (m_cfg.pbl) {
+    // the turb.F arrays of the mesoscale path (nm, defv/defh, dissten,
+    // t11..t33) and scratch; cvm for the dissipative heating
+    cvm = s3("cvm");
+    ts.allocate(B);
+    m_tw.allocate(B);
+  }
+
   if (m_cfg.diff2()) m_d2.allocate(B);
 
   AdvOptions ao = AdvOptions::from_namelist(nl);
@@ -293,7 +314,7 @@ void Dyncore::start_from_state() {
   // but with km = kh = 0 every turbulent tendency is exactly zero (the
   // implicit vertical solve returns s unchanged, all fluxes are 0*x), so
   // they are skipped. Make sure that premise holds.
-  if ((m_cfg.dohturb || m_cfg.dovturb) && !m_cfg.turb) {
+  if ((m_cfg.dohturb || m_cfg.dovturb) && !m_cfg.turb && !m_cfg.pbl) {
     for (auto* a : {&s.kmh, &s.kmv, &s.khh, &s.khv}) {
       auto h = a->to_host();
       for (size_t n = 0; n < h.size(); ++n)
@@ -373,8 +394,31 @@ void Dyncore::compute_rf() {
 //===========================================================================
 // cm1.F:3748 sfc_and_turb (LES path), on the 3d arrays as CM1 passes them
 void Dyncore::sfc_and_turb(double rtime) {
-  if (!m_cfg.turb) return;
   auto& s = m_s;
+  if (m_cfg.pbl) {
+    // mesoscale path (cm1setup=2, see physics/pbl/cm1k_pbl.hpp)
+    const auto& to = m_cfg.turb_opt;
+    const auto& B = m_g.b;
+    if (!m_has_sfc) throw std::runtime_error("cm1k dyncore: the PBL scheme needs set_surface()");
+    auto dissten = ts.dissten;
+    Kokkos::parallel_for("pbl_dissten0", box3(1, B.ni, 1, B.nj, 1, B.nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
+      dissten(i, j, k) = 0.0;
+    });
+    sfc::sfc_layer(m_cfg.sfc_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc);
+    turb::sfc_bcs(to, B, m_sfc);
+    turb::calcnm(to, m_c, B, m_g.rdz, m_g.c1, m_g.c2, m_g.mf, m_b.pi0, m_b.th0, ts.nm, m_tw.d1, m_tw.d2, m_tw.d3,
+                 m_tw.d6, s.prs, pp3d, th3d, q3d);
+    turb::calcdef(to, m_g, s.rho, rf, u3d, v3d, w3d, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, ts.defv,
+                  ts.defh);
+    if (m_cfg.pbl_opt.horizturb == 1)
+      pbl::turbparam_horiz(to, m_cfg.pbl_opt, B, ts.defh, s.kmh, s.khh, ts.dissten, m_sfc);
+    if (m_cfg.pbl_opt.ipbl == 2)
+      pbl::turbparam_vert(to, m_cfg.pbl_opt, m_g, ts.nm, ts.defv, s.kmv, s.khv, ts.dissten, m_sfc, m_tw.d4);
+    turb::gettau(to, B, s.kmh, s.kmv, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, rf, &m_sfc);
+    pbl(rtime);
+    return;
+  }
+  if (!m_cfg.turb) return;
   const sfc::SfcState* sp = nullptr;
   if (m_cfg.sfc_opt.active()) {
     // surface block of sfc_and_turb (bbc=3): psfc, u1/v1/s1, getcecd,
@@ -390,6 +434,29 @@ void Dyncore::sfc_and_turb(double rtime) {
 void Dyncore::set_surface(const sfc::SfcState& s) {
   m_sfc = s;   // shallow: the views are shared with the caller
   m_has_sfc = true;
+}
+
+void Dyncore::set_pbl(const pbl::Tendencies& t) {
+  m_pt = t;   // shallow: the views are shared with the caller
+  m_has_pbl = true;
+}
+
+// turb.F sfc_and_turb, "doingpbl" block (see the header for the hook).
+void Dyncore::pbl(double /*rtime*/) {
+  if (!m_cfg.pbl) return;
+  if (!m_has_pbl) throw std::runtime_error("cm1k dyncore: the PBL scheme needs set_pbl()");
+  auto& s = m_s;
+  switch (m_cfg.pbl_opt.ipbl) {
+  case 2:   // dobr09
+    pbl::br09(m_cfg.turb_opt, m_cfg.pbl_opt, m_g, m_b, m_dt, u3d, v3d, w3d, th3d, q3d, s.rho, rr, rf, s.kmv, s.khv,
+              ts.t13, ts.t23, m_sfc, m_pt, m_tw);
+    break;
+  default:
+    unsupported("ipbl=" + std::to_string(m_cfg.pbl_opt.ipbl));
+  }
+  // use_pbl: boundary conditions of the u/v tendencies
+  bcs(m_bc, m_pt.upten);
+  bcs(m_bc, m_pt.vpten);
 }
 
 //===========================================================================
@@ -479,6 +546,20 @@ void Dyncore::solve1() {
     // doturb block (~1119)
     turb::turb_tendencies(to, m_g, m_b, m_dt, rho, rr, rf, ua, va, wa, tha, qa, uten1, vten1, wten1, thten1,
                           qten, m_s.kmh, m_s.kmv, m_s.khh, m_s.khv, ts, m_tw, sp);
+  } else if (cfg.pbl) {
+    // mesoscale setup (cm1setup=2) with a PBL scheme
+    const auto& to = cfg.turb_opt;
+    // dissipative heating (~919; idiss=1, dissten from turbparam_*)
+    turb::dissheat(to, c, B, pi0, ppi, qa, ts.dissten, thten1, cvm, m_g.zf, &m_sfc);
+    // PBL tendency of theta (~1087), before the doturb block
+    pbl::add_theta_tendency(B, m_pt, thten1);
+    // doturb block (~1119): only with dohturb (horizturb=1); turbw also
+    // does the vertical part for ipbl=2
+    if (to.dohturb || to.dovturb)
+      turb::turb_tendencies(to, m_g, m_b, m_dt, rho, rr, rf, ua, va, wa, tha, qa, uten1, vten1, wten1, thten1,
+                            qten, m_s.kmh, m_s.kmv, m_s.khh, m_s.khv, ts, m_tw, &m_sfc);
+    // PBL tendencies of u, v (~1269) and the moisture (~1329)
+    pbl::add_tendencies(cfg.pbl_opt, B, m_pt, uten1, vten1, qten);
   }
 
   //  contribution to pressure tendency from potential temperature

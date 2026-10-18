@@ -5,6 +5,7 @@
 #include "dynamics/cm1k_diff2.hpp"
 #include "dynamics/cm1k_openbc.hpp"
 #include "dynamics/cm1k_sound.hpp"
+#include "physics/pbl/cm1k_pbl.hpp"
 #include "physics/turb/cm1k_turb.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
@@ -41,6 +42,11 @@ struct DynConfig {
   turb::Options turb_opt;
   // surface layer (sfcmodel=1, bbc=3): physics/sfc options
   sfc::Options sfc_opt;
+  // boundary-layer schemes (param.F use_pbl: cm1setup=2,4 with ipbl>=1):
+  // physics/pbl options; turb_opt is then filled too (boundary flags,
+  // turbsz/turbuz/turbvz, horizturb=1). Only cm1setup=2, ipbl=2 is ported.
+  bool pbl = false;
+  pbl::Options pbl_opt;
 
   // explicit diffusion: 6th order inside advection, or diff2.F
   bool diff6() const { return idiff >= 1 && difforder == 6; }
@@ -98,9 +104,35 @@ public:
   // in the sequence (between mtime=mtime+dt and the next solve1).
   bool turb_enabled() const { return m_cfg.turb; }
   void sfc_and_turb(double rtime);
+  // cm1setup=2 (ipbl>=1) runs the mesoscale sequence of sfc_and_turb
+  // instead: surface layer (with gethpbl2 for ipbl=2), calcnm, calcdef,
+  // turbparam_horiz (horizturb=1), turbparam_vert (ipbl=2), gettau, then the
+  // PBL scheme through pbl() below.
+  bool pbl_enabled() const { return m_cfg.pbl; }
   // The surface-layer arrays (sfcmodel=1), owned by the Model; sfc_and_turb
   // updates them and solve1 reads them. Call after setup().
   void set_surface(const sfc::SfcState& s);
+  // The PBL tendencies (DynConfig::pbl), owned by the Model (they are in the
+  // dumps); pbl() fills them and solve1 applies them. Call after setup().
+  void set_pbl(const pbl::Tendencies& t);
+  // PBL dispatch hook, the "doingpbl" block of turb.F sfc_and_turb: called
+  // by sfc_and_turb (cm1setup=2) after the eddy viscosities and stresses of
+  // the current state are set (s.kmh..khv, ts.t11..t33, ts.nm/defv/defh,
+  // surface layer incl. hpbl). Each scheme writes its tendencies into the
+  // pbl::Tendencies arrays (thpten, qvpten, qcpten, qipten, upten, vpten:
+  // the u/v ones at scalar points, solve1 averages them to u/v points),
+  // which solve1 adds to thten1/qten before and uten1/vten1 after the doturb
+  // block; then pbl() applies bcs to upten and vpten (use_pbl). Dispatch on
+  // m_cfg.pbl_opt.ipbl:
+  //   2: pbl::br09 (simple Bryan-Rotunno/Louis scheme, CM1's dobr09)
+  //   1 (YSU), 4/5 (MYNN), ...: not ported yet. A new scheme adds its case
+  //     here (inputs: u3d/v3d/w3d/th3d/pp3d/q3d, s.prs, s.rho, rr, rf, the
+  //     surface state m_sfc), any extra outputs or carried arrays to
+  //     pbl::Tendencies (allocated from DynConfig::pbl_opt), its options to
+  //     pbl::Options/check() and DynConfig::check, and its dissipative
+  //     heating / TKE terms to solve1.
+  // Public: it launches device lambdas.
+  void pbl(double rtime);
   // solve3.F/init3d.F: rf from rho on 0..ni+1, 0..nj+1 (public: it launches
   // device lambdas, which nvcc does not allow in private member functions)
   void compute_rf();
@@ -134,6 +166,8 @@ private:
   Diff2Work m_d2;   // idiff=1, difforder=2
   sfc::SfcState m_sfc;
   bool m_has_sfc = false;
+  pbl::Tendencies m_pt;
+  bool m_has_pbl = false;
   Real m_cgs1 = 0, m_cgs2 = 0, m_cgs3 = 0, m_cgt1 = 0, m_cgt2 = 0, m_cgt3 = 0;
 
   DynConfig m_cfg;

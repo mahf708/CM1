@@ -34,6 +34,7 @@ double run_case(const std::string& case_name, double tol, bool native_init = fal
   if (turb) for (const char* n : {"tkea", "kmh", "kmv", "khh", "khv"}) fields.push_back(n);
   if (m.has_surface())   // sfcmodel=1: every dumped surface array (tsk, znt, ust, thflux, ...)
     for (auto& [n, a] : m.surface().dumped()) fields.push_back(n);
+  for (auto& n : m.pbl_field_names()) fields.push_back(n);   // ipbl=2: hpbl, thpten, ..., vpten
   for (auto& n : m.field_names())
     if (n.rfind("qa_", 0) == 0) fields.push_back(n);
 
@@ -193,6 +194,26 @@ TEST_CASE("dyncore + LES TKE + surface layer + Kessler: cbl_sfc_moist from Model
   run_case("cbl_sfc_moist", 0.0, true, true);
 }
 
+TEST_CASE("dyncore + simple PBL + surface layer: pbl2_dry vs Fortran", "[dyn][step][pbl][sfc]") {
+  // cm1setup=2, ipbl=2 (Bryan-Rotunno/Louis vertical eddy viscosity,
+  // gethpbl2), horizturb=0, sfcmodel=1 with surface fluxes (isfcflx=1),
+  // dry. Compares the eddy viscosities, every dumped surface array, hpbl
+  // and the PBL tendencies (dump N holds those of state N-1).
+  run_case("pbl2_dry", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + simple PBL + horizontal Smagorinsky + Kessler: pbl2_kessler vs Fortran",
+          "[dyn][step][pbl][sfc][kessler]") {
+  // cm1setup=2, ipbl=2, horizturb=1 (turbparam_horiz, over water: tlh from
+  // psfc), idiss=1, sfcmodel=1 over water, Kessler
+  run_case("pbl2_kessler", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + simple PBL + Kessler: pbl2_kessler from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][kessler]") {
+  run_case("pbl2_kessler", 0.0, true, true);
+}
+
 TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][step][init]") {
   run_case("dry_bubble", 1e-12, true);
 }
@@ -263,4 +284,28 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   auto x = sf;
   x.set("sfcmodel", "0");
   REQUIRE_THROWS(DynConfig::from_namelist(x).check());
+
+  // PBL: cm1setup=2 with ipbl=2 (simple Bryan-Rotunno/Louis scheme) and
+  // horizturb=0/1 is ported; other PBL schemes and combinations throw
+  auto pb = Namelist::from_file(cm1k::testing::case_namelist("pbl2_kessler"));
+  REQUIRE_NOTHROW(DynConfig::from_namelist(pb).check());
+  REQUIRE(DynConfig::from_namelist(pb).pbl);
+  REQUIRE_FALSE(DynConfig::from_namelist(pb).turb);
+  for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+         {"ipbl", "0"}, {"ipbl", "1"}, {"ipbl", "3"}, {"ipbl", "4"}, {"ipbl", "5"}, {"ipbl", "6"},
+         {"cm1setup", "4"}, {"sfcmodel", "0"}, {"sfcmodel", "2"}, {"horizturb", "2"},
+         {"terrain_flag", ".true."}, {"imove", "1"}}) {
+    auto y = pb;
+    y.set(k, v);
+    INFO(k << " = " << v);
+    REQUIRE_THROWS(DynConfig::from_namelist(y).check());
+  }
+  for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
+         {"horizturb", "0"}, {"idiss", "0"}, {"doimpl", "0"}, {"isfcflx", "0"}, {"bcturbs", "2"},
+         {"pertflx", "1"}}) {
+    auto y = pb;
+    y.set(k, v);
+    INFO(k << " = " << v);
+    REQUIRE_NOTHROW(DynConfig::from_namelist(y).check());
+  }
 }
