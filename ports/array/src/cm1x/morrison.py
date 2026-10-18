@@ -2219,6 +2219,7 @@ def mp_driver_ptype5(
     dum3=None,
     nfall_max=None,
     satadj_maxiter=None,
+    getvt=False,
     **unused,
 ):
     """mp_driver.F ``mp_driver`` for ptype=5 (Morrison).
@@ -2227,7 +2228,7 @@ def mp_driver_ptype5(
     qi, qs, qg, nci, ncs, ncr, ncg[, ncc for inum=0]); other shapes as
     ``mp_driver_kessler``.  Sequence (as CM1): T -> dum1 and thten, qv ->
     qten(nqv), rho -> dum3; pdefqtest on qv..qg; MP_GRAUPEL (fall speeds
-    into qten(nqc,nqr,nqi,nqs,nqg)); efall=1: getcvm and getefall, T +=
+    into qten(nqc,nqr,nqi,nqs,nqg) when ``getvt`` or efall=1); efall=1: getcvm and getefall, T +=
     dt*heating; then th3d/pp3d/prs (eqtset=2) or th3d/rho (eqtset=1) where
     T or qv changed.
 
@@ -2330,6 +2331,7 @@ def mp_driver_ptype5(
         q[10] = o["nc"]
     rain, prate = o["rainnc"], o["prate"]
     qb[0], qb[1], qb[4], qb[5] = o["tcond"], o["tevac"], o["tevar"], o["train"]
+    getvt = bool(getvt) or efall == 1  # mp_driver.F: efall=1 sets getvt
     vt = {}
     for name, key in (
         ("nqc", "vtc"),
@@ -2339,7 +2341,8 @@ def mp_driver_ptype5(
         ("nqg", "vtg"),
     ):
         idx = int(getattr(cfg, name)) - 1
-        qten = bk.set(qten, (idx,) + S, o[key])
+        if getvt:
+            qten = bk.set(qten, (idx,) + S, o[key])
         vt[name] = idx
 
     if efall == 1:

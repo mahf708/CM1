@@ -263,3 +263,136 @@ def test_mp_graupel(bk, case):
         close(bk, o[k], ref[k][S], name=k)
     got = [float(bk.to_numpy(o[k])) for k in ("tcond", "tevac", "tevar", "train")]
     np.testing.assert_allclose(got, ref["bud"], rtol=RTOL)
+
+
+# ---------------------------------------------------------------------------
+# mp_driver, ptype=5 (CM1's own mp_driver: pdefqtest, MP_GRAUPEL, efall, the
+# theta/pressure update)
+
+MP_CASES = {
+    "default": dict(eqtset=2, efall=0, numq=10, ihail=0, ndcnst=250.0, testcase=0),
+    "efall": dict(eqtset=2, efall=1, numq=10, ihail=0, ndcnst=250.0, testcase=0),
+    "eqtset1": dict(eqtset=1, efall=0, numq=10, ihail=1, ndcnst=100.0, testcase=0),
+    "inum0": dict(eqtset=2, efall=1, numq=11, ihail=0, ndcnst=250.0, testcase=0),
+}
+
+
+def make_mp_state(seed, numq, g=G):
+    from cm1x import constants as C
+
+    s = make_state(seed, g, inum=0 if numq == 11 else 1)
+    rng = np.random.default_rng(seed + 100)
+    sh = g.s_shape
+    t, prs, qv = s["t3d"], s["p"], s["qv"]
+    pi0 = (prs / C.p00) ** C.rovcp * (1.0 + 1e-4 * rng.standard_normal(sh))
+    pp3d = (prs / C.p00) ** C.rovcp - pi0
+    th = t / (pi0 + pp3d)
+    th0 = th - rng.uniform(-1.0, 1.0, sh)
+    th3d = th - th0
+    rho = prs / (C.rd * t * (1.0 + qv * C.reps))
+    names = ["qv", "qc", "qr", "qi", "qs", "qg", "nni", "ns", "nr", "ng"]
+    if numq == 11:
+        names.append("nc")
+    q3d = np.stack([s[n] for n in names])
+    # some negative values for pdefqtest
+    q3d[1:6] = np.where(rng.random(q3d[1:6].shape) < 0.03, -1e-7, q3d[1:6])
+    return dict(
+        th0=th0,
+        pi0=pi0,
+        th3d=th3d,
+        pp3d=pp3d,
+        prs=prs,
+        rho=rho,
+        q3d=q3d,
+        w3d=s["w"],
+        ruh=s["ruh"],
+        rvh=s["rvh"],
+        rmh=s["rmh"],
+        mh=np.ones(sh),
+        zh=np.zeros(sh),
+        mf=1.0 + 0.05 * rng.standard_normal(g.w_shape),
+        rain=s["rainnc"],
+        prate=s["prate"],
+        qbudget=rng.uniform(0.0, 1.0, 10),
+        asq=rng.uniform(0.0, 1.0, numq),
+    )
+
+
+@pytest.mark.parametrize("case", list(MP_CASES))
+def test_mp_driver_ptype5(bk, case):
+    from cm1x.mp_driver import mp_driver
+    from cm1x.namelist import Config
+
+    c = MP_CASES[case]
+    numq = c["numq"]
+    s = make_mp_state(11, numq)
+    params = np.array(
+        [
+            G.ni,
+            G.nj,
+            G.nk,
+            G.dx,
+            G.dy,
+            G.dz,
+            DT,
+            c["eqtset"],
+            1.0e-4,
+            1.0e-14,
+            s["rain"].shape[0],
+            c["ihail"],
+            c["ndcnst"],
+            c["efall"],
+            numq,
+            c["testcase"],
+        ]
+    )
+    ins = dict(params=params, **s)
+    sh = G.s_shape
+    outs = dict(
+        rho=sh,
+        prs=sh,
+        pp3d=sh,
+        th3d=sh,
+        q3d=(numq,) + sh,
+        qten=(numq,) + sh,
+        thten=sh,
+        dum1=sh,
+        dum3=sh,
+        rain=s["rain"].shape,
+        prate=s["prate"].shape,
+        qbudget=(10,),
+        asq=(numq,),
+    )
+    ref = run_driver("morrison_mp", ins, outs, public=PUB)
+    cfg = Config(
+        dict(
+            ptype=5,
+            imoist=1,
+            inum=0 if numq == 11 else 1,
+            eqtset=c["eqtset"],
+            efall=c["efall"],
+            ihail=c["ihail"],
+            ndcnst=c["ndcnst"],
+            testcase=c["testcase"],
+            pdscheme=1,
+            tsmall=1.0e-4,
+            qsmall=1.0e-14,
+            dx=G.dx,
+            dy=G.dy,
+            dz=G.dz,
+        )
+    )
+    assert cfg.numq == numq
+    kw = {k: A(bk, v) for k, v in s.items()}
+    o = mp_driver(bk, G, cfg, dt=DT, satadj_maxiter=100, **kw)
+    S = (G.K, G.J, G.I)
+    for k in ("rho", "prs", "pp3d", "th3d", "thten", "dum1", "dum3", "rain", "prate"):
+        close(bk, o[k], ref[k], name=k)
+    got_q, ref_q = bk.to_numpy(o["q3d"]), ref["q3d"]
+    for n in range(numq):
+        close(bk, got_q[n], ref_q[n], name=f"q3d[{n}]")
+    got_t = bk.to_numpy(o["qten"])
+    for n in (0, 1, 2, 3, 4, 5) if c["efall"] else (0,):  # qv, fall speeds
+        close(bk, got_t[n][S], ref["qten"][n][S], name=f"qten[{n}]")
+    np.testing.assert_allclose(bk.to_numpy(o["qbudget"]), ref["qbudget"], rtol=RTOL)
+    np.testing.assert_allclose(bk.to_numpy(o["asq"]), ref["asq"], rtol=RTOL)
