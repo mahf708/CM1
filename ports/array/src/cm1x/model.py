@@ -253,6 +253,7 @@ class Model:
             csm=s["csm"],
             ce1=s["ce1"],
             ce2=s["ce2"],
+            terrain=self._turb_terrain(b),
             **{k: s.get(k) for k in keys},
         )
         for k in keys + ("tkea", "tke3d", "cme", "csm", "ce1", "ce2"):
@@ -549,7 +550,15 @@ class Model:
             "t33",
         ):
             d[k] = s[k]
+        d["terrain"] = self._turb_terrain(b)
         return d
+
+    def _turb_terrain(self, b):
+        """The flat terrain-metrics dict cm1x.turb / cm1x.turbtend take
+        (None without terrain_flag)."""
+        if not self.terrain:
+            return None
+        return {k: b[k] for k in TERRAIN_KEYS + CG_KEYS}
 
     def run(self, nsteps):
         """Advance ``nsteps`` time steps."""

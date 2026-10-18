@@ -50,7 +50,9 @@ def python(bk, g, d, tm, zt, nrk, bcs):
 
 @requires_gfortran
 @pytest.mark.parametrize(
-    "bcs", [(1, 1, 1, 1), (2, 2, 2, 2), (2, 2, 1, 1)], ids=lambda c: "bc" + "".join(map(str, c))
+    "bcs",
+    [(1, 1, 1, 1), (2, 2, 2, 2), (2, 2, 1, 1)],
+    ids=lambda c: "bc" + "".join(map(str, c)),
 )
 @pytest.mark.parametrize("nrk", [1, 3])
 def test_sound_terrain_vs_fortran(bk, grid, nrk, bcs):

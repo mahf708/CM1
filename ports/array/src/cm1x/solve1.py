@@ -184,6 +184,7 @@ def solve1(
             tten=tketen,
             kmh=T["kmh"],
             kmv=T["kmv"],
+            terrain=T.get("terrain"),
         )["tten"]
 
     # Fortran k=1..nk, j=1..nj+1, i=1..ni+1
@@ -275,6 +276,7 @@ def solve1(
             t22=T["t22"],
             t23=T["t23"],
             t33=T["t33"],
+            terrain=T.get("terrain"),
         )
         uten1, vten1, wten1, thten1 = (
             tt["uten1"],

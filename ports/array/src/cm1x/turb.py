@@ -37,7 +37,17 @@ t11..t33`` are ``g.s_shape``; ``cm0`` is ``s_shape[1:]``; ``uh, ruh`` /
 from __future__ import annotations
 
 from . import constants as C
-from .turbtend import Reg, _bcflags, _opt, turbs, turbu, turbv, turbw
+from .turbtend import (
+    Reg,
+    _atw,
+    _bcflags,
+    _opt,
+    _terrain,
+    turbs,
+    turbu,
+    turbv,
+    turbw,
+)
 
 c_m = 0.10
 c_l = 0.8165
@@ -75,7 +85,7 @@ def _check(cfg, who):
         v = int(_opt(cfg, n, 1))
         if v not in (1, 2, 3, 4):
             bad.append(f"{n}={v}")
-    for n in ("terrain_flag", "do_ib", "dosfcflx"):
+    for n in ("do_ib", "dosfcflx"):
         if _opt(cfg, n, False):
             bad.append(f"{n}=T")
     if bad:
@@ -387,14 +397,17 @@ def calcdef(
     s33=None,
     defv=None,
     defh=None,
+    terrain=None,
     **unused,
 ):
-    """turb.F ``calcdef`` (Cartesian, no terrain): rho*S_ij into s11..s33
+    """turb.F ``calcdef`` (Cartesian): rho*S_ij into s11..s33
     (``g.s_shape``) and the deformation terms defv, defh (w levels,
-    k=2..nk).  Returns dict s11, s12, s13, s22, s23, s33, defv, defh."""
+    k=2..nk).  With terrain_flag, ``terrain`` holds the metrics (see
+    ``turbtend._terrain``).  Returns dict s11, s12, s13, s22, s23, s33,
+    defv, defh."""
     ni, nj, nk = g.ni, g.nj, g.nk
     b = _bcflags(cfg)
-    rdx, rdy, rdz = g.rdx, g.rdy, g.rdz
+    tm = _terrain(cfg, terrain, "calcdef")
     s11 = _copy_or_zeros(bk, s11, g.s_shape)
     s12 = _copy_or_zeros(bk, s12, g.s_shape)
     s13 = _copy_or_zeros(bk, s13, g.s_shape)
@@ -403,6 +416,124 @@ def calcdef(
     s33 = _copy_or_zeros(bk, s33, g.s_shape)
     defv = _copy_or_zeros(bk, defv, g.w_shape)
     defh = _copy_or_zeros(bk, defh, g.w_shape)
+
+    def cp(a, dst, src):
+        return bk.set(a, Reg(g, *dst).idx, Reg(g, *src)(a))
+
+    if tm is not None:
+        s11, s12, s13, s22, s23, s33 = _calcdef_terrain(
+            bk, g, tm, uh, uf, vh, vf, rho, rf, ua, va, wa, s11, s12, s13, s22, s23, s33
+        )
+    else:
+        s11, s12, s13, s22, s23, s33 = _calcdef_flat(
+            bk,
+            g,
+            b,
+            uh,
+            uf,
+            vh,
+            vf,
+            mh,
+            mf,
+            rho,
+            rf,
+            ua,
+            va,
+            wa,
+            s11,
+            s12,
+            s13,
+            s22,
+            s23,
+            s33,
+        )
+    K = (1, nk)
+    Kw = (2, nk)
+
+    if any(b[n] == 2 for n in ("wbc", "ebc", "sbc", "nbc")):
+        w2 = b["wbc"] == 2 and b["ibw"] == 1
+        e2 = b["ebc"] == 2 and b["ibe"] == 1
+        s2 = b["sbc"] == 2 and b["ibs"] == 1
+        n2 = b["nbc"] == 2 and b["ibn"] == 1
+        if w2:
+            s11 = cp(s11, (K, (0, nj + 1), (0, 0)), (K, (0, nj + 1), (1, 1)))
+        if e2:
+            s11 = cp(
+                s11, (K, (0, nj + 1), (ni + 1, ni + 1)), (K, (0, nj + 1), (ni, ni))
+            )
+        if s2:
+            s22 = cp(s22, (K, (0, 0), (0, ni + 1)), (K, (1, 1), (0, ni + 1)))
+        if n2:
+            s22 = cp(
+                s22, (K, (nj + 1, nj + 1), (0, ni + 1)), (K, (nj, nj), (0, ni + 1))
+            )
+        if w2:
+            s12 = cp(s12, (K, (1, nj + 1), (1, 1)), (K, (1, nj + 1), (2, 2)))
+        if e2:
+            s12 = cp(
+                s12, (K, (1, nj + 1), (ni + 1, ni + 1)), (K, (1, nj + 1), (ni, ni))
+            )
+        if s2:
+            s12 = cp(s12, (K, (1, 1), (1, ni + 1)), (K, (2, 2), (1, ni + 1)))
+        if n2:
+            s12 = cp(
+                s12, (K, (nj + 1, nj + 1), (1, ni + 1)), (K, (nj, nj), (1, ni + 1))
+            )
+        if s2 and w2:
+            s12 = cp(s12, (K, (1, 1), (1, 1)), (K, (2, 2), (2, 2)))
+        if s2 and e2:
+            s12 = cp(s12, (K, (1, 1), (ni + 1, ni + 1)), (K, (2, 2), (ni, ni)))
+        if n2 and w2:
+            s12 = cp(s12, (K, (nj + 1, nj + 1), (1, 1)), (K, (nj, nj), (2, 2)))
+        if n2 and e2:
+            s12 = cp(
+                s12, (K, (nj + 1, nj + 1), (ni + 1, ni + 1)), (K, (nj, nj), (ni, ni))
+            )
+
+    D = Reg(g, Kw, (1, nj), (1, ni))
+    cc1, cc2 = D(c1), D(c2)
+
+    def sq(x):
+        return x * x
+
+    tmp11 = cc1 * sq(D(s11, dk=-1)) + cc2 * sq(D(s11))
+    tmp22 = cc1 * sq(D(s22, dk=-1)) + cc2 * sq(D(s22))
+    tmp33 = cc1 * sq(D(s33, dk=-1)) + cc2 * sq(D(s33))
+    tmp12 = 0.25 * (
+        cc1
+        * (
+            (sq(D(s12, dk=-1)) + sq(D(s12, dk=-1, dj=1, di=1)))
+            + (sq(D(s12, dk=-1, dj=1)) + sq(D(s12, dk=-1, di=1)))
+        )
+        + cc2
+        * (
+            (sq(D(s12)) + sq(D(s12, dj=1, di=1)))
+            + (sq(D(s12, dj=1)) + sq(D(s12, di=1)))
+        )
+    )
+    tmp13 = 0.5 * (sq(D(s13)) + sq(D(s13, di=1)))
+    tmp23 = 0.5 * (sq(D(s23)) + sq(D(s23, dj=1)))
+    rrf = 1.0 / sq(D(rf))
+    defv = bk.set(defv, D.idx, 4.0 * (tmp13 + tmp23) * rrf)
+    defh = bk.set(defh, D.idx, (2.0 * ((tmp11 + tmp22) + tmp33) + 4.0 * tmp12) * rrf)
+    return {
+        "s11": s11,
+        "s12": s12,
+        "s13": s13,
+        "s22": s22,
+        "s23": s23,
+        "s33": s33,
+        "defv": defv,
+        "defh": defh,
+    }
+
+
+def _calcdef_flat(
+    bk, g, b, uh, uf, vh, vf, mh, mf, rho, rf, ua, va, wa, s11, s12, s13, s22, s23, s33
+):
+    """calcdef's Cartesian no-terrain rho*S_ij (with the wall BCs)."""
+    ni, nj, nk = g.ni, g.nj, g.nk
+    rdx, rdy, rdz = g.rdx, g.rdy, g.rdz
 
     def cp(a, dst, src):
         return bk.set(a, Reg(g, *dst).idx, Reg(g, *src)(a))
@@ -496,82 +627,152 @@ def calcdef(
         r = Reg(g, Kw, (nj + 1, nj + 1), (1, ni))
         s23 = bk.set(s23, r.idx, -2.0 * r(wa, dj=-1) * rdy * r.y(vf))
 
-    if any(b[n] == 2 for n in ("wbc", "ebc", "sbc", "nbc")):
-        w2 = b["wbc"] == 2 and b["ibw"] == 1
-        e2 = b["ebc"] == 2 and b["ibe"] == 1
-        s2 = b["sbc"] == 2 and b["ibs"] == 1
-        n2 = b["nbc"] == 2 and b["ibn"] == 1
-        if w2:
-            s11 = cp(s11, (K, (0, nj + 1), (0, 0)), (K, (0, nj + 1), (1, 1)))
-        if e2:
-            s11 = cp(
-                s11, (K, (0, nj + 1), (ni + 1, ni + 1)), (K, (0, nj + 1), (ni, ni))
-            )
-        if s2:
-            s22 = cp(s22, (K, (0, 0), (0, ni + 1)), (K, (1, 1), (0, ni + 1)))
-        if n2:
-            s22 = cp(
-                s22, (K, (nj + 1, nj + 1), (0, ni + 1)), (K, (nj, nj), (0, ni + 1))
-            )
-        if w2:
-            s12 = cp(s12, (K, (1, nj + 1), (1, 1)), (K, (1, nj + 1), (2, 2)))
-        if e2:
-            s12 = cp(
-                s12, (K, (1, nj + 1), (ni + 1, ni + 1)), (K, (1, nj + 1), (ni, ni))
-            )
-        if s2:
-            s12 = cp(s12, (K, (1, 1), (1, ni + 1)), (K, (2, 2), (1, ni + 1)))
-        if n2:
-            s12 = cp(
-                s12, (K, (nj + 1, nj + 1), (1, ni + 1)), (K, (nj, nj), (1, ni + 1))
-            )
-        if s2 and w2:
-            s12 = cp(s12, (K, (1, 1), (1, 1)), (K, (2, 2), (2, 2)))
-        if s2 and e2:
-            s12 = cp(s12, (K, (1, 1), (ni + 1, ni + 1)), (K, (2, 2), (ni, ni)))
-        if n2 and w2:
-            s12 = cp(s12, (K, (nj + 1, nj + 1), (1, 1)), (K, (nj, nj), (2, 2)))
-        if n2 and e2:
-            s12 = cp(
-                s12, (K, (nj + 1, nj + 1), (ni + 1, ni + 1)), (K, (nj, nj), (ni, ni))
-            )
+    return s11, s12, s13, s22, s23, s33
 
-    D = Reg(g, Kw, (1, nj), (1, ni))
-    cc1, cc2 = D(c1), D(c2)
 
-    def sq(x):
-        return x * x
-
-    tmp11 = cc1 * sq(D(s11, dk=-1)) + cc2 * sq(D(s11))
-    tmp22 = cc1 * sq(D(s22, dk=-1)) + cc2 * sq(D(s22))
-    tmp33 = cc1 * sq(D(s33, dk=-1)) + cc2 * sq(D(s33))
-    tmp12 = 0.25 * (
-        cc1
-        * (
-            (sq(D(s12, dk=-1)) + sq(D(s12, dk=-1, dj=1, di=1)))
-            + (sq(D(s12, dk=-1, dj=1)) + sq(D(s12, dk=-1, di=1)))
+def _calcdef_terrain(
+    bk, g, tm, uh, uf, vh, vf, rho, rf, ua, va, wa, s11, s12, s13, s22, s23, s33
+):
+    """calcdef's "Cartesian with terrain" rho*S_ij (no wall BCs there)."""
+    ni, nj, nk = g.ni, g.nj, g.nk
+    rdx, rdy = g.rdx, g.rdy
+    zt = float(tm["zt"])
+    gz, rgz, rgzu, rgzv = tm["gz"], tm["rgz"], tm["rgzu"], tm["rgzv"]
+    gx, gy = tm["gx"], tm["gy"]
+    rds, sig, rdsf, sigf = tm["rds"], tm["sigma"], tm["rdsf"], tm["sigmaf"]
+    # dum1 / dum2: u / v at w points
+    d1 = _atw(bk, g, tm, ua, (0, nj + 2), (0, ni + 2))
+    d2 = _atw(bk, g, tm, va, (0, nj + 2), (0, ni + 2))
+    R = Reg(g, (1, nk), (0, nj + 1), (0, ni + 1))
+    rz = R.z(rdsf)
+    s11 = bk.set(
+        s11,
+        R.idx,
+        (
+            R.m2(gz)
+            * (R(ua, di=1) * R.m2(rgzu, di=1) - R(ua) * R.m2(rgzu))
+            * rdx
+            * R.x(uh)
+            + (
+                R(gx, dk=1) * (R(d1, dk=1) + R(d1, dk=1, di=1))
+                - R(gx) * (R(d1) + R(d1, di=1))
+            )
+            * 0.5
+            * rz
         )
-        + cc2
-        * (
-            (sq(D(s12)) + sq(D(s12, dj=1, di=1)))
-            + (sq(D(s12, dj=1)) + sq(D(s12, di=1)))
-        )
+        * R(rho),
     )
-    tmp13 = 0.5 * (sq(D(s13)) + sq(D(s13, di=1)))
-    tmp23 = 0.5 * (sq(D(s23)) + sq(D(s23, dj=1)))
-    rrf = 1.0 / sq(D(rf))
-    defv = bk.set(defv, D.idx, 4.0 * (tmp13 + tmp23) * rrf)
-    defh = bk.set(defh, D.idx, (2.0 * ((tmp11 + tmp22) + tmp33) + 4.0 * tmp12) * rrf)
-    return {
-        "s11": s11,
-        "s12": s12,
-        "s13": s13,
-        "s22": s22,
-        "s23": s23,
-        "s33": s33,
-        "defv": defv,
-        "defh": defh,
-    }
+    s22 = bk.set(
+        s22,
+        R.idx,
+        (
+            R.m2(gz)
+            * (R(va, dj=1) * R.m2(rgzv, dj=1) - R(va) * R.m2(rgzv))
+            * rdy
+            * R.y(vh)
+            + (
+                R(gy, dk=1) * (R(d2, dk=1) + R(d2, dk=1, dj=1))
+                - R(gy) * (R(d2) + R(d2, dj=1))
+            )
+            * 0.5
+            * rz
+        )
+        * R(rho),
+    )
+    s33 = bk.set(s33, R.idx, (R(wa, dk=1) - R(wa)) * rz * R.m2(gz) * R(rho))
+    P = Reg(g, (1, nk), (1, nj + 1), (1, ni + 1))
+
+    def rg(dj, di):
+        return P(rho, dj=dj, di=di) * P.m2(gz, dj=dj, di=di)
+
+    r1 = 0.25 * ((rg(-1, -1) + rg(0, 0)) + (rg(0, -1) + rg(-1, 0)))
+    pz = P.z(rdsf)
+    ztf1, ztf0 = zt - P.z(sigf, dk=1), zt - P.z(sigf)
+    s12 = bk.set(
+        s12,
+        P.idx,
+        0.5
+        * (
+            (
+                r1
+                * (P(ua) * P.m2(rgzu) - P(ua, dj=-1) * P.m2(rgzu, dj=-1))
+                * rdy
+                * P.y(vf)
+                + 0.5
+                * (
+                    ztf1 * (P(d1, dj=-1, dk=1) + P(d1, dk=1))
+                    - ztf0 * (P(d1, dj=-1) + P(d1))
+                )
+                * pz
+                * r1
+                * (P.m2(rgzu) - P.m2(rgzu, dj=-1))
+                * rdy
+                * P.y(vf)
+            )
+            + (
+                r1
+                * (P(va) * P.m2(rgzv) - P(va, di=-1) * P.m2(rgzv, di=-1))
+                * rdx
+                * P.x(uf)
+                + 0.5
+                * (
+                    ztf1 * (P(d2, di=-1, dk=1) + P(d2, dk=1))
+                    - ztf0 * (P(d2, di=-1) + P(d2))
+                )
+                * pz
+                * r1
+                * (P.m2(rgzv) - P.m2(rgzv, di=-1))
+                * rdx
+                * P.x(uf)
+            )
+        ),
+    )
+    # dum1: w at scalar points
+    W = Reg(g, (1, nk), (0, nj + 1), (0, ni + 1))
+    ws = bk.set(bk.zeros(g.s_shape), W.idx, 0.5 * (W(wa) + W(wa, dk=1)))
+    X = Reg(g, (2, nk), (1, nj), (1, ni + 1))
+    s13 = bk.set(
+        s13,
+        X.idx,
+        0.5
+        * (
+            (X(ua) - X(ua, dk=-1)) * X.z(rds)
+            + (X(wa) * X.m2(rgz) - X(wa, di=-1) * X.m2(rgz, di=-1)) * rdx * X.x(uf)
+            + 0.5
+            * X.z(rds)
+            * (
+                (zt - X.z(sig)) * (X(ws) + X(ws, di=-1))
+                - (zt - X.z(sig, dk=-1)) * (X(ws, dk=-1) + X(ws, dk=-1, di=-1))
+            )
+            * (X.m2(rgz) - X.m2(rgz, di=-1))
+            * rdx
+            * X.x(uf)
+        )
+        * 0.5
+        * (X.m2(gz, di=-1) * X(rf, di=-1) + X.m2(gz) * X(rf)),
+    )
+    Y = Reg(g, (2, nk), (1, nj + 1), (1, ni))
+    s23 = bk.set(
+        s23,
+        Y.idx,
+        0.5
+        * (
+            (Y(va) - Y(va, dk=-1)) * Y.z(rds)
+            + (Y(wa) * Y.m2(rgz) - Y(wa, dj=-1) * Y.m2(rgz, dj=-1)) * rdy * Y.y(vf)
+            + 0.5
+            * Y.z(rds)
+            * (
+                (zt - Y.z(sig)) * (Y(ws) + Y(ws, dj=-1))
+                - (zt - Y.z(sig, dk=-1)) * (Y(ws, dk=-1) + Y(ws, dk=-1, dj=-1))
+            )
+            * (Y.m2(rgz) - Y.m2(rgz, dj=-1))
+            * rdy
+            * Y.y(vf)
+        )
+        * 0.5
+        * (Y.m2(gz, dj=-1) * Y(rf, dj=-1) + Y.m2(gz) * Y(rf)),
+    )
+    return s11, s12, s13, s22, s23, s33
 
 
 # ---------------------------------------------------------------------------
@@ -847,6 +1048,7 @@ def sfc_and_turb(
     t22=None,
     t23=None,
     t33=None,
+    terrain=None,
     **unused,
 ):
     """turb.F ``sfc_and_turb`` for cm1setup=1, sgsmodel=1 (no surface layer,
@@ -918,6 +1120,7 @@ def sfc_and_turb(
         s33=t33,
         defv=defv,
         defh=defh,
+        terrain=terrain,
     )
     k = tkekm(
         bk,
@@ -1091,6 +1294,7 @@ def turb_tendencies(
     t22,
     t23,
     t33,
+    terrain=None,
     **unused,
 ):
     """solve1.F ``doturb`` block (sgsmodel=1): turbu(ua)->uten1,
@@ -1120,6 +1324,7 @@ def turb_tendencies(
         t12=t12,
         t13=t13,
         kmv=kmv,
+        terrain=terrain,
     )["uten"]
     vten1 = turbv(
         bk,
@@ -1139,6 +1344,7 @@ def turb_tendencies(
         t22=t22,
         t23=t23,
         kmv=kmv,
+        terrain=terrain,
     )["vten"]
     wten1 = turbw(
         bk,
@@ -1157,6 +1363,7 @@ def turb_tendencies(
         t23=t23,
         t33=t33,
         kmh=kmh,
+        terrain=terrain,
     )["wten"]
     dum7 = dum8 = None
     if int(_opt(cfg, "doimpl", 1)) == 1:
@@ -1164,8 +1371,12 @@ def turb_tendencies(
         dum7, dum8 = v["dum7"], v["dum8"]
     zs = g.ngz
     n = g.ngxy
-    tem = th0[zs : zs + nk, n : n + 1, n : n + 1] - th0r  # th0(1,1,k) - th0r
-    sadv = bk.set(bk.zeros(g.s_shape), slice(zs, zs + nk), tem + tha[zs : zs + nk])
+    if _opt(cfg, "terrain_flag", False):
+        R = Reg(g, (1, nk), (0, g.nj + 1), (0, g.ni + 1))
+        sadv = bk.set(bk.zeros(g.s_shape), R.idx, (R(th0) - th0r) + R(tha))
+    else:
+        tem = th0[zs : zs + nk, n : n + 1, n : n + 1] - th0r  # th0(1,1,k) - th0r
+        sadv = bk.set(bk.zeros(g.s_shape), slice(zs, zs + nk), tem + tha[zs : zs + nk])
     common = {
         "dt": dt,
         "uh": uh,
@@ -1181,6 +1392,7 @@ def turb_tendencies(
         "khv": khv,
         "dum7": dum7,
         "dum8": dum8,
+        "terrain": terrain,
     }
     thten1 = turbs(bk, g, cfg, iflux=1, s=sadv, sten=thten1, **common)["sten"]
     qout = None
