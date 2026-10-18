@@ -42,6 +42,11 @@ jobs:
           CM1_BUILD_DIR=$HOME/cm1build/r8 ports/reference/run_reference.sh \
             ports/reference/supercell_kessler ref/supercell_kessler_long_r8 r8
           rm -rf ref/*/build_*
+      - name: Run kessler_rrtmg (RRTMG radiation, double precision, 10 steps)
+        run: |
+          CM1_BUILD_DIR=$HOME/cm1build/r8 ports/reference/run_reference.sh \
+            ports/reference/kessler_rrtmg ref/kessler_rrtmg_r8 r8 timax=60.0 tapfrq=6.0
+          rm -rf ref/*/build_*
       - name: Float64 state dumps (cm1dump, from the C++/Kokkos branch)
         env:
           # pinned commit of claude/project-thread-uq9w9c with src/cm1dump.F
@@ -103,6 +108,7 @@ jobs:
           CM1X_DUMP_DIR: ${{ github.workspace }}/ref/dumps/kessler_periodic
           CM1X_REF_DIR_SC: ${{ github.workspace }}/ref/supercell_kessler_r8
           CM1X_REF_DIR_SC_LONG: ${{ github.workspace }}/ref/supercell_kessler_long_r8
+          CM1X_REF_DIR_RAD: ${{ github.workspace }}/ref/kessler_rrtmg_r8
         run: python -m pytest ports/array -v -rs --durations=15
 
   bench:

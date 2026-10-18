@@ -5,19 +5,23 @@ turb.F
   ``sfc_and_turb`` (the LES path only: ramp of the "constants" for
   ramp_sgs>=1, dissten=0, calcnm, calcdef, tkekm, tkebc, the tke3d boundary
   copy, gettau), ``calcnm``, ``calcdef``, ``tkekm``, ``tkebc``, ``gettau``
-  (with ``sfcstress`` for bbc=1);
+  (with ``sfcstress`` for bbc=1); for sgsmodel=0 with the semi-slip lower
+  boundary (bbc=3, sfcmodel=1, isfcflx=0): ``sfcstress`` (bbc=3),
+  ``sfc_and_turb_nosgs`` (the surface-layer part of sfc_and_turb) and
+  ``sfc_drag_tendencies`` (turbu/turbv at zero eddy viscosity);
 init3d.F
   ``turb_constants`` (cm0 = c_m and cme/ce1/ce2/csm, cm1setup=1);
 solve1.F (inline code, no subroutine of its own in CM1)
   ``tke_source`` (shear/buoyancy production - dissipation), ``dissheat``
-  (dissipative heating, idiss=1, with cvm), ``vimpl_coefs`` (dum7/dum8 for
-  implicit turbs), ``turb_tendencies`` (the ``doturb`` block: turbu, turbv,
-  turbw, vimpl arrays, turbs on theta-th0r and on every moisture species);
+  (dissipative heating, idiss=1, with cvm; bbc=3 surface-layer term),
+  ``vimpl_coefs`` (dum7/dum8 for implicit turbs), ``turb_tendencies`` (the
+  ``doturb`` block: turbu, turbv, turbw, vimpl arrays, turbs on theta-th0r
+  and on every moisture species);
 solve2.F / solve3.F
   ``tke_rk_update`` (tke3d = tkea + dt*tten, floor at 1e-10, bcw) and
   ``tke_copy`` (tkea = tke3d after the RK loop);
 bc.F (non-MPI branches, as the turbulence code calls them)
-  ``bcw`` and ``bc2d_level``.
+  ``bcw``, ``bc2d_level`` and ``bc2d``.
 
 Supported: cm1setup=1, sgsmodel=1, ipbl=0, horizturb=0, tconfig=1/2,
 bcturbs=1/2, doimpl=0/1, idiss=0/1, ramp_sgs>=0, bbc=1, tbc=1, lateral BCs

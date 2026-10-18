@@ -8,7 +8,9 @@ dask where available). It lives only on this fork; nothing here is upstreamed.
 Initial scope: the dry/moist dynamical core used by `psolver=3` (RK3 + vertically
 implicit acoustic steps, 5th-order flux-form advection) and Kessler warm-rain
 microphysics, on a uniform periodic grid without terrain. Reference case:
-`ports/reference/kessler_periodic/namelist.input`.
+`ports/reference/kessler_periodic/namelist.input`. Since added: open lateral
+boundaries, WENO, the TKE LES closure (`supercell_kessler`) and RRTMG
+radiation (`kessler_rrtmg`, below).
 
 ```bash
 pip install -e ports/array[test]     # plus jax and/or torch if wanted
@@ -47,6 +49,45 @@ pytest ports/array                    # every test runs on each installed backen
    double precision by `fortran_harness/build_objs.sh`). Target: agreement to
    ~1e-12 relative in float64, on random-but-physical inputs, on every backend.
    Whole-model runs are checked against CM1's netCDF output for the reference case.
+
+## Radiation (radopt=2, RRTMG)
+
+`module_ra_rrtmg_lw.py` / `module_ra_rrtmg_sw.py` port RRTMG as CM1 calls it
+for warm-rain microphysics (ptype=1: qv, qc, qr; McICA maximum-random overlap
+with the KISS generator; no aerosols; o3 from the built-in profile), every
+column at once (`[layer, column, g-point]`), with the k-distribution tables
+read from `run/RRTMG_LW_DATA` / `RRTMG_SW_DATA` and cached per backend.
+`radiation_driver.py` is the radopt=2 branch of `radiation_driver.F`
+(`radconst`, `calc_coszen`, `cal_cldfra1`, the p8w/t8w level interpolation,
+the eqtset temperature-tendency conversion and `thraten`); `init_surface.py`
+reads tsk0 and the LANDUSE.TBL albedo / emissivity / z0 / xland. `Model`
+follows cm1.F's timing: radiation on the initial state, then at the end of
+every step with `mtime + dt >= radtim - 0.1 dt` (dtrad = max(dtrad, dt)),
+coszen at the middle of the radiation interval; `thraten` is added to the
+theta tendency in solve1 until the next call. With `jit=True` the step is
+compiled twice (with and without the radiation call).
+
+CM1 requires a surface model with radiation, and sfcmodel>=1 forces the
+semi-slip lower boundary (bbc=3), so the sfcmodel=1 surface layer without
+fluxes is ported too (`sfcphys.getcecd`, `turb.sfcstress`, the turbu/turbv
+surface drag at zero eddy viscosity, the bbc=3 surface-layer dissipative
+heating) for sgsmodel=0. Not ported (raise `NotImplementedError`): radopt=1,
+ice microphysics, the PBL subgrid-cloud coupling, testcase=8, surface fluxes
+(isfcflx=1), sfcmodel>=1 with sgsmodel=1, use_avg_sfc. The McICA
+generator needs 64-bit integers (jax: `jax_enable_x64`, else
+`NotImplementedError`). Reference case: `ports/reference/kessler_rrtmg`
+(daytime, dtrad=12 s). Partially cloudy layers are sensitive to the McICA
+seeds (derived from the layer pressures: a 1e-13 relative change in
+pressure changes their heating rates by up to ~10%), so once they appear
+(after ~15 min with dtrad=60 s) the radiative fields agree with CM1 to
+~2e-3 and, through them, the dynamics to ~1e-5 of each field's maximum
+(30 min, measured); before that everything agrees to the float32 rounding
+of the output.
+
+The Fortran tests need one source change, shared with the cm1k fork: param.F
+and radiation_driver.F accept radopt=2 with ptype=1 (WRF's mp_physics=1), and
+the RRTMG table arrays are 4-byte reals (`kind_rf`), so a `-fdefault-real-8`
+build reads the 4-byte data files unchanged.
 
 ## Performance
 
