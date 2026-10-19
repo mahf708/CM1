@@ -69,15 +69,7 @@ Options Options::from_namelist(const Namelist& nl) {
   o.has_hurr_rad = nl.has("hurr_rad");
   o.hurr_vgpl = nl.getr("hurr_vgpl", 0.0);
   o.hurr_rotate = nl.getr("hurr_rotate", 0.0);
-  // param.F: hurr_angle = dble(hurr_rotate)*(pi_dp/180.0d0). With
-  // -fdefault-real-8, input.F's kind dp is selected_real_kind(30), i.e. quad
-  // precision: the product is formed in binary128 and rounded to double on
-  // the assignment (for hurr_rotate = 30 that gives sin(-hurr_angle) = -0.5
-  // exactly, not the -0.49999999999999994 of a double pi/6).
-  if (o.lspgrad == 3) {
-    const __float128 pi_qp = 3.14159265358979323846264338327950288Q;   // 4*atan(1) in binary128
-    o.hurr_angle = double(__float128(double(o.hurr_rotate)) * (pi_qp / __float128(180.0)));
-  }
+  o.hurr_angle = param_hurr_angle(o.lspgrad, double(o.hurr_rotate));
   return o;
 }
 

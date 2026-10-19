@@ -59,6 +59,18 @@
 
 namespace cm1k::testcase {
 
+// param.F: hurr_angle = dble(hurr_rotate)*(pi_dp/180.0d0). With
+// -fdefault-real-8, input.F's kind dp is selected_real_kind(30), i.e. quad
+// precision: the product is formed in binary128 and rounded to double on
+// the assignment (for hurr_rotate = 30 that gives sin(-hurr_angle) = -0.5
+// exactly, not the -0.49999999999999994 of a double pi/6). param.F only sets
+// it for lspgrad = 3 (it stays 0 otherwise).
+inline double param_hurr_angle(int lspgrad, double hurr_rotate) {
+  if (lspgrad != 3) return 0.0;
+  const __float128 pi_qp = 3.14159265358979323846264338327950288Q;   // 4*atan(1) in binary128
+  return double(__float128(hurr_rotate) * (pi_qp / __float128(180.0)));
+}
+
 struct Options {
   int testcase = 0, lspgrad = 0;
   int imoist = 0, ptype = 0, numq = 0, nqv = 1, nql1 = 0, nql2 = 0;

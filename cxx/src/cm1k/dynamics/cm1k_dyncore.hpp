@@ -214,6 +214,22 @@ public:
   int nsound() const { return m_nsound; }
   double mass1() const { return m_mass1; }
 
+  // Adaptive time step (adapt_dt=1, see dynamics/cm1k_adapt_dt.hpp). The
+  // large step dt and nsound are fixed at setup (dtl) unless set_dt changes
+  // them; solve2 records cflmax (calccflquick on u3d/v3d/w3d after the last
+  // acoustic step) when adapt_dt=1.
+  Real dt() const { return m_dt; }
+  void set_dt(Real dt, int nsound) { m_dt = dt; m_nsound = nsound; }
+  // misclibs.F dtsmall for the large step dbldt (may shorten it, adapt_dt)
+  int dtsmall(double& dbldt) const;
+  Real cflmax() const { return m_cflmax; }
+  void set_cflmax(Real c) { m_cflmax = c; }
+  // calccflquick on u3d/v3d/w3d at the current dt (cm1.F before the time
+  // loop, where u3d = ua)
+  Real cflquick() const;
+  // calcksquick on kmh..khv at the current dt (turb.F sfc_and_turb end)
+  Real ksquick() const;
+
   // Arrays microphysics works on (mp_driver's th3d, q3d, pp3d, ...).
   FArray3 u3d, v3d, w3d, pp3d, th3d, ppx;
   FArray4 q3d;
@@ -278,6 +294,7 @@ private:
 
   bool m_setup = false;
   int m_nsound = 0;
+  Real m_min_dx = 0, m_min_dy = 0, m_min_dz = 0, m_cflmax = 0;
   Real m_dt = 0;
   double m_mass1 = 0, m_mass2 = 0;
 

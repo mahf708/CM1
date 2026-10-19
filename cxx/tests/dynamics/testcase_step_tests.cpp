@@ -125,7 +125,10 @@ TEST_CASE("testcase 5 from Model::init", "[dyn][step][init][testcase][kessler]")
 
 TEST_CASE("testcase 6 (hurricane BL: lspgrad=3, rotated, heat flux off after 3000 s) vs Fortran",
           "[dyn][step][testcase][long]") {
-  run_case("tc6_hurr_long");   // isnd=8, iwnd=8: from the dump only
+  run_case("tc6_hurr_long");
+}
+TEST_CASE("testcase 6 from Model::init", "[dyn][step][init][testcase][long]") {
+  run_case("tc6_hurr_long", true);
 }
 
 TEST_CASE("testcase 7 (DYCOMS surface stress and fluxes) + Kessler vs Fortran", "[dyn][step][testcase][kessler]") {
@@ -145,8 +148,9 @@ TEST_CASE("testcase 9 (stable BL: TKE init, use_avg_sfc) vs Fortran", "[dyn][ste
 TEST_CASE("testcase 9 from Model::init", "[dyn][step][init][testcase]") { run_case("tc9_sbl", true); }
 
 TEST_CASE("testcase 10 (theta/qv nudging, lspgrad=3, simple PBL) vs Fortran", "[dyn][step][testcase][pbl]") {
-  run_case("tc10_nudge");   // isnd=8, iwnd=8: from the dump only
+  run_case("tc10_nudge");
 }
+TEST_CASE("testcase 10 from Model::init", "[dyn][step][init][testcase][pbl]") { run_case("tc10_nudge", true); }
 
 TEST_CASE("testcase 11 (SAS: TKE init, sfcflux) + Kessler vs Fortran", "[dyn][step][testcase][kessler]") {
   run_case("tc11_sas");
@@ -170,8 +174,9 @@ TEST_CASE("testcase 14 (SGP: time-dependent forcing, use_avg_sfc) + Kessler vs F
 TEST_CASE("testcase 14 from Model::init", "[dyn][step][init][testcase][kessler]") { run_case("tc14_sgp", true); }
 
 TEST_CASE("testcase 15 (hurricane coast: lspgrad=3, perturbations) vs Fortran", "[dyn][step][testcase]") {
-  run_case("tc15_hurr");   // isnd=8, iwnd=8: from the dump only
+  run_case("tc15_hurr");
 }
+TEST_CASE("testcase 15 from Model::init", "[dyn][step][init][testcase]") { run_case("tc15_hurr", true); }
 
 // the same test cases without a surface layer (sfcmodel = 0, bbc = 1): the
 // configurations the array port (cm1x) runs too

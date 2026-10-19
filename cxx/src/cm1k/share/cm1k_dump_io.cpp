@@ -26,6 +26,12 @@ DumpReader::DumpReader(const std::string& step_dir) : m_dir(step_dir) {
     std::string name;
     if (!(is >> name)) continue;
     if (name == "#step_time") { is >> m_nstep >> m_mtime; continue; }
+    if (name == "#adapt_dt") {   // adapt_dt = 1 (src/cm1dump.F dump_adapt)
+      double v;
+      while (is >> v) m_adapt.push_back(v);
+      continue;
+    }
+    if (name[0] == '#') continue;   // other comment lines
     DumpEntry e;
     e.name = name;
     int nd = 0;
@@ -91,6 +97,10 @@ DumpWriter::DumpWriter(const std::string& step_dir, int nstep, double mtime) : m
   std::snprintf(buf, sizeof(buf), "#step_time %10d %24.16e\n", nstep, mtime);
   *f << buf;
   m_index = f;
+}
+
+void DumpWriter::comment(const std::string& line) {
+  *static_cast<std::ofstream*>(m_index) << line << "\n";
 }
 
 DumpWriter::~DumpWriter() { delete static_cast<std::ofstream*>(m_index); }

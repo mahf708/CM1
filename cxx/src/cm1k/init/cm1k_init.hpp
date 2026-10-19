@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace cm1k {
 namespace init {
@@ -18,14 +19,18 @@ namespace init {
 // parity with it is the goal. Device arrays are filled by deep copies.
 //
 // Supported (anything else throws std::runtime_error):
-//   param.F : stretch_x = stretch_y = 0, stretch_z = 0 or 1, iorigin = 1
+//   param.F : stretch_x = stretch_y = 0, stretch_z = 0..4 (1: analytic,
+//             2: ZGRID geometric, 3/4: input_grid_z next to the namelist,
+//             Namelist::input_path), iorigin = 1
 //             or 2, axisymm = 0, wbc..nbc = 1..4; terrain_flag = .true.
 //             with itern = 1, 2, 3 (init_terrain.F; itern = 4 reads
 //             perts.dat and throws, as does itern = 0): zs, the metrics gz,
 //             rgz, gzu, rgzu, gzv, rgzv, dzdx, dzdy (zsgrad), gx, gxu, gy,
 //             gyv, and terrain-following zh/zf/mh/mf/c1/c2
-//   base.F  : isnd = 1, 4, 5, 9;  iwnd = 0, 1, 2, 6;  imove = 0 or 1;
-//             testcase = 0;  psolver any
+//   base.F  : isnd = 1-5, 7-15, 17-23 (input_sounding for 7, 17: see
+//             cm1k_base_snd.hpp);  iwnd = 0-11;  imove = 0 or 1;  psolver
+//             any; testcase only where it selects a profile (the testcase
+//             forcing profiles of base.F throw: testcase 3-7, 10-13, 15)
 //   init3d.F: iinit = 0 or 1, irandp = 0 or 1 (testcase = 0, with
 //             use_truly_random_pert = .false.), ibalance = 0 or 1, ptype 0/1
 //   cm1.F / getset: kmh/kmv/khh/khv initial values, tkea, rho/prs
@@ -41,6 +46,10 @@ struct ExtrapCoeffs {
 };
 ExtrapCoeffs extrap_coeffs(const HArray1& sigma, const HArray1& sigmaf, int nk);
 
+// param.F ZGRID (stretch_z = 2): w levels gze(1..nz) (gze has 0..nz+1)
+void zgrid(Real dz, Real dz_stretch, int nz, int nbndlyr, Real dzmax, Real ztopstr, Real rtop,
+           Real dzmaxtop, std::vector<double>& gze);
+
 // Scalars that param.F/base.F derive and later stages use.
 struct InitInfo {
   BcInfo bc;
@@ -55,7 +64,11 @@ struct InitInfo {
 InitInfo init_grid(const Namelist& nl, Grid& g);
 
 // base.F: pi0, th0, prs0, rho0, thv0, rth0, qv0, qc0, qi0, rr0, rf0, rrf0, u0, v0.
+// init_base throws for what the rest of cm1k cannot use yet (the testcase
+// forcing profiles of base.F; imoist = 1 with ptype other than 0, 1);
+// init_base_state is base.F itself (sounding, hydrostatic base state, winds).
 void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& info, BaseState& bs);
+void init_base_state(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& info, BaseState& bs);
 
 // gfortran's random_number for real(8) (libgfortran, gfortran >= 7:
 // xoshiro256**), seeded as init3d.F does it (use_truly_random_pert =

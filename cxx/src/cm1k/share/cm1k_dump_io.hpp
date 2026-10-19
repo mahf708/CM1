@@ -32,6 +32,10 @@ public:
   int nstep() const { return m_nstep; }
   double mtime() const { return m_mtime; }
   bool has(const std::string& name) const { return m_entries.count(name) > 0; }
+  // adapt_dt = 1: the "#adapt_dt" line (src/cm1dump.F dump_adapt): dt,
+  // nsound, cflmax, ksmax, taptim, stattim, rsttim, dowriteout, dostat,
+  // dorestart (flags as 0/1); empty when the dump has none.
+  const std::vector<double>& adapt() const { return m_adapt; }
   const DumpEntry& entry(const std::string& name) const;
   std::vector<std::string> names() const;
 
@@ -47,6 +51,7 @@ private:
   std::string m_dir;
   int m_nstep = 0;
   double m_mtime = 0;
+  std::vector<double> m_adapt;
   std::map<std::string, DumpEntry> m_entries;
 };
 
@@ -55,6 +60,8 @@ public:
   DumpWriter(const std::string& step_dir, int nstep, double mtime);
   ~DumpWriter();
   template <int Rank> void write(const std::string& name, const FArray<Rank>& a);
+  // an extra "#..." line of index.txt (call before the first write)
+  void comment(const std::string& line);
 private:
   std::string m_dir;
   void* m_index = nullptr;

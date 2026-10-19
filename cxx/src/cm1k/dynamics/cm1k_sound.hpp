@@ -46,6 +46,11 @@ struct SoundArgs {
 
 void sound(const BcParams& bc, const SoundArgs& a);
 
+// misclibs.F dtsmall: nsound for the large step dbldt. With adapt_dt, an
+// nsound above 192 is capped and dbldt shortened to 192 small steps (the
+// caller then sets dt = dbldt); otherwise that throws.
+int dtsmall(int psolver, int nx, int ny, Real min_dx, Real min_dy, Real min_dz, Real csound, double& dbldt,
+            bool adapt_dt);
 // Number of acoustic steps (dtsmall in misclibs.F) for psolver=2,3,6,7.
 // min_dx/min_dy/min_dz as in param.F.
 int sound_nsound(int psolver, int nx, int ny, Real min_dx, Real min_dy, Real min_dz,
