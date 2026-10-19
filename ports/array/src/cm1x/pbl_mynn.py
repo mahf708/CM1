@@ -109,7 +109,7 @@ def _pow(xp, x, p):
 def _tanh(xp, x):
     """glibc tanh on numpy (numpy's own tanh differs from it in the last
     bit); the backend's tanh elsewhere."""
-    if xp.__name__.endswith("numpy"):
+    if xp.__name__ in ("numpy", "array_api_compat.numpy"):
         import numpy as np
 
         a = np.asarray(x)
