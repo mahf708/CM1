@@ -45,10 +45,30 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `nh_mountain_waves_long` | 100×1×100, 200 m, 200 m | 900 steps (1800 s, `dtl = 2 s`) | every 150 steps | `nh_mountain_waves` run for 30 min, for long-run drift checks |
 | `kessler_terrain_tke` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | `kessler_tke` over a 3D hill (`terrain_flag = .true.`, `itern = 3`: 500 m, half width 20 km): terrain branches of the TKE scheme (implicit vertical diffusion, `idiss = 1`), Kessler, advection, sound and the warm bubble on sigma levels |
 | `kessler_terrain_tke_openbc` | 32×32×20, 2 km, 500 m | 50 steps (300 s) | every 10 steps | `kessler_terrain_tke` with open-radiative E/W boundaries and free-slip/no-slip walls S/N (`wbc = ebc = 2`, `sbc = 3`, `nbc = 4`, as `kessler_tke_openbc`): `ssopenbc*` and the open-boundary pieces of the terrain turbulence branches |
+| `snd_les_shcu` | 10×10×36, 100 m, 80 m | 3 steps (3 s, `dtl = 1 s`) | every step | BOMEX shallow-Cu sounding and winds (`isnd = 19`, `iwnd = 9`, as `les_ShallowCu` but `testcase = 0`), Kessler, no warm bubble, random θ perturbations (`iinit = 0`, `irandp = 1`). The grid stays below the 3-km top of the sounding table (above it CM1 leaves θ = 0) |
+| `snd_les_shcu_precip` | 10×10×40, 100 m, 80 m | 3 steps (3 s) | every step | as `snd_les_shcu` with the RICO sounding and winds (`isnd = 20`, `iwnd = 11`, as `les_ShallowCuPrecip`) |
+| `snd_les_shcu_land` | 10×10×40, 100 m, 100 m | 3 steps (3 s) | every step | as `snd_les_shcu` with the ARM shallow-Cu-over-land sounding (`isnd = 23`, as `les_ShallowCuLand`) and the `iwnd = 3` wind profile |
+| `snd_les_sbl` | 10×10×40, 100 m, 10 m | 3 steps (1.5 s, `dtl = 0.5 s`) | every step | dry, GABLS stable boundary layer sounding (`isnd = 22`, as `les_StableBoundLayer`) with the DYCOMS-II wind profile (`iwnd = 10`) |
+| `snd_les_cbl` | 10×10×40, 100 m, 50 m | 3 steps (3 s) | every step | dry convective boundary layer sounding (`isnd = 14`, as `les_ConvBoundLayer`) with the `iwnd = 4` wind profile |
+| `snd_les_shear` | 10×10×40, 100 m, 50 m | 3 steps (3 s) | every step | dry sheared boundary layer sounding (`isnd = 18`, as `les_ShearBoundLayer`) with the `iwnd = 5` wind profile |
+| `snd_les_hbl` | 10×10×40, 100 m, 60 m | 3 steps (3 s) | every step | dry, hurricane boundary layer sounding and gradient wind (`isnd = 8`, `iwnd = 8`, as `les_HurrBoundLayer` but `testcase = 0`, `lspgrad = 0`: `hurr_rotate = 30` has no effect, as in CM1) |
+| `snd_input_sounding` | 10×10×40, 1 km, 250 m | 3 steps (9 s, `dtl = 3 s`) | every step | sounding and winds read from `input_sounding` (`isnd = 7`; the `sea_breeze` file, copied into the case directory), Kessler, warm bubble |
+| `snd_hurricane17` | 10×10×40, 1 km, 400 m | 3 steps (9 s) | every step | thermodynamic sounding from `input_sounding` (`isnd = 17`; the `hurricane_axisymmetric` file) with the hurricane gradient wind (`iwnd = 8`), Kessler |
+| `snd_tropical` | 10×10×40, 1 km, 400 m | 3 steps (9 s) | every step | saturated moist sounding with constant moist Brunt-Väisälä frequency (`isnd = 10`: `qc0` is copied into `qc` by init3d), `iwnd = 7` (no branch in base.F: zero wind), Kessler |
+| `snd_moist_neutral` | 10×10×40, 1 km, 400 m | 3 steps (9 s) | every step | moist-neutral pseudoadiabatic sounding from `tsk0 = 300 K` (`isnd = 11`; tropopause at 15 km), Weisman-Klemp winds (`iwnd = 2`), Kessler |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 
 The table is descriptive; the namelists are authoritative.
+
+The `snd_*` cases cover the base-state soundings and wind profiles of base.F
+(`isnd`, `iwnd`) on small grids with `testcase = 0` (the testcase forcing
+profiles are not part of them); every `isnd`/`iwnd` is also compared with
+src/base.F directly, with the namelist settings of the bundled
+run/config_files cases, by the Fortran-bridge test `[base]`
+(tests/fortran_bridge/base_tests.cpp). cm1k reads `input_sounding` from
+`$CM1K_INPUT_SOUNDING` (else `./input_sounding`); the tests point it at the
+case directory.
 
 ## Making the references
 

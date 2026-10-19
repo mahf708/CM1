@@ -1149,10 +1149,12 @@ void base_wind(const Namelist& nl, const Constants& c, const Grid& gr, const Ini
         for (int i = ib; i <= ie; ++i) v0(i, j, k) = vval;
   } else if (iwnd == 8) {
     // hurricane boundary layer (Bryan et al 2017): gradient wind hurr_vg,
-    // rotated by hurr_rotate (param.F: hurr_angle in radians)
+    // rotated by hurr_angle: param.F sets it from hurr_rotate only for
+    // lspgrad = 3 (otherwise it stays 0 and hurr_rotate has no effect here)
     const Real hurr_vg = nl.getr("hurr_vg", 40.0);
     const double pi_dp = 4.0 * std::atan(1.0);
-    const Real hurr_angle = double(nl.getr("hurr_rotate", 0.0)) * (pi_dp / 180.0);
+    const Real hurr_angle =
+        nl.geti("lspgrad", 0) == 3 ? double(nl.getr("hurr_rotate", 0.0)) * (pi_dp / 180.0) : 0.0;
     for (int k = 1; k <= nk; ++k) {
       const Real vg = hurr_vg;   // vg(k): constant with height (ug(k) = 0)
       for (int j = 0; j <= nj + 2; ++j)

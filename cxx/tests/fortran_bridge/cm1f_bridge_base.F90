@@ -6,7 +6,7 @@
 ! profiles base.F also sets (wprof, ug, vg, ...) are computed and dropped.
 !
 ! iparams: ni nj nk isnd iwnd imoist ptype psolver imove testcase eqtset iice
-!          wbc ebc sbc nbc
+!          wbc ebc sbc nbc lspgrad
 ! rparams: dx dy dz umove vmove tsk0 hurr_vg hurr_rotate hurr_rad hurr_vgpl
 !          cgs1 cgs2 cgs3 cgt1 cgt2 cgt3 tsmall
 subroutine cm1f_base(iparams, rparams, zh_in, mh_in, rmh_in, c1_in, c2_in, zf_in, mf_in, &
@@ -18,7 +18,7 @@ subroutine cm1f_base(iparams, rparams, zh_in, mh_in, rmh_in, c1_in, c2_in, zf_in
   use base_module, only : base
   use goddard_module, only : T0K, T00K, RT0
   implicit none
-  integer(c_int), intent(in) :: iparams(16)
+  integer(c_int), intent(in) :: iparams(17)
   real(c_double), intent(in) :: rparams(17)
   real(c_double), intent(in) :: zh_in(*), mh_in(*), rmh_in(*), c1_in(*), c2_in(*), zf_in(*), mf_in(*)
   real(c_double), intent(out) :: pi0_o(*), prs0_o(*), rho0_o(*), thv0_o(*), th0_o(*), rth0_o(*)
@@ -39,11 +39,14 @@ subroutine cm1f_base(iparams, rparams, zh_in, mh_in, rmh_in, c1_in, c2_in, zf_in
   psolver = iparams(8); imove = iparams(9); testcase = iparams(10)
   eqtset = iparams(11); iice = iparams(12)
   wbc = iparams(13); ebc = iparams(14); sbc = iparams(15); nbc = iparams(16)
+  lspgrad = iparams(17)
   dx = rparams(1); dy = rparams(2); dz = rparams(3)
   umove = rparams(4); vmove = rparams(5); tsk0 = rparams(6)
   hurr_vg = rparams(7); hurr_rotate = rparams(8); hurr_rad = rparams(9); hurr_vgpl = rparams(10)
+  ! param.F sets hurr_angle for lspgrad = 3 only
   pi_dp = 4.0d0*atan(1.0d0)
-  hurr_angle = dble(hurr_rotate) * ( pi_dp / 180.0d0 )
+  hurr_angle = 0.0
+  if (lspgrad == 3) hurr_angle = dble(hurr_rotate) * ( pi_dp / 180.0d0 )
   cgs1 = rparams(11); cgs2 = rparams(12); cgs3 = rparams(13)
   cgt1 = rparams(14); cgt2 = rparams(15); cgt3 = rparams(16)
   tsmall = rparams(17)
@@ -62,7 +65,7 @@ subroutine cm1f_base(iparams, rparams, zh_in, mh_in, rmh_in, c1_in, c2_in, zf_in
   ibb2 = 1; ibe2 = 1; jbb2 = 1; jbe2 = 1; kbb2 = 1; kbe2 = 1
   imp = 1; jmp = 1; kmp = 1; kmt = 1; rmp = 1; cmp = 1
   numq = 3; nqv = 1
-  terrain_flag = .false.; lspgrad = 0; axisymm = 0
+  terrain_flag = .false.; axisymm = 0
   ibw = 0; ibe = 0; ibs = 0; ibn = 0
   if (wbc /= 1) ibw = 1
   if (ebc /= 1) ibe = 1

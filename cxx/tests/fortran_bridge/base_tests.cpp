@@ -97,6 +97,7 @@ void compare(const Run& r) {
     std::ofstream dst("input_sounding");
     dst << src.rdbuf();
   }
+  setenv("CM1K_INPUT_SOUNDING", "input_sounding", 1);   // where the Fortran reads it
   const int testcase = nl.geti("testcase", 0);
   const auto c = Constants::make(testcase);
   const auto b = Bounds::from_namelist(nl);
@@ -108,10 +109,10 @@ void compare(const Run& r) {
   init::init_base_state(nl, c, g, info, bs);
 
   // Fortran
-  const int iparams[16] = {b.ni, b.nj, b.nk, nl.geti("isnd", 1), nl.geti("iwnd", 0), nl.geti("imoist", 0),
+  const int iparams[17] = {b.ni, b.nj, b.nk, nl.geti("isnd", 1), nl.geti("iwnd", 0), nl.geti("imoist", 0),
                            nl.geti("ptype", 0), nl.geti("psolver", 3), nl.geti("imove", 0), testcase,
                            init::param_eqtset(nl), init::param_iice(nl), nl.geti("wbc", 1), nl.geti("ebc", 1),
-                           nl.geti("sbc", 1), nl.geti("nbc", 1)};
+                           nl.geti("sbc", 1), nl.geti("nbc", 1), nl.geti("lspgrad", 0)};
   const auto& ex = info.ex;
   const int imove = nl.geti("imove", 0);
   const double rparams[17] = {g.dx, g.dy, g.dz,
@@ -182,12 +183,16 @@ TEST_CASE("base.F isnd/iwnd vs Fortran", "[bridge][init][base]") {
       {"isnd17 + iwnd2", "deep", with(moist1, {{"isnd", "17"}, {"iwnd", "2"}}), "input_sounding_wind"},
       {"isnd17 dry + iwnd5", "deep", {{"isnd", "17"}, {"iwnd", "5"}}, "input_sounding_hurricane_axisymmetric"},
       {"isnd8 dns_RayleighBenard", "pbl", {{"isnd", "8"}}, ""},
-      {"isnd8 les_HurrBoundLayer (tc6, iwnd8)", "pbl", {{"isnd", "8"}, {"iwnd", "8"}, {"testcase", "6"}}, ""},
+      {"isnd8 les_HurrBoundLayer (tc6, iwnd8)", "pbl", {{"isnd", "8"}, {"iwnd", "8"}, {"testcase", "6"}, {"lspgrad", "3"}}, ""},
       {"isnd8 scm_HurrBoundLayer_tqnudge (tc10, iwnd8)", "pbl",
-       {{"isnd", "8"}, {"iwnd", "8"}, {"testcase", "10"}, {"imoist", "1"}, {"ptype", "6"}}, ""},
+       {{"isnd", "8"}, {"iwnd", "8"}, {"testcase", "10"}, {"imoist", "1"}, {"ptype", "6"}, {"lspgrad", "3"}}, ""},
       {"isnd8 les_HurrCoast (tc15, iwnd8, rotate -90)", "pbl",
        {{"isnd", "8"}, {"iwnd", "8"}, {"testcase", "15"}, {"imoist", "1"}, {"ptype", "0"}, {"eqtset", "1"},
-        {"psolver", "2"}, {"hurr_rotate", "-90.0"}, {"hurr_vg", "35.0"}}, ""},
+        {"psolver", "2"}, {"hurr_rotate", "-90.0"}, {"hurr_vg", "35.0"}, {"lspgrad", "3"}}, ""},
+      // hurr_rotate acts only with lspgrad = 3 (param.F sets hurr_angle there)
+      {"iwnd8 rotate 30, lspgrad 3, imove open", "pbl",
+       {{"isnd", "8"}, {"iwnd", "8"}, {"hurr_rotate", "30.0"}, {"lspgrad", "3"}, {"imove", "1"}, {"umove", "3.0"},
+        {"vmove", "-1.5"}, {"wbc", "2"}, {"ebc", "2"}, {"sbc", "3"}, {"nbc", "3"}}, ""},
       {"isnd9", "deep", {{"isnd", "9"}, {"iwnd", "6"}}, ""},
       {"isnd9 moist", "deep", with(moist1, {{"isnd", "9"}}), ""},
       {"isnd10 kessler eqtset2", "deep", with(moist1, {{"isnd", "10"}}), ""},
