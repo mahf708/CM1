@@ -5,6 +5,8 @@
 
 #include <cmath>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
@@ -32,7 +34,70 @@ int nint(Real x) { return int(std::lround(x)); }
 // smeps for the double-precision build (cm1.F, #ifdef DP)
 constexpr Real smeps = 1.0e-60;
 
+// x**n for real x and integer n as gfortran evaluates it (libgcc __powidf2:
+// binary exponentiation)
+double powi(double x, int m) {
+  unsigned n = m < 0 ? unsigned(-m) : unsigned(m);
+  double y = (n % 2) ? x : 1.0;
+  while (n >>= 1) {
+    x = x * x;
+    if (n % 2) y = y * x;
+  }
+  return m < 0 ? 1.0 / y : y;
+}
+
+// param.F FUNCTION ZHEIGHT: height of a geometrically stretched grid
+double zheight(Real dzbot, double r, int nz, Real dzmax, int n1, Real zctop, Real ztopr, Real dzmax2) {
+  double sum = 0.0;
+  const double dzmaxdp = dzmax;
+  int n2 = 0;
+  Real dzm = 0.0;
+  for (int k = 1; k <= nz; ++k) {
+    double dznew;
+    if (k <= n1) {
+      dznew = dzbot;
+    } else {
+      const int k2 = k - n1;
+      dznew = std::min(dzbot * powi(r, k2 - 1), dzmaxdp);
+      if (sum >= zctop) {
+        if (n2 == 0) dzm = std::min(dznew, dzmaxdp);
+        n2 = n2 + 1;
+        dznew = std::min(dzm * powi(ztopr, n2), double(dzmax2));
+      }
+    }
+    sum = sum + dznew;
+  }
+  return sum;
+}
+
 } // namespace
+
+// param.F SUBROUTINE ZGRID (stretch_z = 2): w levels gze(1..nz) of a
+// geometrically stretched grid (bisection for the stretch factor); gze is
+// indexed 0..nz+1 (ng = 1), only 1..nz are set here.
+void zgrid(Real dz, Real dz_stretch, int nz, int nbndlyr, Real dzmax, Real ztopstr, Real rtop,
+           Real dzmaxtop, std::vector<double>& gze) {
+  const double ztop = dz * (nz - 1);
+  double zx = 1.0, stretch = 1.0;
+  if (dz > dz_stretch) {
+    for (int n = 1; n <= 50; ++n) {
+      if (std::abs(zx) > 1.0e-12) {
+        zx = zx * 0.5;
+        const double xmid = stretch + zx;
+        const double fmid = zheight(dz_stretch, xmid, nz - 1, dzmax, nbndlyr, ztopstr, rtop, dzmaxtop) - ztop;
+        if (fmid <= 0.0) stretch = xmid;
+        if (fmid == 0.0) break;
+      }
+    }
+  }
+  if (stretch > 1.1)
+    throw std::runtime_error("cm1k init: stretch_z=2: stretch factor too big (" + std::to_string(stretch) +
+                             "); increase nz or dz_bot");
+  gze.assign(nz + 2, 0.0);
+  gze[1] = 0.0;
+  for (int k = 1; k <= nz - 1; ++k)
+    gze[k + 1] = zheight(dz_stretch, stretch, k, dzmax, nbndlyr, ztopstr, rtop, dzmaxtop);
+}
 
 //---------------------------------------------------------------------------
 // param.F: 2nd-order extrapolation coefficients (Fornberg 1988)
@@ -101,7 +166,7 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
   if (nl.geti("stretch_x", 0) != 0) unsupported("stretch_x != 0");
   if (nl.geti("stretch_y", 0) != 0) unsupported("stretch_y != 0");
   const int stretch_z = nl.geti("stretch_z", 0);
-  if (stretch_z != 0 && stretch_z != 1) unsupported("stretch_z = " + std::to_string(stretch_z));
+  if (stretch_z < 0 || stretch_z > 4) unsupported("stretch_z = " + std::to_string(stretch_z));
   if (nl.geti("axisymm", 0) != 0) unsupported("axisymm = 1");
   if (nl.geti("irst", 0) != 0) unsupported("irst = 1 (restart)");
   if (nk < 4) unsupported("nz < 4");
@@ -110,6 +175,7 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
   Real dz = nl.getr("dz", 0.0);
   Real ztop = nl.getr("ztop", 0.0);
   if (stretch_z < 1) ztop = dz * double(nk);
+  if (stretch_z == 2) dz = ztop / double(nk);   // nk is the number of scalar levels
 
   g.dx = dx; g.dy = dy; g.dz = dz;
   g.rdx = 1.0 / dx; g.rdy = 1.0 / dy; g.rdz = 1.0 / dz;
@@ -198,7 +264,7 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
   for (int k = kb; k <= ke + 1; ++k) sigmaf(k) = zf(1, 1, k);
   for (int k = kb; k <= ke; ++k) sigma(k) = 0.5 * (sigmaf(k) + sigmaf(k + 1));
 
-  if (stretch_z >= 1) {
+  if (stretch_z == 1) {
     // stretch_z = 1: hard-wired analytic stretching function
     const Real str_bot = nl.getr("str_bot", 0.0), str_top = nl.getr("str_top", 0.0);
     const Real dz_bot = nl.getr("dz_bot", 0.0), dz_top = nl.getr("dz_top", 0.0);
@@ -232,7 +298,65 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
     for (int k = nk1 + nk2 + 2; k <= nk1 + nk2 + nk3 + 1; ++k) sigmaf(k) = sigmaf(k - 1) + dz_top;
     sigmaf(0) = -sigmaf(2);
     sigmaf(nk + 2) = sigmaf(nk + 1) + (sigmaf(nk + 1) - sigmaf(nk));
+  } else if (stretch_z == 2) {
+    // geometric stretching from COMMAS (param.F ZGRID/ZHEIGHT); dz = ztop/nk
+    // (set above). gze(0:ke+1)
+    if (B.terrain_flag) unsupported("stretch_z = 2 with terrain (param.F: terrain not yet compatible with stretch_z == 2)");
+    const Real str_bot = nl.getr("str_bot", 0.0);
+    const Real dz_bot = nl.getr("dz_bot", 0.0), dz_top = nl.getr("dz_top", 0.0);
+    // param.F locals (not namelist variables)
+    const Real rtop = 1.0, ztopstr = 100000.0, dzmaxtop = 700.0;
+    const int nbndlyr = std::max(0, int(str_bot / dz_bot + 0.01) - 1);
+    std::vector<double> gze_v(ke + 2, 0.0);
+    auto gze = [&](int k) -> double& { return gze_v[k]; };
+    zgrid(dz, dz_bot, ke, nbndlyr, dz_top, ztopstr, rtop, dzmaxtop, gze_v);
+    gze(0) = -gze(2);
+    gze(ke + 1) = gze(ke) + (gze(ke) - gze(ke - 1));
+    for (int k = kb; k <= ke + 1; ++k)
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie; ++i) zf(i, j, k) = gze(k);
+    for (int k = kb; k <= ke + 1; ++k) sigmaf(k) = zf(1, 1, k);
+  } else if (stretch_z == 3 || stretch_z == 4) {
+    // cm1r19: levels from the file input_grid_z (in meters): scalar levels
+    // (stretch_z = 3) or w levels (stretch_z = 4, cm1r19.8). sigmaf(0) and
+    // sigmaf(nk+2) keep their uniform-grid values, as in param.F.
+    const std::string path = nl.input_path("input_grid_z");
+    std::ifstream f(path);
+    if (!f) throw std::runtime_error("cm1k init: stretch_z=" + std::to_string(stretch_z) + ": cannot open '" + path + "'");
+    // list-directed read(40,*): one value per record (the first item of
+    // each line)
+    auto next = [&](const char* what) {
+      std::string line, tok;
+      while (std::getline(f, line)) {
+        std::istringstream is(line);
+        if (is >> tok) break;
+        tok.clear();
+      }
+      if (tok.empty()) throw std::runtime_error("cm1k init: input_grid_z: cannot read " + std::string(what));
+      if (tok.back() == ',') tok.pop_back();
+      for (auto& ch : tok) if (ch == 'd' || ch == 'D') ch = 'e';   // Fortran 1.0d3
+      return std::stod(tok);
+    };
+    if (stretch_z == 3) {
+      sigmaf(1) = 0.0;
+      for (int k = 1; k <= nk; ++k) {
+        sigma(k) = next("sigma");
+        sigmaf(k + 1) = 2.0 * sigma(k) - sigmaf(k);
+      }
+    } else {
+      for (int k = 1; k <= nk + 1; ++k) sigmaf(k) = next("sigmaf");
+      for (int k = 1; k <= nk; ++k) sigma(k) = 0.5 * (sigmaf(k) + sigmaf(k + 1));
+    }
+    ztop = sigmaf(nk + 1);
+    for (int k = 1; k <= nk + 1; ++k)
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie; ++i) zf(i, j, k) = sigmaf(k);
+  } else if (stretch_z != 0) {
+    unsupported("stretch_z = " + std::to_string(stretch_z));
+  }
 
+  if (stretch_z >= 1) {
+    // param.F, common to every stretch_z: zh, mh, mf from zf
     for (int j = jb; j <= je; ++j)
       for (int i = ib; i <= ie; ++i) {
         zf(i, j, 0) = -zf(i, j, 2);

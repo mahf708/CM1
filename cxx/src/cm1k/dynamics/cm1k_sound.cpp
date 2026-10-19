@@ -9,6 +9,11 @@ namespace cm1k {
 
 int sound_nsound(int psolver, int nx, int ny, Real min_dx, Real min_dy, Real min_dz,
                  Real csound, double dbldt) {
+  return dtsmall(psolver, nx, ny, min_dx, min_dy, min_dz, csound, dbldt, false);
+}
+
+int dtsmall(int psolver, int nx, int ny, Real min_dx, Real min_dy, Real min_dz, Real csound, double& dbldt,
+            bool adapt_dt) {
   constexpr int max_nsound = 192;
   if (psolver == 1 || psolver == 4 || psolver == 5) return 1;
   Real dtsm = 0;
@@ -30,9 +35,16 @@ int sound_nsound(int psolver, int nx, int ny, Real min_dx, Real min_dy, Real min
   int nsound = std::max(int(std::lround(dbldt / dtsm)), 4);   // nint
   if (nsound % 2 != 0) nsound = nsound + 1;
   if (dbldt / Real(nsound) > dtsm) nsound = nsound + 2;
-  if (nsound > max_nsound)
-    throw std::runtime_error("cm1k: limit for number of small steps exceeded (nsound=" +
-                             std::to_string(nsound) + "); adapt_dt is not supported");
+  if (nsound > max_nsound) {
+    if (adapt_dt) {
+      // GHB: this is arbitrary ... could be changed
+      nsound = max_nsound;
+      dbldt = nsound * dtsm;
+    } else {
+      throw std::runtime_error("cm1k: limit for number of small steps exceeded (nsound=" +
+                               std::to_string(nsound) + "); the time step (dtl) needs to be smaller");
+    }
+  }
   return nsound;
 }
 

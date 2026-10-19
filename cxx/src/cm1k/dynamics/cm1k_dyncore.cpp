@@ -1,4 +1,5 @@
 #include "cm1k_dyncore.hpp"
+#include "dynamics/cm1k_adapt_dt.hpp"
 
 #include "dynamics/cm1k_adv.hpp"
 #include "dynamics/cm1k_rdamp_cor.hpp"
@@ -182,7 +183,8 @@ void DynConfig::check() const {
   // ipbl=6: as ipbl=1 without ysudiss, turbparam_horiz only)
   if (idiss != 0 && ipbl != 0 && ipbl != 1 && ipbl != 2 && ipbl != 6) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
   if (rterm != 0) unsupported("rterm");
-  if (adapt_dt != 0) unsupported("adapt_dt");
+  // adapt_dt=1: cm1k_adapt_dt.cpp (AdaptDt::from_namelist) checks the options
+  if (adapt_dt != 0 && adapt_dt != 1) unsupported("adapt_dt=" + std::to_string(adapt_dt));
   // surface layer: sfcmodel=0, or sfcmodel=1 (bbc=3, isfcflx=0/1) with the
   // LES TKE scheme or a PBL scheme, or sfcmodel=2,3 with a PBL scheme;
   // sfc_opt.check throws for every option not ported
@@ -303,6 +305,7 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
   for (int j = 1; j <= nj; ++j) min_dy = std::min(min_dy, yf(j + 1) - yf(j));
   for (int k = 1; k <= nk; ++k) for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni; ++i)
     min_dz = std::min(min_dz, zf(i, j, k + 1) - zf(i, j, k));
+  m_min_dx = min_dx; m_min_dy = min_dy; m_min_dz = min_dz;
   m_nsound = sound_nsound(m_cfg.psolver, B.nx, B.ny, min_dx, min_dy, min_dz, m_cfg.csound, double(m_dt));
 
   // param.F: Rayleigh damping coefficients (cm1k_rdamp_cor.cpp)
@@ -360,6 +363,20 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
 }
 
 //===========================================================================
+int Dyncore::dtsmall(double& dbldt) const {
+  return cm1k::dtsmall(m_cfg.psolver, m_g.b.nx, m_g.b.ny, m_min_dx, m_min_dy, m_min_dz, m_cfg.csound, dbldt,
+                       m_cfg.adapt_dt == 1);
+}
+
+Real Dyncore::cflquick() const {
+  return calccflquick(m_g.b, m_cfg.axisymm, m_dt, m_g.rdx, m_g.rdy, m_g.rdz, m_g.uh, m_g.vh, m_g.mh, u3d, v3d, w3d);
+}
+
+Real Dyncore::ksquick() const {
+  return calcksquick(m_g.b, m_cfg.axisymm, m_dt, m_g.rdx, m_g.rdy, m_g.uh, m_g.vh, m_s.kmh, m_s.kmv, m_s.khh,
+                     m_s.khv);
+}
+
 void Dyncore::start_from_state() {
   const auto& B = m_g.b;
   const int ni = B.ni, nj = B.nj, nk = B.nk;
@@ -1077,6 +1094,11 @@ void Dyncore::solve2() {
       }
       sound(m_bc, a);
     }
+
+    //  on final RK step, get max CFL (adapt_dt; solve2.F calls it always,
+    //  only getnewdt reads it)
+    if (cfg.adapt_dt == 1 && nrk == nrkmax)
+      m_cflmax = calccflquick(m_g.b, cfg.axisymm, dt, rdx, rdy, rdz, m_g.uh, m_g.vh, m_g.mh, u3d, v3d, w3d);
 
     //  radbc (irbc=4)
     openbc_radbc4(dttmp);

@@ -51,7 +51,14 @@ Namelist Namelist::from_file(const std::string& path) {
   if (!f) throw std::runtime_error("cm1k: cannot open namelist file '" + path + "'");
   std::stringstream ss;
   ss << f.rdbuf();
-  return from_string(ss.str());
+  Namelist nl = from_string(ss.str());
+  const auto slash = path.find_last_of('/');
+  nl.m_dir = (slash == std::string::npos) ? std::string() : path.substr(0, slash);
+  return nl;
+}
+
+std::string Namelist::input_path(const std::string& name) const {
+  return m_dir.empty() ? name : m_dir + "/" + name;
 }
 
 Namelist Namelist::from_string(const std::string& text) {

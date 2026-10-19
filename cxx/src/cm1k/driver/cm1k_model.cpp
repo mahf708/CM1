@@ -7,6 +7,7 @@
 #include "physics/kessler/cm1k_kessler.hpp"
 #include "physics/rrtmg/cm1k_radiation.hpp"
 
+#include <cstdio>
 #include <stdexcept>
 
 namespace cm1k {
@@ -31,6 +32,8 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   m_grid.dx = nl.getr("dx", 0.0);
   m_grid.dy = nl.getr("dy", 0.0);
   m_grid.dz = nl.getr("dz", 0.0);
+  // param.F: with stretch_z = 2, dz = ztop/nk (the mh/mf normalization)
+  if (nl.geti("stretch_z", 0) == 2) m_grid.dz = nl.getr("ztop", 0.0) / double(b.nk);
   m_grid.rdx = 1.0 / m_grid.dx;
   m_grid.rdy = 1.0 / m_grid.dy;
   m_grid.rdz = 1.0 / m_grid.dz;
@@ -42,6 +45,7 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
     else if (ptype == 1) m_state.qname = {"qv", "qc", "qr"};
   }
   m_dt = nl.getr("dtl", 0.0);
+  m_adapt = AdaptDt::from_namelist(nl, b);   // adapt_dt = 1 (throws for unported combinations)
   m_sfc_opt = sfc::Options::from_namelist(nl);
   if (m_sfc_opt.has_layer()) {
     m_sfc.allocate(b);
@@ -223,6 +227,22 @@ void Model::init_from_dump(const std::string& step_dir) {
   set_extrap_coeffs(m_grid);
   m_nstep = r.nstep();
   m_mtime = r.mtime();
+  if (m_adapt.active) {
+    // the time-step state at the dump (src/cm1dump.F dump_adapt): dt of
+    // the step just taken (at step 0: of step 1), cflmax, the timers and
+    // the flags of that step
+    const auto& a = r.adapt();
+    if (a.size() < 10)
+      throw std::runtime_error("cm1k: adapt_dt = 1 needs the #adapt_dt line in the dump index (" + step_dir + ")");
+    m_adapt = AdaptDt::from_namelist(m_nl, m_grid.b);
+    m_dt = Real(a[0]);
+    m_adapt.dbldt = a[0];
+    m_adapt.cflmax = Real(a[2]);
+    m_adapt.ksmax = Real(a[3]);
+    m_adapt.taptim = a[4]; m_adapt.stattim = a[5]; m_adapt.rsttim = a[6];
+    m_adapt.dowriteout = a[7] != 0; m_adapt.dostat = a[8] != 0; m_adapt.dorestart = a[9] != 0;
+    m_adapt_doinit = false;
+  }
   if (m_rad) m_rad->set_clock(m_nstep, m_dt);   // radtim of the Fortran at this dump
   m_dyn.reset();           // the dynamical core is set up again from these arrays
   m_dyn_started = false;
@@ -230,6 +250,14 @@ void Model::init_from_dump(const std::string& step_dir) {
 
 void Model::write_dump(const std::string& root) const {
   DumpWriter w(DumpReader::step_dir(root, m_nstep), m_nstep, m_mtime);
+  if (m_adapt.active) {
+    const auto& a = m_adapt;
+    char buf[320];
+    std::snprintf(buf, sizeof buf, "#adapt_dt %24.16e %6d %24.16e %24.16e %24.16e %24.16e %24.16e %d %d %d",
+                  double(m_dt), m_dyn ? m_dyn->nsound() : 0, double(a.cflmax), double(a.ksmax), a.taptim,
+                  a.stattim, a.rsttim, int(a.dowriteout), int(a.dostat), int(a.dorestart));
+    w.comment(buf);
+  }
   for (auto& name : field_names()) {
     if (field_rank(name) == 1) w.write<1>(name, field1(name));
     else                       w.write<3>(name, field3(name));
@@ -251,6 +279,11 @@ void Model::init() {
   if (m_sfc_opt.gfdl()) m_gsfc.init_soil(m_grid.b);                          // tslb (sfcmodel=4)
   m_nstep = 0;
   m_mtime = 0;
+  if (m_adapt.active) {     // cm1.F: dt = dtl, then getnewdt(doinit) on the first step()
+    m_adapt = AdaptDt::from_namelist(m_nl, m_grid.b);
+    m_dt = m_nl.getr("dtl", 0.0);
+    m_adapt_doinit = true;
+  }
   m_dyn.reset();            // the dynamical core is set up again from the new grid
   m_dyn_started = false;
 }
@@ -267,6 +300,11 @@ Dyncore& Model::dyncore() {
     if (m_use_myj) m_dyn->set_myj(m_myj);
     if (m_sfc_opt.gfdl()) m_dyn->set_gfdl_surface(m_gsfc);
     if (m_use_pbl && m_ipbl == 3) m_dyn->set_gfs(m_gfs);
+    if (m_adapt.active) {   // the current (adapted) time step
+      double d = m_dt;
+      const int ns = m_dyn->dtsmall(d);
+      m_dyn->set_dt(Real(d), ns);
+    }
   }
   return *m_dyn;
 }
@@ -290,20 +328,54 @@ void Model::step() {
     dyn.start_from_state();
     m_dyn_started = true;
   }
+  // adapt_dt = 1, cm1.F before the time loop (starting at t = 0, not a
+  // restart): the starting time step from the CFL numbers of the initial
+  // state (u3d = ua here; kmh..khv as initialized)
+  if (m_adapt.active && m_adapt_doinit) {
+    m_adapt.dbldt = double(m_dt);
+    m_adapt.cflmax = dyn.cflquick();
+    if (m_adapt.cm1setup >= 1) m_adapt.ksmax = dyn.ksquick();
+    m_adapt.getnewdt(m_mtime, m_dt, true);
+    apply_new_dt();
+    m_adapt_doinit = false;
+  }
   // radiation (radopt=2): cm1.F calls radiation_driver at the end of a pass
   // when due (always in the startup pass), after the dump and before
   // sfc_and_turb; with the same argument as for sfc_and_turb this is here
   if (m_rad) m_rad->pass(m_mtime, m_nstep, m_dt, m_grid, m_base, m_state);
   // nstep: cm1.F's update_sfc is .false. in the startup pass (nstep = 0)
   dyn.sfc_and_turb(m_mtime, m_nstep);            // no-op unless sgsmodel=1 or a PBL scheme
+  // adapt_dt: turb.F calls calcksquick at the end of sfc_and_turb
+  if (m_adapt.active && m_adapt.cm1setup >= 1) m_adapt.ksmax = dyn.ksquick();
   dyn.diff2_stress();                            // no-op unless idiff=1, difforder=2
+  if (m_adapt.active) {
+    // cm1.F after sfc_and_turb: getnewdt (not in the startup pass), then
+    // statpack/writeout/restart_write advance their timers
+    if (m_nstep > 0) {
+      m_adapt.getnewdt(m_mtime, m_dt, false);
+      apply_new_dt();
+    }
+    m_adapt.advance_timers(m_mtime);
+  }
   m_nstep = m_nstep + 1;
+  if (m_adapt.active) m_adapt.set_flags(m_mtime);   // dowriteout, dostat, dorestart of this step
   dyn.solve1();                                  // pre-RK tendencies
   dyn.solve2();                                  // RK3 loop, acoustic steps
   if (dyn.config().imoist == 1) microphysics();  // mp_driver
   dyn.solve3();                                  // finish: bcs, update "a" arrays
   m_mtime = m_mtime + double(m_dt);
+  if (m_adapt.active) m_adapt.cflmax = dyn.cflmax();   // solve2's calccflquick
   Kokkos::fence();
+}
+
+void Model::apply_new_dt() {
+  // misclibs.F getnewdt: dt = dbldt; call dtsmall(dt, dbldt)
+  auto& dyn = dyncore();
+  double d = m_adapt.dbldt;
+  const int ns = dyn.dtsmall(d);
+  m_adapt.dbldt = d;
+  m_dt = Real(d);
+  dyn.set_dt(m_dt, ns);
 }
 
 // cm1.F: `IF(imoist.eq.1) ... call mp_driver(...)` between solve2 and solve3.

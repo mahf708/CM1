@@ -36,9 +36,18 @@ public:
   std::string group_of(const std::string& key) const;
   const std::map<std::string, std::vector<std::string>>& values() const { return m_values; }
 
+  // Directory of the namelist file (from_file), "" otherwise. CM1 reads its
+  // extra input files (input_grid_z, ...) from the run directory; cm1k looks
+  // for them next to the namelist, or in the working directory.
+  const std::string& dir() const { return m_dir; }
+  void set_dir(const std::string& d) { m_dir = d; }
+  // path of an extra input file: dir()/name, or name when dir() is empty
+  std::string input_path(const std::string& name) const;
+
 private:
   std::map<std::string, std::vector<std::string>> m_values;
   std::map<std::string, std::string> m_group;
+  std::string m_dir;
 };
 
 } // namespace cm1k
