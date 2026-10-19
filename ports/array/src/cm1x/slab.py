@@ -67,7 +67,7 @@ def init_state(ctx):
     }
     for k in ("capg", "chklowq", "gsw", "glw", "lh", "flhc", "flqc"):
         if k not in s:
-            out[k] = bk.zeros(g.s_shape[1:])  # distinct: bk.set is in place
+            out[k] = z + 0.0  # own buffer: bk.set is in place on numpy/torch
     zs, _ = soil_layers()
     n = len(zs)
     tsk, tmn = s["tsk"], out["tmn"]

@@ -14,8 +14,10 @@ model state is compared on the interior:
   runs it at the end of a step.  At step 0 only the prognostics are
   compared (CM1's surface arrays are still the allocation defaults).
 
-Each case runs in a subprocess with numpy's AVX-512 paths off (glibc libm
-for exp/log/pow, as the Fortran uses).  CM1X_PBL_MAX_STEP caps the steps.
+Grid and base-state arrays are compared once, against the model's base
+state.  Each case runs in a subprocess with numpy's AVX-512 paths off
+(glibc libm for exp/log/pow, as the Fortran uses).  CM1X_PBL_MAX_STEP caps
+the steps; CM1X_PBL_CASES=a,b replaces the case list.
 Add a case: append its name to CASES (and any extra prognostic to
 PROGNOSTIC).
 """
@@ -42,9 +44,11 @@ CASES = [
     "mynn25_land_dry",
     "mynn3_land_kessler",
 ]
+if os.environ.get("CM1X_PBL_CASES"):
+    CASES = os.environ["CM1X_PBL_CASES"].split(",")
 # qke3d (MYNN: qke advected by solve2) is prognostic; qke itself is set by
 # the PBL scheme in sfc_and_turb, so it is compared with the state after N-1
-PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "tkea", "qke3d")
+PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "rain", "tkea", "qke3d")
 TOL = 1e-10  # max |cm1x - cm1| / max |cm1| per array and step
 NPY_DISABLE = (
     "AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4"
@@ -91,6 +95,7 @@ def inner(a):
         a = a[None]
     return a[1:-1, n:-n, n:-n] if a.shape[0] > 1 and a.shape[0] in (g.nk + 2, g.nk + 3) else a[:, n:-n, n:-n]
 
+base = {k: v for k, v in ((k, host(v)) for k, v in m.base.items()) if isinstance(v, np.ndarray) and v.ndim in (2, 3)}
 steps = sorted(int(p.name.split("_")[1]) for p in case_dir.glob("step_*"))
 steps = [s for s in steps if s <= max_step]
 res = {"steps": steps, "errors": [], "compared": {}, "missing": []}
@@ -105,9 +110,14 @@ for step in steps:
     for k, b in d.items():
         key = qnames.get(k, k)
         isprog = k in prognostic or k.startswith("qa_")
-        if not isprog and step == 0:
+        if not isprog and key not in cur and key in base:
+            if step != steps[0]:
+                continue
+            src = base
+        elif not isprog and step == 0:
             continue
-        src = cur if isprog else prev
+        else:
+            src = cur if isprog else prev
         if key not in src:
             if k not in res["missing"]:
                 res["missing"].append(k)
