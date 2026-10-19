@@ -36,7 +36,7 @@ def _check(cfg):
         ("betaplane", (0,)),
         ("axisymm", (0,)),
         ("iptra", (0,)),
-        ("ipbl", (0,)),
+        ("ipbl", (0, 1, 2, 3, 4, 5, 6)),
         ("cuparam", (0,)),
         ("iprcl", (0,)),
         ("nudgeobc", (0,)),
@@ -125,6 +125,8 @@ def solve2(
     tkea=None,
     tke3d=None,
     tketen=None,
+    qke=None,
+    qke3d=None,
     hooks=None,
     rds=None,
     sigma=None,
@@ -156,6 +158,8 @@ def solve2(
     ``radbc*`` are the persistent open-boundary phase speeds (``[k, j]`` for
     w/e, ``[k, i]`` for s/n; zeros at t=0), ``ruf``/``rvf`` = 1/uf, 1/vf.
     ``tkea``, ``tke3d``, ``tketen`` (solve1) are needed for sgsmodel=1.
+    ``qke`` (and the state's ``qke3d``) for the MYNN PBL (cm1setup=2,
+    ipbl=4, 5; bl_mynn_tkeadvect): returns the advected ``qke3d``.
 
     With ``terrain_flag`` the terrain metrics (rds, sigma, rdsf, sigmaf,
     gz, rgz, gzu, rgzu, gzv, rgzv, dzdx, dzdy, gx, gxu, gy, gyv, the Python
@@ -211,6 +215,14 @@ def solve2(
         if tkea is None or tke3d is None or tketen is None:
             raise ValueError("solve2: sgsmodel=1 needs tkea, tke3d, tketen")
         tke3d = bk.copy(tke3d)
+    mynn = int(_opt(cfg, "cm1setup", 1)) in (2, 4) and int(_opt(cfg, "ipbl", 0)) in (
+        4,
+        5,
+    )
+    if mynn:
+        if qke is None:
+            raise ValueError("solve2: ipbl=4, 5 needs qke")
+        qke3d = bk.copy(qke if qke3d is None else qke3d)
     advwenos = int(_opt(cfg, "advwenos", 0))
     moist = int(_opt(cfg, "imoist", 1)) == 1
     icor = int(_opt(cfg, "icor", 0))
@@ -855,6 +867,47 @@ def solve2(
                 bk, g, cfg, dttmp=dttmp, tkea=tkea, tten=wten, tke3d=tke3d
             )["tke3d"]
 
+        # ---- qke advection (MYNN, bl_mynn_tkeadvect) ---------------------------
+        if mynn:
+            # nrk=1: qke3d = qke; qke_adv = 0; bcs(qke3d); advs with pdef=1,
+            # pdefweno=1, weps=10*epsilon; qke3d = qke + dttmp*qke_adv (0
+            # below 1e-10)
+            if nrk == 1:
+                qke3d = bk.set(qke3d, SI, qke[SI])
+            qke3d = _bc.bcs(bk, g, qke3d, cfg)
+            qten_ = advs_(
+                bk,
+                g,
+                nrk=nrk_a,
+                wflag=1,
+                rho0=rho0,
+                rr0=rr0,
+                mh=mh,
+                uh=uh,
+                vh=vh,
+                rru=rru,
+                rrv=rrv,
+                rrw=rrw,
+                divx=divx,
+                s0=qke,
+                s=qke3d,
+                sten=bk.zeros(S),
+                pdef=1,
+                dt=dttmp,
+                c1=c1,
+                c2=c2,
+                hadvorder=hs,
+                vadvorder=vs,
+                weps=10.0 * c.epsilon,
+                pdefweno=1,
+                cfg=cfg,
+                gz=gz,
+                rgz=rgz,
+                rdsf=rdsf,
+            )["sten"]
+            qn = qke[SI] + dttmp * qten_[SI]
+            qke3d = bk.set(qke3d, SI, xp.where(qn < 1.0e-10, xp.zeros_like(qn), qn))
+
         # ---- finish pressure / density (apmasscon) -----------------------------
         if dopf:
             tem = ((mass1 / mass2) ** c.rddcv - 1.0) * p2 / float(nx * ny * nz_)
@@ -891,4 +944,5 @@ def solve2(
         "radbcs": radbcs,
         "radbcn": radbcn,
         "tke3d": tke3d,
+        "qke3d": qke3d if mynn else None,
     }

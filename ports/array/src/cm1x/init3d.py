@@ -1,6 +1,7 @@
 """Initial conditions (port of src/init3d.F: ``init3d`` and ``getset``).
 
-Scope: ``iinit = 0`` (no perturbation) or ``1`` (warm bubble), ``irandp = 0``,
+Scope: ``iinit = 0`` (no perturbation) or ``1`` (warm bubble), ``irandp = 0`` or ``1``
+(testcase=0: +-0.25 K theta noise from gfortran's random_number with CM1's seed),
 ``ibalance = 0`` or ``1``, ``psolver <= 3``, with or without terrain, any lateral boundary
 type of cm1x.bc (periodic / open / walls), Kessler moisture (qv, qc, qr) or
 dry, and the prognostic TKE of sgsmodel=1 (cm1setup=1; zero initial TKE).
@@ -18,7 +19,67 @@ from . import bc as _bc
 from .grid import Grid
 from .misc import level_sums, qp_sum
 
-__all__ = ["init3d", "getset"]
+__all__ = ["init3d", "getset", "GfortranRandom", "randp_theta"]
+
+_M64 = (1 << 64) - 1
+
+
+def _rotl64(x, k):
+    return ((x << k) | (x >> (64 - k))) & _M64
+
+
+class GfortranRandom:
+    """gfortran ``random_number`` for real(8) (xoshiro256**, top 53 bits
+    scaled by 2**-64), seeded like init3d.F's ``random_seed(put=...)``."""
+
+    _XOR = (
+        0xBD0C5B6E50C2DF49,
+        0xD46061CD46E1DF38,
+        0xBB4F4D4ED6103544,
+        0x114A583D0756AD39,
+    )
+
+    def __init__(self, put=None):
+        if put is None:
+            k = 8
+            put = [
+                int(round(2.0e9 * (2.0 * (n - 1) / (k - 1) - 1.0)))
+                for n in range(1, k + 1)
+            ]
+        rev = [int(v) & 0xFFFFFFFF for v in reversed(put)]
+        seed = [rev[2 * i] | (rev[2 * i + 1] << 32) for i in range(4)]
+        self.s = [seed[i] ^ self._XOR[i] for i in range(4)]
+
+    def next(self):
+        s = self.s
+        result = (_rotl64((s[1] * 5) & _M64, 7) * 9) & _M64
+        t = (s[1] << 17) & _M64
+        s[2] ^= s[0]
+        s[3] ^= s[1]
+        s[1] ^= s[2]
+        s[0] ^= s[3]
+        s[2] ^= t
+        s[3] = _rotl64(s[3], 45)
+        return float(result & (_M64 << 11) & _M64) * 2.0**-64
+
+
+def randp_theta(nk, nj, ni, ng):
+    """init3d.F irandp=1 (testcase=0) theta noise as a numpy [k,j,i] array
+    with halos: one leading draw, then (rand, rand2) per point of
+    (0:nx+2, 0:ny+2, 1:nk), i fastest; amplitude*(2*rand-1)."""
+    import numpy as np
+
+    rng = GfortranRandom()
+    rng.next()
+    out = np.zeros((nk + 2, nj + 2 * ng, ni + 2 * ng))
+    amp = 0.25
+    for k in range(1, nk + 1):
+        for jj in range(0, nj + 3):
+            for ii in range(0, ni + 3):
+                r = rng.next()
+                rng.next()
+                out[k, jj + ng - 1, ii + ng - 1] = amp * (2.0 * r - 1.0)
+    return out
 
 
 def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, centery):
@@ -36,8 +97,10 @@ def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, c
     K, J, I = slice(1, nk + 1), slice(ng, ng + nj), slice(ng, ng + ni)
     shp_w = (shp_s[0] + 1, shp_s[1], shp_s[2])
 
-    if cfg.irandp == 1:
-        raise NotImplementedError("irandp=1 (random perturbations) not ported")
+    if int(cfg.get("irandp", 0)) not in (0, 1):
+        raise NotImplementedError(f"irandp={cfg.irandp} not ported")
+    if int(cfg.get("testcase", 0)) != 0 and int(cfg.get("irandp", 0)) == 1:
+        raise NotImplementedError("irandp=1 needs testcase=0")
 
     ua = bk.copy(u0)
     va = bk.copy(v0)
@@ -70,6 +133,10 @@ def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, c
         tha = bk.set(tha, (K, J, I), pert)
     elif cfg.iinit not in (0, None):
         raise NotImplementedError(f"iinit={cfg.iinit} not ported")
+
+    # ---------------- random perturbations (irandp=1, testcase=0)
+    if int(cfg.get("irandp", 0)) == 1:
+        tha = tha + S(randp_theta(nk, nj, ni, ng))
 
     # ---------------- 3-D pressure
     ppi = bk.zeros(shp_s)

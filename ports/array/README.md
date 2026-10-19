@@ -107,6 +107,89 @@ and radiation_driver.F accept radopt=2 with ptype=1 (WRF's mp_physics=1), and
 the RRTMG table arrays are 4-byte reals (`kind_rf`), so a `-fdefault-real-8`
 build reads the 4-byte data files unchanged.
 
+## Boundary layer (cm1setup=2) and surface layers
+
+`pbl.py` holds the mesoscale path of `turb.F sfc_and_turb` (`sfc_and_turb_pbl`:
+dissten=0, the surface layer, bc2d of the surface arrays, calcnm, calcdef,
+`turbparam_horiz` (horizturb=1), `turbparam_vert` (ipbl=2), gettau, the PBL
+scheme, bcs(upten/vpten)), the solve1 `use_pbl` blocks and the param.F option
+adjustments (`pbl.apply_options`: bbc=3, isfcflx, tconfig=2, l_inf, dohturb/dovturb,
+use_pbl, dosfcflx). PBL schemes and surface layers plug in through a registry
+in `pbl.py`; adding one is a one-line entry:
+
+```python
+PBL_SCHEMES = {2: "cm1x.pbl", 1: "cm1x.pbl_ysu", ...}          # ipbl -> module
+SURFACE_LAYERS = {1: "cm1x.sfcphys", 2: "cm1x.sfclay", ...}    # sfcmodel -> module
+```
+
+The module defines `pbl(ctx)` (or `surface_layer(ctx)`) returning a dict of
+state updates, and optionally `options(cfg)` (param.F adjustments, run once),
+`check(cfg)`, `init_state(ctx)` (arrays carried across steps), `WRF_INPUTS =
+True` and `DUMP_KEYS`. `ctx` (`pbl.Context`) carries `bk, g, cfg, dt, nstep,
+update_sfc, rtime`, the model state `s` (surface arrays 2-D `[j, i]` with
+halos; K arrays, `dissten`, the PBL tendencies `thpten, qvpten, qcpten,
+qipten, upten, vpten` 3-D), the base state `b`, the new time level `u3d, v3d,
+w3d, pp3d, th3d, q3d` with `rho, rr, rf, prs`, and `ctx.w`, the WRF column
+inputs of turb.F (`pbl.wrf_inputs`: u, v at scalar points, th, pi, t, dz8w,
+p3di, qv, qc, qi, rthraten). PBL tendencies are returned exactly as the
+Fortran scheme stores them (solve1 adds `thpten`, `q*pten` and the u/v-point
+average of `upten`/`vpten` with no extra factor; any rho weighting is the
+scheme's own, e.g. ipbl=2) and filled on the interior; the core applies bcs to
+upten/vpten. WRF-type surface layers end with `pbl.wrf_sfc_epilogue` (SLAB
+when `update_sfc`, else the qsfc diagnosis; ch, cq, s10; thflux, qvflux).
+
+Supported here: cm1setup=2 with ipbl=2 (Bryan 2009 simple PBL) and
+horizturb=1; LES (cm1setup=1, sgsmodel=1) with a surface layer; sfcmodel=1
+(land and water, isfcflx, cecd 1-3, set_flx, set_znt, pertflx), sfcmodel=2
+(`sfclay.py`, MM5 similarity) and 3 (revised MM5, isftcflx 0-2, iz0tlnd 0-2)
+with the SLAB land model (`slab.py`, 5 soil layers); irandp=1 and isnd=1 in
+the initial state. The sfclayinit tables call glibc's libmvec (as gfortran's
+vectorised loop does) when it is available.
+
+`tests/test_model_dumps_pbl.py` compares every array a CM1 dump holds with
+the model state (`CM1X_DUMP_DIR_PBL`, layout `<case>/step_NNNNNN`; cases in
+`CASES`, overridable with `CM1X_PBL_CASES`, steps capped by
+`CM1X_PBL_MAX_STEP`): prognostics against step N, surface / K / PBL arrays
+against step N-1 (CM1 dumps before sfc_and_turb). Tolerance 1e-10 relative to
+each array's maximum; on jax and torch the PBL tendencies get 1e-9 (their
+(new-old)/dt cancellation amplifies last-bit libm differences). The
+surface-layer variant namelists without a C++ case live in
+`ports/reference/pbl/`. On numpy the ipbl=2, cbl_sfc and sfcmodel=2/3 cases
+match the float64 Fortran to 1e-12 or bitwise through 150 steps.
+
+<<<<<<< HEAD
+### YSU (ipbl=1)
+
+`pbl_ysu.py` ports `bl_ysu.F` (`bl_ysu_run`, `tridin_ysu`/`tridi2n`) as turb.F
+calls it through `ysu_wrapper`, every column at once: the three bulk-Richardson
+searches of the PBL height in closed form (first level above the critical
+Richardson number), the values at the PBL top as `take_along_axis` gathers, the
+per-column branches as `xp.where`, and the tridiagonal solves through
+`bk.scan`; plus turb.F's `ysudiss` (idiss=1). Harness `drv_ysu` (ysu_wrapper
+row by row on convective, stable land/water, neutral, calm and cloudy
+columns; `tests/test_pbl_ysu.py`): <=5e-13 of each field's maximum on numpy,
+jax and torch (numpy ~1e-14; the differences are pow/exp ulps), reverse-mode
+gradients finite. Not ported (as in CM1's call): ysu_topdown_pblmix=.true.
+(`NotImplementedError`), the BEP urban terms, ctopo/uox/vox, qmix; the xkzh/xkzm
+outputs are returned as diagnostics.
+=======
+### MYJ (ipbl=6, sfcmodel=7)
+
+`sfc_myj.py` ports module_sf_myjsfc.F (`myjsfcinit`'s psi tables, built
+with libm on the host; `myjsfc`; `sfcdif`, water and land branches,
+isftcflx 0/1), and `pbl_myj.py` ports module_bl_myjpbl.F (`myjpbl`, `mixlen`,
+`prodq2`, `difcof`, `vdifq`, `vdifh`, `vdifv`; STEPBL=1, QCI mixed). They work
+on every column at once, with the downward-counted column (K = KTE+1-k) kept
+as Python lists of planes, and the level-wise parts stacked along K.
+`surface_layer(ctx)` and `pbl(ctx)` hold the turb.F glue, with cm1k's
+`cm1k_myj_coupling` as the reference. tke_myj is prognostic but not advected.
+Harness: `drv_myjsfc`, `drv_myjpbl` (`tests/test_myj.py`): 1e-12 on numpy and
+1e-11 on jax/torch, measured against each field's magnitude. The remaining
+differences are the last bit of exp/log/pow. Over land, CM1 never sets zntmyj
+(it stays 0), so the Fortran goes NaN; the land path is tested only per routine,
+with positive roughness. Not ported: sfcmodel=7 without ipbl=6, cm1setup 4, terrain.
+>>>>>>> e64f3b8
+
 ## Performance
 
 `Model(nml, backend="jax", jit=True)` compiles the whole time step into one

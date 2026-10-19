@@ -450,8 +450,19 @@ def base(
         qv0 = Z(nk + 2)
         rh0 = Z(nk + 2)
         qsurf = zero
+    elif cfg.isnd == 1:
+        # ---------------- isnd = 1: dry adiabatic
+        th_sfc, pi_sfc = S(300.0), S(1.0)
+        pi0 = pi_sfc - grav * zc / (cp * th_sfc)
+        th0 = bk.full(shp_s, 300.0)
+        prs0 = p00 * (pi0**cpdrd)
+        qv0 = Z(nk + 2)
+        rh0 = Z(nk + 2)
+        psurf = p00 * (pi_sfc**cpdrd)
+        tsurf = th_sfc * ((psurf * rp00) ** rovcp)
+        qsurf = zero
     else:
-        raise NotImplementedError(f"isnd={cfg.isnd} not ported (only isnd=5, 9)")
+        raise NotImplementedError(f"isnd={cfg.isnd} not ported (only isnd=1, 5, 9)")
 
     # ---------------- ghost cells
     def bcx(a):

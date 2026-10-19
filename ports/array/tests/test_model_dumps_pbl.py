@@ -1,0 +1,277 @@
+"""Whole-model comparison with CM1's float64 state dumps for the boundary
+layer and surface-layer cases (cm1setup=2 PBL schemes, LES with a surface
+layer, SLAB), built by the Kokkos branch's cxx/scripts/make_refs.sh.
+
+Needs CM1X_DUMP_DIR_PBL pointing at a directory with one subdirectory per
+case (``<case>/step_NNNNNN``, every 10 steps), each with its namelist.input
+(and LANDUSE.TBL); a case's namelist and LANDUSE.TBL may also come from
+ports/reference/<case>/.  Every array present in both the dump and the
+model state is compared on the interior:
+
+* prognostics (PROGNOSTIC below, and qa_*) against the state after step N;
+* everything else (surface arrays, K, PBL tendencies, ...) against the
+  state after step N-1, because CM1 dumps before ``sfc_and_turb`` and cm1x
+  runs it at the end of a step.  At step 0 only the prognostics are
+  compared (CM1's surface arrays are still the allocation defaults).
+
+Grid and base-state arrays are compared once, against the model's base
+state.  Each case runs in a subprocess with numpy's AVX-512 paths off
+(glibc libm for exp/log/pow, as the Fortran uses).  CM1X_PBL_MAX_STEP caps
+the steps; CM1X_PBL_CASES=a,b replaces the case list.
+Add a case: append its name to CASES (and any extra prognostic to
+PROGNOSTIC).
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+DUMP_DIR = os.environ.get("CM1X_DUMP_DIR_PBL")
+REF_DIR = Path(__file__).resolve().parents[2] / "reference"
+
+CASES = [
+    "pbl2_dry",
+    "pbl2_kessler",
+    "pbl2_sfclay_land",
+    "cbl_sfc",
+    "cbl_sfc_moist",
+    "mynn25_kessler",
+    "mynn3_dry",
+    "mynn25_land_dry",
+    "mynn3_land_kessler",
+    # surface-layer variants (ports/reference/pbl)
+    "sfc_rev_land",
+    "sfc_rev_water_ft2",
+    "sfc_rev_land_z0t2",
+    "sfc_sfclay_water_ft1",
+    "sfc_sfclay_land_z0t1",
+    "myj_dry",
+    "myj_kessler",
+    "gfs_kessler",
+    "gfs_dry",
+    "gfs_sfclay_land",
+    "ysu_dry",
+    "ysu_kessler",
+]
+if os.environ.get("CM1X_PBL_CASES"):
+    CASES = os.environ["CM1X_PBL_CASES"].split(",")
+# qke3d (MYNN: qke advected by solve2) is prognostic; qke itself is set by
+# the PBL scheme in sfc_and_turb, so it is compared with the state after N-1
+PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "rain", "tkea", "qke3d")
+TOL = 1e-10  # max |cm1x - cm1| / max |cm1| per array and step
+# jax / torch: the PBL tendencies are (new - old)/dt differences of the
+# prognostic they tend, so a last-bit libm difference in that prognostic
+# (|X| ~ 300 K for theta) becomes ~eps*|X|/dt in the tendency, which can be
+# far above 1e-10 of a tiny tendency maximum (GFS thpten: max 7.7e-6 K/s,
+# error ~2e-14 K/s, one ulp of theta over dt).  There a tendency passes a
+# step if its error is <= max(1e-9 * max|ref|, 8 * eps * max|X| / dt);
+# numpy keeps TOL for everything.
+PBL_TENDENCIES = {
+    "thpten": "theta",  # th0 + tha
+    "upten": "ua",
+    "vpten": "va",
+    "qvpten": "qa_qv",
+    "qcpten": "qa_qc",
+    "qipten": "qa_qi",
+}
+TOL_TENDENCY_OTHER_BACKENDS = 1e-9
+# jax / torch, moisture: a species whose maximum is tiny next to qv carries
+# qv's last-bit libm differences as a large relative error (mynn3_land_kessler
+# qa_qc through step 70: max|qc| ~1e-12 kg/kg cloud residue, error ~5e-22,
+# 5.4e-10 relative on torch and 4.2e-10 on numpy with its SIMD libm, versus
+# ~3e-18 for one ulp of qv; 3e-13 once cloud forms at step 80).  There a qa_*
+# array passes a step if its error is <= max(TOL * max|ref|,
+# ULP_FACTOR * eps * max|qv|).
+ULP_FACTOR = 8.0
+
+
+# Non-numpy backends: the last step where last-bit differences stay at
+# round-off.  myj_kessler: one column (j=17, i=16-17, k=13-16) amplifies
+# them as cloud forms there; a one-ulp perturbation of tha at t=0 in the
+# numpy run grows identically (1e-12 at step 130, ~1e-6 at step 150, same
+# column), so this is sensitivity, not a porting difference.
+OTHER_MAX_STEP = {"myj_kessler": 130}
+
+
+NPY_DISABLE = (
+    "AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4"
+)
+
+_DRIVER = r"""
+import json, sys
+from pathlib import Path
+import numpy as np
+from cm1x.dump import read_dump
+from cm1x.model import Model
+
+case_dir, namelist, backend, max_step = Path(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4])
+prognostic = set(json.loads(sys.argv[5]))
+tend, tend_tol, tend_ulp, tol = json.loads(sys.argv[6])
+m = Model(namelist, backend=backend, fortran_dp=True)
+bk, g = m.bk, m.grid
+n = g.ngxy
+
+def host(v):
+    if isinstance(v, (list, tuple)):
+        return [np.array(bk.to_numpy(x)) for x in v]
+    return np.array(bk.to_numpy(v)) if hasattr(v, "shape") else None
+
+def flat(s):
+    out = {}
+    for k, v in s.items():
+        if k == "qa":
+            for i, a in enumerate(host(v)):
+                out[i] = a
+            continue
+        a = host(v)
+        if isinstance(a, np.ndarray) and a.ndim in (2, 3):
+            out[k] = a
+    return out
+
+qnames = {}
+for name in ("qv", "qc", "qr", "qi", "qs", "qg"):
+    i = int(m.cfg.get("nq" + name[1], 0) or 0)
+    if i >= 1:
+        qnames["qa_" + name] = i - 1
+
+def inner(a):
+    if a.ndim == 2:
+        a = a[None]
+    return a[1:-1, n:-n, n:-n] if a.shape[0] > 1 and a.shape[0] in (g.nk + 2, g.nk + 3) else a[:, n:-n, n:-n]
+
+base = {k: v for k, v in ((k, host(v)) for k, v in m.base.items()) if isinstance(v, np.ndarray) and v.ndim in (2, 3)}
+steps = sorted(int(p.name.split("_")[1]) for p in case_dir.glob("step_*"))
+steps = [s for s in steps if s <= max_step]
+res = {"steps": steps, "errors": [], "compared": {}, "missing": [], "tend_ratio": {}, "qa_ratio": {}}
+prev = None
+for step in steps:
+    while m.nstep < step:
+        if m.nstep == step - 1:
+            prev = flat(m.state)
+        m.step()
+    cur = flat(m.state)
+    d, _ = read_dump(case_dir / f"step_{step:06d}")
+    for k, b in d.items():
+        key = qnames.get(k, k)
+        isprog = k in prognostic or k.startswith("qa_")
+        if not isprog and key not in cur and key in base:
+            if step != steps[0]:
+                continue
+            src = base
+        elif not isprog and step == 0:
+            continue
+        else:
+            src = cur if isprog else prev
+        if key not in src:
+            if k not in res["missing"]:
+                res["missing"].append(k)
+            continue
+        a = src[key]
+        if a.ndim == 2:
+            a = a[None]
+        if a.shape != b.shape:
+            res["errors"].append([k, step, f"shape {a.shape} != {b.shape}"])
+            continue
+        ai, bi = inner(a), inner(b)
+        sc = float(np.abs(bi).max())
+        e = float(np.abs(ai - bi).max()) / (sc if sc > 0 else 1.0)
+        if not np.isfinite(e):
+            e = float("inf")  # max(0.0, nan) would hide a NaN
+        res["compared"][k] = max(res["compared"].get(k, 0.0), e)
+        if k.startswith("qa_") and "qa_qv" in qnames:
+            # error in units of the round-off floor 8*eps*max|qv|
+            qv = inner(cur[qnames["qa_qv"]])
+            floor = tend_ulp * np.finfo(np.float64).eps * float(np.abs(qv).max())
+            abserr = float(np.abs(ai - bi).max())
+            r = abserr / floor if floor > 0 else float("inf")
+            r = min(r, e / tol) if np.isfinite(e) else float("inf")
+            res["qa_ratio"][k] = max(res["qa_ratio"].get(k, 0.0), r)
+        if k in tend and prev is not None and step > 0:
+            # error in units of the round-off floor 8*eps*max|X|/dt (X: the
+            # prognostic this tendency changes, at the step it was computed)
+            xn = tend[k]
+            if xn == "theta":
+                x = prev["tha"] + base["th0"]
+            else:
+                x = prev.get(qnames.get(xn, xn))
+            if x is not None:
+                floor = tend_ulp * np.finfo(np.float64).eps * float(np.abs(inner(x)).max()) / m.dt
+                abserr = float(np.abs(ai - bi).max())
+                r = abserr / floor if floor > 0 else float("inf")
+                r = min(r, e / tend_tol) if np.isfinite(e) else float("inf")
+                res["tend_ratio"][k] = max(res["tend_ratio"].get(k, 0.0), r)
+print("RESULT" + json.dumps(res))
+"""
+
+
+def _case_files(case):
+    d = Path(DUMP_DIR) / case
+    nml = d / "namelist.input"
+    for alt in (REF_DIR / case, REF_DIR / "pbl" / case):
+        if not nml.exists():
+            nml = alt / "namelist.input"
+    lu = d / "LANDUSE.TBL"
+    if not lu.exists():
+        lu = REF_DIR / case / "LANDUSE.TBL"
+    return d, nml, lu
+
+
+@pytest.mark.reference
+@pytest.mark.skipif(
+    not DUMP_DIR, reason="set CM1X_DUMP_DIR_PBL to the PBL dump directory"
+)
+@pytest.mark.parametrize("case", CASES)
+def test_pbl_case_vs_cm1_dumps(case, bk, tmp_path):
+    if bk.name != "numpy" and os.environ.get("CM1X_TEST_ALL_BACKENDS") != "1":
+        pytest.skip("set CM1X_TEST_ALL_BACKENDS=1 to run the (slow) non-numpy backends")
+    d, nml, lu = _case_files(case)
+    if not d.is_dir() or not any(d.glob("step_*")):
+        pytest.skip(f"no dumps for {case} in {DUMP_DIR}")
+    assert nml.exists(), f"no namelist.input for {case}"
+    env = dict(os.environ, NPY_DISABLE_CPU_FEATURES=NPY_DISABLE)
+    if lu.exists():
+        env["CM1X_LANDUSE_TBL"] = str(lu)
+    max_step = os.environ.get("CM1X_PBL_MAX_STEP", "1000000000")
+    if bk.name != "numpy" and case in OTHER_MAX_STEP:
+        max_step = str(min(int(max_step), OTHER_MAX_STEP[case]))
+    p = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _DRIVER,
+            str(d),
+            str(nml),
+            bk.name,
+            max_step,
+            json.dumps(PROGNOSTIC),
+            json.dumps([PBL_TENDENCIES, TOL_TENDENCY_OTHER_BACKENDS, ULP_FACTOR, TOL]),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    lines = [ln for ln in p.stdout.splitlines() if ln.startswith("RESULT")]
+    assert p.returncode == 0 and lines, p.stderr[-4000:]
+    res = json.loads(lines[-1][len("RESULT") :])
+    assert res["steps"], f"no steps compared for {case}"
+    bad = {}
+    for k, e in res["compared"].items():
+        if e <= TOL:
+            continue
+        if bk.name != "numpy" and k in PBL_TENDENCIES and k in res["tend_ratio"]:
+            if res["tend_ratio"][k] <= 1.0:
+                continue
+            e = f"{e:.2e} (worst step at {res['tend_ratio'][k]:.2f}x its tolerance)"
+        elif bk.name != "numpy" and k.startswith("qa_") and k in res["qa_ratio"]:
+            if res["qa_ratio"][k] <= 1.0:
+                continue
+            e = f"{e:.2e} (worst step at {res['qa_ratio'][k]:.2f}x its tolerance)"
+        bad[k] = e
+    assert not res["errors"], res["errors"]
+    assert not bad, f"{case}: max relative error over steps {res['steps'][-1]}: {bad}"
+    assert any(k in res["compared"] for k in ("ua", "tha")), res
