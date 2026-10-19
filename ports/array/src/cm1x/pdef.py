@@ -80,14 +80,20 @@ def pdefqtest(bk, g, cfg=None, *, rmax, asq, ruh, rvh, rmh, rho, q3d):
 
     q = q3d[K, J, I]
     r = rho[K, J, I]
-    w = _hbcast(ruh, "i")[..., I] * _hbcast(rvh, "j")[..., J, :] * rmh[K, J, I]
+    ru = _hbcast(ruh, "i")[..., I]
+    rv = _hbcast(rvh, "j")[..., J, :]
+    rm = rmh[K, J, I]
+
+    def wm(x):  # rho*q*ruh(i)*rvh(j)*rmh(i,j,k), CM1's left-to-right order
+        return x * ru * rv * rm
+
     rmax = float(rmax)
     nk = q.shape[0]
     qz = xp.where(q < rmax, xp.zeros_like(q), q)
 
     if pdscheme == 1:
         rq = r * q
-        rqw = rq * w
+        rqw = wm(rq)
         rqz = r * qz
         t1, a1, t2 = rq[0], rqw[0], rqz[0]
         for k in range(1, nk):
@@ -97,7 +103,7 @@ def pdefqtest(bk, g, cfg=None, *, rmax, asq, ruh, rvh, rmh, rho, q3d):
         t3 = (t1 + 1.0e-20) / (t2 + 1.0e-20)
         t3 = xp.where(t3 < 0.0, xp.ones_like(t3), t3)
         qn = t3[None, :, :] * qz
-        a2l = r * qn * w
+        a2l = wm(r * qn)
         a2 = a2l[0]
         for k in range(1, nk):
             a2 = a2 + a2l[k]
@@ -108,9 +114,9 @@ def pdefqtest(bk, g, cfg=None, *, rmax, asq, ruh, rvh, rmh, rho, q3d):
         for j in range(1, bud.shape[0]):
             out_asq = out_asq + bud[j] * tem
     else:
-        a1 = r * q * w
+        a1 = wm(r * q)
         qn = qz
-        a2 = r * qn * w
+        a2 = wm(r * qn)
         d = a2 - a1  # budk(k) = sum_j sum_i (a2 - a1)
         out_asq = asq
         for k in range(nk):
