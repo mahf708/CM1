@@ -1,11 +1,12 @@
 ! Harness driver for thompson_init (src/thompson.F): constants, size bins and
-! lookup tables, through module_mp_thompson_pub (thompson.F, all public).
+! lookup tables, through module_mp_thompson in its public variant
+! (tests/fortran.py public_module: every entity public, same code).
 ! params = [nt_c].  Also writes the table files qr_acr_qgV2.dat,
 ! qr_acr_qsV2.dat and freezeH2O.dat (the format thompson_init reads back), so
 ! later drivers skip the expensive table computation.
 program drv_thompson_init
   use harness_io
-  use module_mp_thompson_pub
+  use module_mp_thompson
   implicit none
   real :: params(1), hgt(1,1,1), scal(60)
   integer :: n

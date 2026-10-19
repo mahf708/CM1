@@ -109,7 +109,9 @@ def _fortran_columns(c, dt, eqtset):
     outs = {n: (ncol, nk) for n in COL_OUT}
     outs["ppt"] = (ncol, 4)
     outs["vt"] = (ncol, 5, nk + 1)
-    f = run_driver("thompson_column", ins, outs, files=_datfiles())
+    f = run_driver(
+        "thompson_column", ins, outs, public=("thompson",), files=_datfiles()
+    )
     ref = {n: f[n].T for n in COL_OUT}
     ref.update({n: f["ppt"][:, j] for j, n in enumerate(PPT)})
     ref.update({n: f["vt"][:, j, :].T for j, n in enumerate(VT)})

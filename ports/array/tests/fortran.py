@@ -42,61 +42,83 @@ def objdir(prec: str) -> Path:
     return d / "src"
 
 
-# Drivers that ``use module_mp_thompson_pub``: a copy of CM1's thompson.F
-# with every entity public (tables, constants, mp_thompson), compiled with
-# CM1's own flags under another module name next to CM1's objects.
-PUB_MODULES = {"module_mp_thompson_pub": "thompson.F"}
-
-
-def _pub_module(mod: str, obj: Path, bdir: Path, extra: list) -> Path:
-    src = (obj / PUB_MODULES[mod]).read_text()
-    orig = mod[: -len("_pub")]
+def public_module(text: str) -> str:
+    """Source edit for ``build_driver(..., public=...)``: make every entity of
+    a Fortran module public (drop the default ``private`` statement, the
+    ``PRIVATE ::`` lists and the ``, PRIVATE`` attributes), so that a
+    harness driver can call a module's private routines and read its
+    constants.  The generated code of the routines is unchanged."""
     out = []
-    for line in src.split("\n"):
-        t = line.strip().lower()
-        if t == "private":
+    for line in text.splitlines():
+        s = line.strip().lower()
+        if s == "private" or (s.startswith("private") and "::" in s):
             continue
-        if not t.startswith("!"):
-            line = re.sub(r",\s*PRIVATE\s*::", " ::", line, flags=re.I)
-            line = re.sub(rf"\b{orig}\b", mod, line, flags=re.I)
-        out.append(line)
-    f = bdir / f"{mod}.F"
-    f.write_text("\n".join(out))
-    o = bdir / f"{mod}.o"
-    subprocess.run(
-        ["gfortran", "-ffree-form", "-ffree-line-length-none", "-O2",
-         "-fallow-argument-mismatch", *extra, f"-I{obj}", f"-J{bdir}", "-c",
-         str(f), "-o", str(o)],
-        check=True, cwd=bdir,
-    )  # fmt: skip
-    return o
+        out.append(re.sub(r",\s*private\b", "", line, flags=re.IGNORECASE))
+    return "\n".join(out) + "\n"
 
 
-def build_driver(name: str, prec: str = "r8") -> Path:
+def variant_obj(stem: str, prec: str, edit=public_module) -> tuple[Path, Path]:
+    """Compile ``edit`` applied to CM1's preprocessed ``<stem>.f90`` with the
+    harness object flags (build_objs.sh), in its own directory so that its
+    ``.mod`` files do not replace CM1's.  Returns (object file, module dir).
+    The object has the same symbols as ``<stem>.o`` (plus the ones made
+    public) and replaces it when linking a driver."""
+    obj = objdir(prec)
+    vdir = CACHE / f"variant_{stem}_{prec}"
+    o = vdir / f"{stem}.o"
+    srcf = obj / f"{stem}.f90"
+    if o.exists() and o.stat().st_mtime > srcf.stat().st_mtime:
+        return o, vdir
+    vdir.mkdir(parents=True, exist_ok=True)
+    (vdir / f"{stem}.f90").write_text(edit(srcf.read_text()))
+    extra = ["-fdefault-real-8", "-fdefault-double-8"] if prec == "r8" else []
+    cmd = [
+        "gfortran",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-O2",
+        "-fallow-argument-mismatch",
+        *extra,
+        f"-I{obj}",
+        "-c",
+        f"{stem}.f90",
+    ]
+    subprocess.run(cmd, check=True, cwd=vdir)
+    return o, vdir
+
+
+def build_driver(name: str, prec: str = "r8", public: tuple = ()) -> Path:
+    """Compile and link ``drv_<name>.F90`` against CM1's objects.  ``public``
+    names CM1 source stems (e.g. ``("morrison",)``) whose module is linked
+    in its ``public_module`` variant (see ``variant_obj``)."""
     obj = objdir(prec)
     drv = HARNESS / f"drv_{name}.F90"
     exe = CACHE / f"drv_{name}_{prec}.exe"
     deps = [drv, HARNESS / "harness_io.F90"]
+    variants = {stem: variant_obj(stem, prec) for stem in public}
+    deps += [o for o, _ in variants.values()]
     if exe.exists() and all(exe.stat().st_mtime > p.stat().st_mtime for p in deps):
         return exe
     bdir = CACHE / f"build_{name}_{prec}"
     bdir.mkdir(parents=True, exist_ok=True)
     extra = ["-fdefault-real-8", "-fdefault-double-8"] if prec == "r8" else []
-    text = drv.read_text().lower()
-    pubs = [str(_pub_module(m, obj, bdir, extra)) for m in PUB_MODULES if m in text]
-    objs = [str(p) for p in sorted(obj.glob("*.o")) if p.name != "cm1.o"]
+    objs = [
+        str(variants[p.stem][0]) if p.stem in variants else str(p)
+        for p in sorted(obj.glob("*.o"))
+        if p.name != "cm1.o"
+    ]
     cmd = [
         "gfortran",
         "-O1",
         "-ffree-line-length-none",
         "-fallow-argument-mismatch",
         *extra,
+        *[f"-I{d}" for _, d in variants.values()],
         f"-I{obj}",
         f"-J{bdir}",
         "-cpp",
         str(HARNESS / "harness_io.F90"),
         str(drv),
-        *pubs,
         *objs,
         "-o",
         str(exe),
@@ -110,13 +132,19 @@ def build_driver(name: str, prec: str = "r8") -> Path:
 
 
 def run_driver(
-    name: str, inputs: dict, outputs: dict, prec: str = "r8", files=(), keep=()
+    name: str,
+    inputs: dict,
+    outputs: dict,
+    prec: str = "r8",
+    public: tuple = (),
+    files=(),
+    keep=(),
 ) -> dict:
     """inputs: name -> numpy array (Python [k,j,i] order); outputs: name -> shape.
-    ``files``: paths copied into the run directory first (e.g. Thompson's
-    table files); ``keep``: (file name, destination) pairs copied out after
-    the run."""
-    exe = build_driver(name, prec)
+    ``public``: see ``build_driver``.  ``files``: paths copied into the run
+    directory first (e.g. Thompson's table files); ``keep``: (file name,
+    destination) pairs copied out after the run."""
+    exe = build_driver(name, prec, public)
     dt = DTYPES[prec]
     with tempfile.TemporaryDirectory() as wd:
         for f in files:

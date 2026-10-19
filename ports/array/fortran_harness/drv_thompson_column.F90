@@ -1,5 +1,6 @@
 ! Harness driver for mp_thompson (src/thompson.F) on independent columns,
-! through module_mp_thompson_pub (thompson.F, all public).
+! through module_mp_thompson in its public variant
+! (tests/fortran.py public_module: every entity public, same code).
 ! params = [nt_c, dt, nk, ncol, eqtset].  The table files written by
 ! drv_thompson_init (qr_acr_qgV2.dat, ...) must be in the run directory.
 ! Each column is set up exactly as mp_gt_driver does (non-aerosol: nc1d =
@@ -7,7 +8,7 @@
 ! Inputs a(nk, ncol): qv qc qi qr qs qg ni nr t p w dz.
 program drv_thompson_column
   use harness_io
-  use module_mp_thompson_pub
+  use module_mp_thompson
   implicit none
   real :: params(5), hgt(1,1,1), dt
   integer :: nk, ncol, eqt, i, k

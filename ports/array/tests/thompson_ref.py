@@ -71,6 +71,7 @@ def fortran_tables(nt_c=100.0) -> dict:
         "thompson_init",
         {"params": np.array([nt_c])},
         outs,
+        public=("thompson",),
         keep=[(f, d / f) for f in DATFILES],
     )
     out = {k: (v if k == "scalars" else v.T) for k, v in res.items()}
