@@ -43,14 +43,24 @@ def _bcflags(cfg):
     return b
 
 
+def _hvturb(cfg):
+    """param.F dohturb, dovturb (default: both, the LES)."""
+    return bool(_opt(cfg, "dohturb", True)), bool(_opt(cfg, "dovturb", True))
+
+
+def _hzero(xp, cfg, tx, ty):
+    """turbx = turby = 0 without dohturb."""
+    if _hvturb(cfg)[0]:
+        return tx, ty
+    return xp.zeros_like(tx), xp.zeros_like(ty)
+
+
 def _check(cfg, who):
     bad = []
-    for name, ok in (("axisymm", (0,)), ("cm1setup", (1,))):
+    for name, ok in (("axisymm", (0,)), ("cm1setup", (1, 2))):
         v = int(_opt(cfg, name, ok[0]))
         if v not in ok:
             bad.append(f"{name}={v}")
-    if _opt(cfg, "dosfcflx", False):
-        bad.append("dosfcflx=T")
     if bad:
         raise NotImplementedError(f"{who}: options not ported: " + ", ".join(bad))
 
@@ -231,9 +241,10 @@ def _tridiag(bk, cfa, cfb, cfc, cfd):
 def turbsz(
     bk, g, cfg=None, *, iflux, dt, mh, mf, rho, rr, rf, s, khv, dum7, dum8, sflux=None
 ):
-    """turbtend.F ``turbsz`` (cm1setup=1, no surface flux): vertical subgrid
-    tendency ``turbz`` (k=1..nk, i=1..ni, j=1..nj), returned as the interior
-    ``[nk, nj, ni]`` array."""
+    """turbtend.F ``turbsz`` (cm1setup=1, 2): vertical subgrid tendency
+    ``turbz`` (k=1..nk, i=1..ni, j=1..nj), returned as the interior
+    ``[nk, nj, ni]`` array.  With iflux=1 and dosfcflx the surface flux
+    ``sflux`` (2-D [j, i] with halos: thflux or qvflux) sets the k=1 flux."""
     xp = bk.xp
     nk, nj, ni = g.nk, g.nj, g.ni
     doimpl = int(_opt(cfg, "doimpl", 1))
@@ -243,6 +254,11 @@ def turbsz(
 
     def lev(a, k):
         return Reg(g, (k, k), J, I)(a)[0]
+
+    fluxb = None
+    if iflux == 1 and _opt(cfg, "dosfcflx", False):
+        n = g.ngxy
+        fluxb = sflux[n : n + nj, n : n + ni] * lev(rf, 1)
 
     if doimpl == 0:
         dz_ = [None] * (nk + 2)
@@ -261,6 +277,8 @@ def turbsz(
         else:
             dz_[1] = dz_[2]
             dz_[nk + 1] = dz_[nk]
+        if fluxb is not None:
+            dz_[1] = fluxb
         tz = [-(dz_[k + 1] - dz_[k]) * rdz * lev(mh, k) for k in range(1, nk + 1)]
         return _stack(xp, tz)
 
@@ -280,6 +298,8 @@ def turbsz(
             * lev(mf, nk)
             * lev(rf, nk)
         )
+    if fluxb is not None:
+        dzb = fluxb
 
     def L(a, k0, k1):  # levels k0..k1 (Fortran) over j, i
         return Reg(g, (k0, k1), J, I)(a)
@@ -368,23 +388,27 @@ def turbs(
         tx, ty = _open_zero(bk, g, b, tx, ty, K, ni, nj)
         tx, ty = R(tx), R(ty)
 
-    tz = turbsz(
-        bk,
-        g,
-        cfg,
-        iflux=iflux,
-        dt=dt,
-        mh=mh,
-        mf=mf,
-        rho=rho,
-        rr=rr,
-        rf=rf,
-        s=s,
-        khv=khv,
-        dum7=dum7,
-        dum8=dum8,
-        sflux=sflux,
-    )
+    tx, ty = _hzero(bk.xp, cfg, tx, ty)
+    if _hvturb(cfg)[1]:
+        tz = turbsz(
+            bk,
+            g,
+            cfg,
+            iflux=iflux,
+            dt=dt,
+            mh=mh,
+            mf=mf,
+            rho=rho,
+            rr=rr,
+            rf=rf,
+            s=s,
+            khv=khv,
+            dum7=dum7,
+            dum8=dum8,
+            sflux=sflux,
+        )
+    else:
+        tz = bk.xp.zeros_like(tx)
     out = R(sten) + ((tx + ty) + tz) * R(rr)
     return {"sten": bk.set(bk.copy(sten), R.idx, out)}
 
@@ -939,23 +963,27 @@ def turbu(
         ty = bk.set(bk.zeros(g.u_shape), R.idx, ty)
         tx, ty = _open_zero(bk, g, b, tx, ty, K, ni + 1, nj, iy=(1, ni + 1))
         tx, ty = R(tx), R(ty)
-    tz = _uvz(
-        bk,
-        g,
-        cfg,
-        dt=dt,
-        ax="i",
-        u=u,
-        rho=rho,
-        rf=rf,
-        mh=mh,
-        mf=mf,
-        kmv=kmv,
-        t13=t13,
-        w=w,
-        uf_or_vf=uf,
-        tm=tm,
-    )
+    tx, ty = _hzero(bk.xp, cfg, tx, ty)
+    if _hvturb(cfg)[1]:
+        tz = _uvz(
+            bk,
+            g,
+            cfg,
+            dt=dt,
+            ax="i",
+            u=u,
+            rho=rho,
+            rf=rf,
+            mh=mh,
+            mf=mf,
+            kmv=kmv,
+            t13=t13,
+            w=w,
+            uf_or_vf=uf,
+            tm=tm,
+        )
+    else:
+        tz = bk.xp.zeros_like(tx)
     rru0 = 1.0 / (0.5 * (R(rho, di=-1) + R(rho)))
     out = R(uten) + ((tx + ty) + tz) * rru0
     return {"uten": bk.set(bk.copy(uten), R.idx, out)}
@@ -1026,23 +1054,27 @@ def turbv(
         ty = bk.set(bk.zeros(g.v_shape), R.idx, ty)
         tx, ty = _open_zero(bk, g, b, tx, ty, K, ni, nj + 1, jx=(1, nj + 1))
         tx, ty = R(tx), R(ty)
-    tz = _uvz(
-        bk,
-        g,
-        cfg,
-        dt=dt,
-        ax="j",
-        u=v,
-        rho=rho,
-        rf=rf,
-        mh=mh,
-        mf=mf,
-        kmv=kmv,
-        t13=t23,
-        w=w,
-        uf_or_vf=vf,
-        tm=tm,
-    )
+    tx, ty = _hzero(bk.xp, cfg, tx, ty)
+    if _hvturb(cfg)[1]:
+        tz = _uvz(
+            bk,
+            g,
+            cfg,
+            dt=dt,
+            ax="j",
+            u=v,
+            rho=rho,
+            rf=rf,
+            mh=mh,
+            mf=mf,
+            kmv=kmv,
+            t13=t23,
+            w=w,
+            uf_or_vf=vf,
+            tm=tm,
+        )
+    else:
+        tz = bk.xp.zeros_like(tx)
     rrv0 = 1.0 / (0.5 * (R(rho, dj=-1) + R(rho)))
     out = R(vten) + ((tx + ty) + tz) * rrv0
     return {"vten": bk.set(bk.copy(vten), R.idx, out)}
@@ -1127,7 +1159,13 @@ def turbw(
     def lev(a, k):
         return Reg(g, (k, k), J, I)(a)[0]
 
-    if doimpl == 0:
+    tx, ty = _hzero(xp, cfg, tx, ty)
+    dovert = _hvturb(cfg)[1] or (
+        int(_opt(cfg, "cm1setup", 1)) == 2 and int(_opt(cfg, "ipbl", 0)) == 2
+    )
+    if not dovert:
+        tz = xp.zeros_like(tx)
+    elif doimpl == 0:
         tz = _stack(
             xp,
             [

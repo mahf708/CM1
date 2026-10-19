@@ -26,8 +26,10 @@ state.  imove (domain translation) changes only the base-state winds
 
 from __future__ import annotations
 
+import dataclasses
+
 from . import bc as _bc
-from .backend import get_backend, is_array
+from .backend import get_backend, is_array, torch_kernel_options
 from .misc import dtsmall
 from .mp_driver import mp_driver
 from .namelist import read_namelist
@@ -94,9 +96,11 @@ class Model:
 
     Parameters: ``namelist_path`` (CM1 namelist.input), ``backend``
     ('numpy', 'jax', 'torch'; also 'dask', 'array_api_strict'), ``dtype``
-    ('float64' or 'float32'), ``jit`` (compile the whole time step with
-    ``Backend.compile``: ``jax.jit`` on jax, ``torch.compile`` on torch, a
-    no-op elsewhere; ``jit_options`` are passed to the compiler),
+    ('float64' or 'float32'), ``jit`` (jax: compile the whole time step with
+    ``jax.jit``, ``jit_options`` passed to it; torch: ``torch.compile`` each
+    hot routine separately (``Backend.kernel``; ``jit_options`` update
+    ``backend.TORCH_KERNEL_DEFAULTS``), or the whole step with
+    ``jit_options={"whole_step": True}``; a no-op elsewhere),
     ``overrides`` ({namelist name: value}, e.g. ``{"nx": 80, "ny": 80}``).
     ``step(hooks=...)`` always runs eagerly.
     Attributes: ``cfg``, ``bk``, ``grid``, ``base``, ``state`` (dict of
@@ -116,9 +120,20 @@ class Model:
         self.cfg = cfg = read_namelist(
             namelist_path, dp=fortran_dp, overrides=overrides
         )
+        from .pbl import apply_options as _pbl_options
+
+        _pbl_options(cfg)  # param.F: bbc, isfcflx, dosfcflx, use_pbl, ...
         self.bk = bk = get_backend(backend, dtype)
         self.jit = bool(jit)
         self.jit_options = dict(jit_options or {})
+        # torch: jit=True compiles the hot routines one by one (Backend.kernel)
+        # and runs the step eagerly between them; whole_step=True compiles the
+        # whole step instead (very slow to compile, see bench/results_cpu.md)
+        self._whole_step = bool(self.jit_options.pop("whole_step", bk.name != "torch"))
+        if self.jit and bk.name == "torch" and not self._whole_step:
+            self.bk = bk = dataclasses.replace(
+                bk, kernels=torch_kernel_options(self.jit_options)
+            )
         # compiled step, shared by shallow copies (cm1x._grad_utils.clone)
         self._jit_cache = {}
         self.grid, self.base, st = initialize(cfg, bk)
@@ -181,6 +196,8 @@ class Model:
             1,
             4,
         )
+        # cm1setup=2: the boundary-layer path (cm1x.pbl)
+        self.meso = int(cfg.get("cm1setup", 1)) == 2
         self.terrain = bool(cfg.get("terrain_flag", False))
         self.moist = int(cfg.imoist) == 1
         if self.les:
@@ -205,8 +222,22 @@ class Model:
             # cm1.F startup: radiation on the initial state (dorad = .true.)
             s.update(self._radiation(s, self.base, **self._solar(0.0)))
             self._advance_radtim(0.0)
+        if self.meso:
+            self._sfc_and_turb_pbl(
+                s,
+                self.base,
+                nstep=0,
+                rtime=0.0,
+                u3d=s["u3d"],
+                v3d=s["v3d"],
+                w3d=s["w3d"],
+                pp3d=s["pp3d"],
+                th3d=s["th3d"],
+                q3d=s["q3d"],
+            )
         if self.les:
             self._sfc_and_turb(
+                nstep=0,
                 rtime=0.0,
                 u3d=s["u3d"],
                 v3d=s["v3d"],
@@ -226,18 +257,45 @@ class Model:
         init_surface.F sets tsk, albd, emiss, xland and z0 (state ``znt``).
         Returns True when the sgsmodel=0 surface layer (surface drag) runs."""
         cfg, bk, g = self.cfg, self.bk, self.grid
+        # the surface layer and PBL scheme modules (cm1x.pbl registry)
+        from .pbl import PBL_TENDENCIES, Context, scheme
+
+        self.sfc_mod, self.pbl_mod = scheme(cfg, "sfc"), scheme(cfg, "pbl")
+        for mod in (self.sfc_mod, self.pbl_mod):
+            if mod is not None and hasattr(mod, "check"):
+                mod.check(cfg)
+        if self.meso:
+            # turb.F arrays of the mesoscale path, and the PBL tendencies
+            for k in ("kmh", "kmv", "khh", "khv", "nm", "defv", "defh", "dissten"):
+                s[k] = bk.zeros(g.w_shape)
+            for k in ("t11", "t12", "t13", "t22", "t23", "t33") + PBL_TENDENCIES:
+                s[k] = bk.zeros(g.s_shape)
         if int(cfg.get("sfcmodel", 0)) < 1:
+            if self.meso and self.pbl_mod is not None:
+                raise NotImplementedError("a PBL scheme needs a surface model")
             return False
         from .init_surface import init_surface
 
         cfg.bbc = 3
         sf = init_surface(bk, g, cfg)
-        s["znt"] = sf.pop("znt")
+        znt = sf.pop("znt")
         self.base.update(sf)
-        if self.les:
-            raise NotImplementedError(
-                "sfcmodel>=1 (bbc=3) with sgsmodel=1 is not ported"
+        if self.les or self.meso:
+            from .pbl import init_surface_state
+
+            s.update(init_surface_state(bk, g, cfg, self.base))
+            ctx = Context(
+                bk, g, cfg, dt=self.dt, nstep=None, rtime=0.0, s=s, b=self.base
             )
+            from . import slab
+
+            if int(cfg.get("sfcmodel", 0)) in slab.SLAB_SFCMODELS:
+                s.update(slab.init_state(ctx))
+            for mod in (self.sfc_mod, self.pbl_mod):
+                if mod is not None and hasattr(mod, "init_state"):
+                    s.update(mod.init_state(ctx))
+            return False
+        s["znt"] = znt
         return True
 
     def _sfclayer(self, s, b):
@@ -273,7 +331,7 @@ class Model:
         from . import radiation_driver as rd
 
         rd._check(cfg)
-        if not self.sfc:
+        if int(cfg.get("sfcmodel", 0)) < 1:
             raise NotImplementedError("radopt=2 needs a surface model (sfcmodel>=1)")
         self.nlayers = lw.nlayers_lw(g.nk, rd.p_top(self.base, g.nk))
         # radiation_driver: dtrad = max(dtrad, dt)
@@ -320,24 +378,54 @@ class Model:
             ppi=s["ppi"],
             tha=s["tha"],
             qa=s["qa"],
-            tsk=b["tsk"],
+            tsk=s.get("tsk", b["tsk"]),
             albd=b["albd"],
             emiss=b["emiss"],
-            xland=b["xland"],
+            xland=s.get("xland", b["xland"]),
             xice=b["xice"],
             xsnow=b["xsnow"],
             swtenc=s["swtenc"],
             cg=cg,
         )
 
-    def _sfc_and_turb(self, s=None, b=None, *, rtime, u3d, v3d, w3d, pp3d, th3d, q3d):
-        """cm1.F: ``sfc_and_turb`` on the new time level (LES path).  Updates
-        the state dict ``s`` (default ``self.state``) in place."""
+    def _ctx(self, s, b, *, nstep, rtime, u3d, v3d, w3d, pp3d, th3d, q3d):
+        from .pbl import Context
+
+        return Context(
+            self.bk, self.grid, self.cfg, dt=self.dt, nstep=nstep, rtime=rtime,
+            s=s, b=b, u3d=u3d, v3d=v3d, w3d=w3d, pp3d=pp3d, th3d=th3d, q3d=q3d,
+            rho=s["rho"], rr=s["rr"], rf=s["rf"], prs=s["prs"],
+        )  # fmt: skip
+
+    def _sfc_and_turb_pbl(self, s, b, **kw):
+        """cm1.F: ``sfc_and_turb`` for cm1setup=2 (cm1x.pbl).  Updates the
+        state dict ``s`` in place."""
+        from .pbl import sfc_and_turb_pbl
+
+        sfc_and_turb_pbl(self._ctx(s, b, **kw))
+
+    def _sfc_and_turb(
+        self, s=None, b=None, *, nstep=1, rtime, u3d, v3d, w3d, pp3d, th3d, q3d
+    ):
+        """cm1.F: ``sfc_and_turb`` on the new time level (LES path; with
+        sfcmodel>=1 the surface block of cm1x.pbl first).  Updates the state
+        dict ``s`` (default ``self.state``) in place."""
         from .turb import sfc_and_turb
 
         bk, g, cfg = self.bk, self.grid, self.cfg
         s = self.state if s is None else s
         b = self.base if b is None else b
+        sfc = None
+        if self.sfc_mod is not None:
+            from .pbl import surface
+
+            surface(
+                self._ctx(
+                    s, b, nstep=nstep, rtime=rtime, u3d=u3d, v3d=v3d, w3d=w3d,
+                    pp3d=pp3d, th3d=th3d, q3d=q3d,
+                )
+            )  # fmt: skip
+            sfc = s
         keys = (
             "kmh",
             "kmv",
@@ -390,6 +478,7 @@ class Model:
             ce1=s["ce1"],
             ce2=s["ce2"],
             terrain=self._turb_terrain(b),
+            sfc=sfc,
             **{k: s.get(k) for k in keys},
         )
         for k in keys + ("tkea", "tke3d", "cme", "csm", "ce1", "ce2"):
@@ -403,7 +492,7 @@ class Model:
         mtime = self.mtime + self.dt
         dorad = self._dorad()
         sol = self._solar(mtime) if dorad else {"coszen": 0.0, "solcon": 0.0}
-        if self.jit and hooks is None:
+        if self.jit and self._whole_step and hooks is None:
             fn = self._compiled_step(dorad)
             barr = {k: v for k, v in self.base.items() if is_array(v)}
             self.state = fn(
@@ -505,7 +594,9 @@ class Model:
             qtten=s["qtten"],
             qvten=s["qvten"],
             qcten=s["qcten"],
-            turb=self._turb_inputs(s, b) if self.les else self._sfc_inputs(s, b),
+            turb=self._turb_inputs(s, b)
+            if (self.les or self.meso)
+            else self._sfc_inputs(s, b),
             thraten=s.get("thraten"),
         )
 
@@ -662,11 +753,25 @@ class Model:
                 hooks("post_radiation", 0, s)
         if self.sfc:
             s.update(self._sfclayer(s, b))
+        if self.meso:
+            self._sfc_and_turb_pbl(
+                s,
+                b,
+                nstep=self.nstep + 1,
+                rtime=mtime,
+                u3d=r2["u3d"],
+                v3d=r2["v3d"],
+                w3d=r2["w3d"],
+                pp3d=r3["pp3d"],
+                th3d=r3["th3d"],
+                q3d=r3["q3d"],
+            )
         if self.les:
             s["tkea"], s["tke3d"] = r3["tkea"], r2["tke3d"]
             self._sfc_and_turb(
                 s,
                 b,
+                nstep=self.nstep + 1,
                 rtime=mtime,
                 u3d=r2["u3d"],
                 v3d=r2["v3d"],
@@ -717,6 +822,13 @@ class Model:
     def _turb_inputs(self, s=None, b=None):
         s = self.state if s is None else s
         b = self.base if b is None else b
+        if self.meso or self.sfc_mod is not None:
+            # everything the PBL / surface path carries (surface arrays,
+            # PBL tendencies) plus the grid metrics
+            d = dict(s)
+            d.update({k: b[k] for k in ("uh", "uf", "vh", "vf", "mh", "mf", "zf")})
+            d["terrain"] = self._turb_terrain(b)
+            return d
         d = {k: b[k] for k in ("uh", "uf", "vh", "vf", "mh", "mf")}
         for k in (
             "rr",
