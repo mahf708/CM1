@@ -87,7 +87,7 @@ TEST_CASE("init: kessler_terrain_tke_openbc", "[init][ref][terrain]") { check_ca
 TEST_CASE("init: unsupported options throw", "[init]") {
   const auto nl0 = Namelist::from_file(testing::case_namelist("dry_bubble"));
   const std::vector<std::pair<std::string, std::string>> bad = {
-      {"isnd", "7"},      {"iwnd", "5"},           {"iinit", "4"},  {"stretch_z", "2"},
+      {"isnd", "6"},      {"iwnd", "12"},          {"iinit", "4"},  {"stretch_z", "2"},
       {"stretch_x", "1"}, {"irandp", "2"}, {"ibalance", "2"},
       {"testcase", "1"},  {"iorigin", "3"},        {"wbc", "5"}};
   for (const auto& kv : bad) {
