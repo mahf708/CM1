@@ -1,5 +1,7 @@
 !  (included twice from cm1.F; see cm1dump.F)
         call dump_begin(nstep,mtime)
+        if( adapt_dt.eq.1 ) call dump_adapt(dt,nsound,cflmax,ksmax,taptim,stattim,rsttim,  &
+                                             dowriteout,dostat,dorestart)
         call dump1('xh',xh,ib,ie)
         call dump1('rxh',rxh,ib,ie)
         call dump1('uh',uh,ib,ie)

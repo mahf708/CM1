@@ -54,6 +54,8 @@ Namelist Namelist::from_file(const std::string& path) {
   std::stringstream ss;
   ss << f.rdbuf();
   auto nl = from_string(ss.str());
+  const auto slash = path.find_last_of('/');
+  nl.m_dir = (slash == std::string::npos) ? std::string() : path.substr(0, slash);
   try {
     nl.check_cm1_names();
   } catch (const std::exception& e) {
@@ -79,6 +81,10 @@ void Namelist::check_cm1_names() const {
     if (it->second != g)
       throw std::runtime_error("cm1k: &" + g + ": namelist variable '" + key + "' belongs to &" + it->second);
   }
+}
+
+std::string Namelist::input_path(const std::string& name) const {
+  return m_dir.empty() ? name : m_dir + "/" + name;
 }
 
 Namelist Namelist::from_string(const std::string& text) {

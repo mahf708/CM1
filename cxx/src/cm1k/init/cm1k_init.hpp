@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace cm1k {
 namespace init {
@@ -18,7 +19,9 @@ namespace init {
 // parity with it is the goal. Device arrays are filled by deep copies.
 //
 // Supported (anything else throws std::runtime_error):
-//   param.F : stretch_x = stretch_y = 0, stretch_z = 0 or 1, iorigin = 1
+//   param.F : stretch_x = stretch_y = 0, stretch_z = 0..4 (1: analytic,
+//             2: ZGRID geometric, 3/4: input_grid_z next to the namelist,
+//             Namelist::input_path), iorigin = 1
 //             or 2, axisymm = 0, wbc..nbc = 1..4; terrain_flag = .true.
 //             with itern = 1, 2, 3 (init_terrain.F; itern = 4 reads
 //             perts.dat and throws, as does itern = 0): zs, the metrics gz,
@@ -40,6 +43,10 @@ struct ExtrapCoeffs {
   Real wbe1 = 0, wbe2 = 0, wbe3 = 0, wte1 = 0, wte2 = 0, wte3 = 0;
 };
 ExtrapCoeffs extrap_coeffs(const HArray1& sigma, const HArray1& sigmaf, int nk);
+
+// param.F ZGRID (stretch_z = 2): w levels gze(1..nz) (gze has 0..nz+1)
+void zgrid(Real dz, Real dz_stretch, int nz, int nbndlyr, Real dzmax, Real ztopstr, Real rtop,
+           Real dzmaxtop, std::vector<double>& gze);
 
 // Scalars that param.F/base.F derive and later stages use.
 struct InitInfo {
