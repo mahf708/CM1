@@ -5,6 +5,7 @@
 // x**2 is x*x, x**3 is (x*x)*x, x**4 is (x*x)*(x*x), x**(-2) is 1/(x*x),
 // x**(-1) is 1/x, and Fortran's max of two non-NaN numbers is fmax2.
 #include "physics/pbl/cm1k_pbl.hpp"
+#include "share/cm1k_comm.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -126,6 +127,12 @@ void turbparam_horiz(const turb::Options& to, const Options& o, const Bounds& b,
       kmh(i, j, k) = (t * t) * Kokkos::sqrt(fmax2(defh(i, j, k), dmin));
     });
   turb::bcw(to, b, kmh, 1);
+  if (to.mpi) {
+    to.comm->comm_1t_start(kmh, "kmh");
+    to.comm->comm_1t_end(kmh, "kmh");
+    to.comm->getcornert(kmh);
+    bct2(turb::mpi_bc(to, b), kmh);
+  }
   // extrapolate
   Kokkos::parallel_for("pbl_kmh1", box2(0, ni + 1, 0, nj + 1), KOKKOS_LAMBDA(int i, int j) {
     kmh(i, j, 1) = fmax2(0.0, 2.0 * kmh(i, j, 2) - kmh(i, j, 3));
@@ -159,6 +166,12 @@ void turbparam_vert(const turb::Options& to, const Options& o, const Grid& g, co
       kmv(i, j, k) = (lvz(i, j, k) * lvz(i, j, k)) * Kokkos::sqrt(fmax2(defv(i, j, k) - nm(i, j, k) * prinv, dmin));
     });
   turb::bcw(to, b, kmv, 1);
+  if (to.mpi) {
+    to.comm->comm_1t_start(kmv, "kmv");
+    to.comm->comm_1t_end(kmv, "kmv");
+    to.comm->getcornert(kmv);
+    bct2(turb::mpi_bc(to, b), kmv);
+  }
   Kokkos::parallel_for("pbl_khv", box3(0, ni + 1, 0, nj + 1, 1, nk + 1), KOKKOS_LAMBDA(int i, int j, int k) {
     khv(i, j, k) = kmv(i, j, k) * prinv;
   });
@@ -174,6 +187,13 @@ void turbparam_vert(const turb::Options& to, const Options& o, const Grid& g, co
       kmv(i, j, 1) = karman * zntmp(i, j, 1) * ust(i, j, 1);
     });
     turb::bc2d_level(to, b, kmv, 1);
+    if (to.mpi) {
+      // turb.F: corner before bcs2_2d here
+      to.comm->comm_1s2d_start(kmv, 1, "kmv1");
+      to.comm->comm_1s2d_end(kmv, 1, "kmv1");
+      to.comm->comm_2d_corner(kmv, 1);
+      bcs2_2d(turb::mpi_bc(to, b), kmv, 1);
+    }
     Kokkos::parallel_for("pbl_khv1", box2(0, ni + 1, 0, nj + 1), KOKKOS_LAMBDA(int i, int j) {
       khv(i, j, 1) = kmv(i, j, 1) * prinv;
     });

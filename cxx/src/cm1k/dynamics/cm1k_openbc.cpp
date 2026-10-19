@@ -38,6 +38,11 @@ OpenBcParams OpenBcParams::make(const Grid& g, const Namelist& nl) {
   return p;
 }
 
+void OpenBcParams::set_mpi(const Comm& c) {
+  comm = &c;
+  ibw = c.edges().ibw; ibe = c.edges().ibe; ibs = c.edges().ibs; ibn = c.edges().ibn;
+}
+
 void OpenBcParams::check() const {
   auto fail = [](const std::string& m) { throw std::runtime_error("cm1k open bc: unsupported option: " + m); };
   for (int v : {wbc, ebc, sbc, nbc})
@@ -261,6 +266,10 @@ void restrict_openbc_we(const OpenBcParams& p, const FArray1& rvh, const FArray3
   });
   double fluxout, fluxin;
   sum_levels(nk, temout, temin, fluxout, fluxin);
+  if (p.comm) {   // bc.F: MPI_ALLREDUCE of fluxout, then of fluxin
+    fluxout = p.comm->allreduce_sum_value(fluxout);
+    fluxin = p.comm->allreduce_sum_value(fluxin);
+  }
   const double t3 = (fluxin + 1.0e-20) / (fluxout + 1.0e-20);
   if (w)
     Kokkos::parallel_for("restrict_we_w", box2(1, nj, 1, nk), KOKKOS_LAMBDA(int j, int k) {
@@ -302,6 +311,10 @@ void restrict_openbc_sn(const OpenBcParams& p, const FArray1& ruh, const FArray3
   });
   double fluxout, fluxin;
   sum_levels(nk, temout, temin, fluxout, fluxin);
+  if (p.comm) {   // bc.F: MPI_ALLREDUCE of fluxout, then of fluxin
+    fluxout = p.comm->allreduce_sum_value(fluxout);
+    fluxin = p.comm->allreduce_sum_value(fluxin);
+  }
   const double t3 = (fluxin + 1.0e-20) / (fluxout + 1.0e-20);
   if (s)
     Kokkos::parallel_for("restrict_sn_s", box2(1, ni, 1, nk), KOKKOS_LAMBDA(int i, int k) {

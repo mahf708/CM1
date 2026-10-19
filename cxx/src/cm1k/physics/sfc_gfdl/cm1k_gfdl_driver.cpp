@@ -1,5 +1,6 @@
 // The GFDL surface layer in the time step. See cm1k_gfdl_driver.hpp.
 #include "physics/sfc_gfdl/cm1k_gfdl_driver.hpp"
+#include "share/cm1k_comm.hpp"
 
 namespace cm1k::sfc_gfdl {
 
@@ -85,6 +86,12 @@ void gfdl_surface_layer(const sfc::Options& so, const WrfConst& c, const FArray3
 
 void gfdl_bcs(const turb::Options& to, const Bounds& b, const GfdlSurface& w, const FArray3& zntmp) {
   turb::bc2d_level(to, b, w.f.mznt, 1);
+  if (to.mpi) {
+    to.comm->comm_1s2d_start(w.f.mznt, 1, "sfc_mznt");
+    to.comm->comm_1s2d_end(w.f.mznt, 1, "sfc_mznt");
+    bcs2_2d(turb::mpi_bc(to, b), w.f.mznt, 1);
+    to.comm->comm_2d_corner(w.f.mznt, 1);
+  }
   const auto mznt = w.f.mznt, z = zntmp;
   Kokkos::parallel_for("cm1k::sfc_gfdl::zntmp", box2(0, b.ni + 1, 0, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
     z(i, j, 1) = mznt(i, j, 1);

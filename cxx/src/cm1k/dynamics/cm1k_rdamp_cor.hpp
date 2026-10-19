@@ -18,6 +18,11 @@ namespace cm1k {
 struct RdampParams {
   int irdamp = 0, hrdamp = 0;
   Real zd = 0, xhd = 0;
+  // param.F's minx, maxx, miny, maxy (xfref(1), xfref(nx+1), ...): set them
+  // (have_extent) when the grid arrays are a subdomain's (MPI); otherwise
+  // they are taken from xf(1), xf(nx+1), yf(1), yf(ny+1).
+  bool have_extent = false;
+  Real minx = 0, maxx = 0, miny = 0, maxy = 0;
 };
 
 // Fills tauh, taus (ib:ie,jb:je,kb:ke) and tauf (ib:ie,jb:je,kb:ke+1), on

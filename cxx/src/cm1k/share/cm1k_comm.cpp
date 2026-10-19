@@ -381,6 +381,17 @@ void Comm::allreduce_sum(double* v, int n) const {
 #endif
 }
 
+double Comm::allreduce_sum_value(double v) const {
+#ifdef CM1K_HAVE_MPI
+  if (m_d.mpi) {
+    double out = 0.0;
+    MPI_Allreduce(&v, &out, 1, MPI_DOUBLE, MPI_SUM, m_d.comm);
+    return out;
+  }
+#endif
+  return v;
+}
+
 void Comm::allreduce_max(double* v, int n) const {
 #ifdef CM1K_HAVE_MPI
   if (m_d.mpi) MPI_Allreduce(MPI_IN_PLACE, v, n, MPI_DOUBLE, MPI_MAX, m_d.comm);

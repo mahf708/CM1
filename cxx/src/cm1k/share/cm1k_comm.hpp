@@ -141,6 +141,8 @@ public:
   // ---- reductions (same MPI calls as the Fortran) ----
   // MPI_ALLREDUCE(MPI_IN_PLACE, v, n, MPI_DOUBLE_PRECISION, MPI_SUM)
   void allreduce_sum(double* v, int n) const;
+  // MPI_ALLREDUCE(v, out, 1, ..., MPI_SUM) with separate buffers (serial: v)
+  double allreduce_sum_value(double v) const;
   // MPI_IALLREDUCE(MPI_IN_PLACE, v, n, ..., MPI_SUM); finish with iwait(h)
   int iallreduce_sum(double* v, int n);
   void iwait(int h);

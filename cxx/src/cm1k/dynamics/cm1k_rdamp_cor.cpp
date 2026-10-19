@@ -43,7 +43,8 @@ void rdamp_coeffs(const RdampParams& p, const Grid& g, const FArray3& tauh, cons
   if (p.hrdamp >= 1) {
     auto xh = g.xh.to_host(), yh = g.yh.to_host(), xf = g.xf.to_host(), yf = g.yf.to_host();
     // serial run: xfref = xf, yfref = yf (param.F)
-    const Real minx = xf(1), maxx = xf(B.nx + 1), miny = yf(1), maxy = yf(B.ny + 1);
+    const Real minx = p.have_extent ? p.minx : xf(1), maxx = p.have_extent ? p.maxx : xf(B.nx + 1);
+    const Real miny = p.have_extent ? p.miny : yf(1), maxy = p.have_extent ? p.maxy : yf(B.ny + 1);
     const Real xhd = p.xhd;
     if (B.nx > 1 && xhd > (0.5 * (maxx - minx)))
       throw std::runtime_error("cm1k: horizontal Rayleigh damping would be applied over more than half the domain (xhd)");

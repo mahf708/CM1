@@ -87,6 +87,11 @@ Result run_mpi_case(const std::string& case_name, bool turb, bool rank_independe
 
   std::vector<std::string> fields = {"ua", "va", "wa", "ppi", "tha", "rho", "prs"};
   if (turb) for (const char* n : {"tkea", "kmh", "kmv", "khh", "khv"}) fields.push_back(n);
+  if (m.has_surface())   // sfcmodel>=1: every dumped surface array
+    for (auto& [n, a] : m.surface().dumped()) fields.push_back(n);
+  if (m.has_wrf_surface())   // sfcmodel=2,3
+    for (auto& [n, a] : m.wrf_surface().dumped()) fields.push_back(n);
+  for (auto& n : m.pbl_field_names()) fields.push_back(n);   // PBL schemes
   for (auto& n : m.field_names())
     if (n.rfind("qa_", 0) == 0) fields.push_back(n);
 
@@ -164,4 +169,53 @@ TEST_CASE("mpi: mpi_kessler_tke_nomc vs MPI Fortran (rank-count independent)", "
   // apmasscon=0: no global sum in the time step, the Fortran is the same at
   // any rank count, and so is cm1k
   run_mpi_case("mpi_kessler_tke_nomc", true, true);
+}
+
+// Coriolis, Rayleigh damping (irdamp, hrdamp), explicit diffusion
+TEST_CASE("mpi: mpi_dry_cor_damp vs MPI Fortran", "[mpi][step]") {
+  run_mpi_case("mpi_dry_cor_damp", false, false);
+}
+
+TEST_CASE("mpi: mpi_kessler_cor_diff6 vs MPI Fortran", "[mpi][step][turb]") {
+  run_mpi_case("mpi_kessler_cor_diff6", true, false);
+}
+
+TEST_CASE("mpi: mpi_dry_diff2 vs MPI Fortran", "[mpi][step]") {
+  run_mpi_case("mpi_dry_diff2", false, false);
+}
+
+// open-radiative boundaries and walls
+TEST_CASE("mpi: mpi_dry_openbc vs MPI Fortran", "[mpi][step][openbc]") {
+  run_mpi_case("mpi_dry_openbc", false, false);
+}
+
+TEST_CASE("mpi: mpi_kessler_openbc vs MPI Fortran", "[mpi][step][openbc]") {
+  run_mpi_case("mpi_kessler_openbc", false, false);
+}
+
+TEST_CASE("mpi: mpi_dry_openbc_walls vs MPI Fortran", "[mpi][step][openbc]") {
+  run_mpi_case("mpi_dry_openbc_walls", false, false);
+}
+
+TEST_CASE("mpi: mpi_kessler_tke_openbc vs MPI Fortran", "[mpi][step][openbc][turb]") {
+  run_mpi_case("mpi_kessler_tke_openbc", true, false);
+}
+
+// surface layer (sfcmodel=1) with the LES TKE scheme
+TEST_CASE("mpi: mpi_cbl_sfc vs MPI Fortran", "[mpi][step][turb][sfc]") {
+  run_mpi_case("mpi_cbl_sfc", true, false);
+}
+
+TEST_CASE("mpi: mpi_cbl_sfc_moist vs MPI Fortran", "[mpi][step][turb][sfc]") {
+  run_mpi_case("mpi_cbl_sfc_moist", true, false);
+}
+
+// boundary-layer schemes (cm1setup=2) with their surface layers
+TEST_CASE("mpi: PBL cases vs MPI Fortran", "[mpi][step][pbl][sfc]") {
+  for (const char* c : {"mpi_pbl2_dry", "mpi_pbl2_kessler", "mpi_pbl2_sfclay_land", "mpi_ysu_dry", "mpi_ysu_kessler",
+                        "mpi_gfs_dry", "mpi_gfs_kessler", "mpi_gfs_sfclay_land", "mpi_mynn25_kessler",
+                        "mpi_mynn25_land_dry", "mpi_mynn3_dry", "mpi_mynn3_land_kessler", "mpi_myj_dry",
+                        "mpi_myj_kessler"}) {
+    SECTION(c) { run_mpi_case(c, true, false); }
+  }
 }

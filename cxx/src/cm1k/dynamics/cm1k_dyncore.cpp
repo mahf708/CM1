@@ -225,11 +225,8 @@ void Dyncore::check_mpi() const {
     throw std::runtime_error("cm1k dyncore: not ported with MPI (run serially): " + what);
   };
   const auto& c = m_cfg;
-  for (int v : {c.wbc, c.ebc, c.sbc, c.nbc})
-    if (v != 1) fail("non-periodic lateral boundaries (wbc/ebc/sbc/nbc != 1)");
-  if (c.pbl) fail("boundary-layer schemes (cm1setup=2, ipbl>=1)");
-  if (c.sfc_opt.has_layer()) fail("surface layers (sfcmodel>=1)");
-  if (c.diff2()) fail("2nd-order diffusion (idiff=1, difforder=2)");
+  (void)c;
+  (void)fail;
 }
 
 Dyncore::Dyncore() = default;
@@ -245,6 +242,7 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
   if (mpi()) {
     check_mpi();
     m_bc.set_mpi(m_comm->edges());
+    m_obc.set_mpi(*m_comm);
     if (m_cfg.turb || m_cfg.pbl) m_cfg.turb_opt.set_mpi(*m_comm);
   }
   const auto& B = grid.b;
@@ -324,6 +322,16 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
   {
     RdampParams rp;
     rp.irdamp = m_cfg.irdamp; rp.hrdamp = m_cfg.hrdamp; rp.zd = m_cfg.zd; rp.xhd = m_cfg.xhd;
+    if (mpi() && rp.hrdamp >= 1) {
+      // the global extent: from the ranks at the domain edges (exact MIN/MAX
+      // reductions; the others contribute -/+1e30)
+      const auto& d = m_comm->decomp();
+      double e[4] = {d.myi1 == 1 ? xf(1) : 1.0e30, d.myj1 == 1 ? yf(1) : 1.0e30,
+                     d.myi2 == d.nx ? -xf(ni + 1) : 1.0e30, d.myj2 == d.ny ? -yf(nj + 1) : 1.0e30};
+      m_comm->allreduce_min(e, 4);
+      rp.have_extent = true;
+      rp.minx = e[0]; rp.miny = e[1]; rp.maxx = -e[2]; rp.maxy = -e[3];
+    }
     rdamp_coeffs(rp, grid, tauh, taus, tauf);
   }
 
@@ -685,7 +693,7 @@ void Dyncore::pbl(double /*rtime*/) {
 // cm1.F (after sfc_and_turb): idiff>=1 and difforder=2 -> diff2def on the 3d
 // arrays (divx is scratch here: solve2 recomputes it before use)
 namespace {
-Diff2Params diff2_params(const DynConfig& cfg, const Grid& g) {
+Diff2Params diff2_params(const DynConfig& cfg, const Grid& g, const BcParams& bc) {
   Diff2Params p;
   p.ni = g.b.ni; p.nj = g.b.nj; p.nk = g.b.nk;
   p.kdiff2 = cfg.kdiff2; p.rdx = g.rdx; p.rdy = g.rdy; p.rdz = g.rdz; p.smeps = cfg.smeps;
@@ -693,6 +701,7 @@ Diff2Params diff2_params(const DynConfig& cfg, const Grid& g) {
   p.wbc = cfg.wbc; p.ebc = cfg.ebc; p.sbc = cfg.sbc; p.nbc = cfg.nbc;
   p.ibw = (cfg.wbc != 1) ? 1 : 0; p.ibe = (cfg.ebc != 1) ? 1 : 0;
   p.ibs = (cfg.sbc != 1) ? 1 : 0; p.ibn = (cfg.nbc != 1) ? 1 : 0;
+  if (bc.mpi) { p.ibw = bc.ibw; p.ibe = bc.ibe; p.ibs = bc.ibs; p.ibn = bc.ibn; }   // this rank's edges
   p.bbc = cfg.bbc; p.tbc = cfg.tbc;
   return p;
 }
@@ -700,7 +709,7 @@ Diff2Params diff2_params(const DynConfig& cfg, const Grid& g) {
 
 void Dyncore::diff2_stress() {
   if (!m_cfg.diff2()) return;
-  const auto p = diff2_params(m_cfg, m_g);
+  const auto p = diff2_params(m_cfg, m_g, m_bc);
   diff2def(p, m_g, divx, m_s.rho, rf, m_d2.t11, m_d2.t12, m_d2.t13, m_d2.t22, m_d2.t23, m_d2.t33,
            u3d, v3d, w3d);
 }
@@ -741,7 +750,7 @@ void Dyncore::solve1() {
 
   //  2nd-order diffusion, fixed viscosity (idiff=1, difforder=2; diff2.F)
   if (cfg.diff2()) {
-    const auto p = diff2_params(cfg, m_g);
+    const auto p = diff2_params(cfg, m_g, m_bc);
     const auto& d = m_d2;
     diff2u(p, m_g, d.dum, d.diffx, d.diffy, d.diffz, uten1, rho, divx, d.t11, d.t12, d.t13);
     diff2v(p, m_g, d.dum, d.diffx, d.diffy, d.diffz, vten1, rho, divx, d.t22, d.t12, d.t23);
