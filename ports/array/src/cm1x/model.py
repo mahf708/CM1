@@ -30,9 +30,11 @@ import dataclasses
 
 from . import bc as _bc
 from .backend import get_backend, is_array, torch_kernel_options
+from .adapt_dt import AdaptDt, calccflquick, calcksquick
 from .misc import dtsmall
 from .mp_driver import mp_driver
 from .namelist import read_namelist
+from .options import check_unported
 from .solve1 import solve1
 from .solve2 import solve2
 from .solve3 import solve3
@@ -105,6 +107,15 @@ class Model:
     ``step(hooks=...)`` always runs eagerly.
     Attributes: ``cfg``, ``bk``, ``grid``, ``base``, ``state`` (dict of
     arrays keyed by Fortran name), ``nstep``, ``mtime`` (s), ``dt``.
+
+    ``adapt_dt = 1`` (misclibs.F getnewdt): ``dt`` and ``cfg.nsound`` change
+    between steps (``adapt``: an ``adapt_dt.AdaptDt`` with the CFL numbers,
+    output timers and flags; host-side Python floats).  Under jax.jit the
+    step takes ``dt`` as a traced 0-d input, so a new dt is not a recompile;
+    the acoustic loop length ``nsound`` is a compile-time constant, so there
+    is one compiled step per distinct nsound (a recompile the first time
+    getnewdt moves to a new nsound; even values 4..192).  torch's
+    per-routine kernels already take dt as a traced input.
     """
 
     def __init__(
@@ -120,6 +131,7 @@ class Model:
         self.cfg = cfg = read_namelist(
             namelist_path, dp=fortran_dp, overrides=overrides
         )
+        check_unported(cfg)
         self.bk = bk = get_backend(backend, dtype)
         self.jit = bool(jit)
         self.jit_options = dict(jit_options or {})
@@ -136,6 +148,11 @@ class Model:
         self.grid, self.base, st = initialize(cfg, bk)
         g = self.grid
         self.dt = float(cfg.dtl)
+        # param.F: min_dz over the interior (stretched grids, terrain)
+        zfn = bk.to_numpy(self.base["zf"])
+        self.min_dz = float(
+            (zfn[2 : g.nk + 2, g.J, g.I] - zfn[1 : g.nk + 1, g.J, g.I]).min()
+        )
         ds = dtsmall(
             dt=self.dt,
             dbldt=self.dt,
@@ -144,7 +161,7 @@ class Model:
             ny=int(cfg.ny),
             min_dx=float(cfg.dx),
             min_dy=float(cfg.dy),
-            min_dz=float(cfg.dz),
+            min_dz=self.min_dz,
             csound=float(cfg.csound),
             adapt_dt=int(cfg.adapt_dt),
         )
@@ -152,6 +169,13 @@ class Model:
         self.dt = float(ds["dt"])
         self.nstep = 0
         self.mtime = 0.0
+        # adapt_dt = 1: AdaptDt holds getnewdt's state (dbldt, cflmax, ksmax,
+        # output timers and flags) on the host
+        self.adapt = None
+        if int(cfg.get("adapt_dt", 0)) not in (0, 1):
+            raise NotImplementedError(f"adapt_dt={cfg.adapt_dt} is not ported")
+        if int(cfg.get("adapt_dt", 0)) == 1:
+            self.adapt = AdaptDt.from_config(cfg)
 
         numq = int(cfg.numq)
         s = {
@@ -174,6 +198,28 @@ class Model:
                 "rf",
             )
         }
+        if self.adapt is not None:
+            # cm1.F before the time loop: calccflquick on the initial winds,
+            # calcksquick on kmh..khv as initialized (zero), getnewdt(doinit)
+            b0 = self.base
+            self.adapt.dbldt = self.dt
+            self.adapt.cflmax = float(
+                calccflquick(
+                    bk,
+                    g,
+                    cfg,
+                    dt=self.dt,
+                    uh=b0["uh"],
+                    vh=b0["vh"],
+                    mh=b0["mh"],
+                    ua=st["ua"],
+                    va=st["va"],
+                    wa=st["wa"],
+                )
+            )
+            self.adapt.ksmax = 0.0
+            self.adapt.getnewdt(self.mtime, self.dt, True)
+            self._apply_new_dt()
         s["qa"] = [st["qa"][m] for m in range(numq)]
         s["q3d"] = [st["q3d"][m] for m in range(numq)]
         s["mass1"] = st["mass1"]
@@ -419,12 +465,24 @@ class Model:
         """Advance one time step (dt = dtl).  With ``jit=True`` (and no
         ``hooks``) the compiled step is used (with radiation: one compiled
         variant for steps with and one for steps without a radiation call)."""
+        a = self.adapt
+        if a is not None:
+            # cm1.F after sfc_and_turb (which ran at the end of the previous
+            # step here): getnewdt (not in the startup pass) with the flags of
+            # the step just taken, then statpack / writeout / restart_write
+            # advance their timers, then the flags of this step
+            if self.nstep > 0:
+                a.getnewdt(self.mtime, self.dt, False)
+                self._apply_new_dt()
+            a.advance_timers(self.mtime)
+            a.set_flags(self.mtime)
         mtime = self.mtime + self.dt
         dorad = self._dorad()
         sol = self._solar(mtime) if dorad else {"coszen": 0.0, "solcon": 0.0}
         if self.jit and self._whole_step and hooks is None:
             fn = self._compiled_step(dorad)
             barr = {k: v for k, v in self.base.items() if is_array(v)}
+            extra = (self.bk.scalar(self.dt),) if a is not None else ()
             self.state = fn(
                 self.state,
                 barr,
@@ -433,6 +491,7 @@ class Model:
                 self.bk.scalar(mtime),
                 self.bk.scalar(sol["coszen"]),
                 self.bk.scalar(sol["solcon"]),
+                *extra,
             )
         else:
             self.state = self._advance(
@@ -446,6 +505,13 @@ class Model:
                 **sol,
             )
         self.state = self.bk.materialize(self.state)
+        if a is not None:
+            # solve2's calccflquick (last RK stage) and, with LES, turb.F's
+            # calcksquick at the end of sfc_and_turb (both at this step's dt)
+            a.cflmax = float(self.state.pop("cflmax"))
+            ks = self.state.pop("ksmax", None)
+            if ks is not None:
+                a.ksmax = float(ks)
         self.nstep += 1
         self.mtime = mtime
         if dorad:
@@ -458,10 +524,15 @@ class Model:
         (Backend.compile: jax.jit, torch.compile, or the plain function
         elsewhere); ``dorad`` selects the variant with a radiation call."""
         key = ("step", bool(dorad)) if dorad else "step"
+        if self.adapt is not None:
+            # adapt_dt: dt is a traced argument (a new dt is a new input), but
+            # nsound fixes the acoustic loop's length: one compiled variant
+            # per distinct nsound (a recompile when getnewdt changes it)
+            key = ("step", bool(dorad), "nsound", int(self.cfg.nsound))
         if key not in self._jit_cache:
             bstatic = {k: v for k, v in self.base.items() if not is_array(v)}
 
-            def fn(s, barr, dtu0, dtv0, mtime, coszen, solcon):
+            def fn(s, barr, dtu0, dtv0, mtime, coszen, solcon, dt=None):
                 return self._advance(
                     s,
                     {**bstatic, **barr},
@@ -471,6 +542,7 @@ class Model:
                     dorad=dorad,
                     coszen=coszen,
                     solcon=solcon,
+                    dt=dt,
                 )
 
             self._jit_cache[key] = self.bk.compile(fn, **self.jit_options)
@@ -487,6 +559,7 @@ class Model:
         dorad=False,
         coszen=0.0,
         solcon=0.0,
+        dt=None,
     ):
         """Pure time step: returns the state dict after one step from ``s``
         (``b`` = base dict, ``mtime`` = model time at the end of the step,
@@ -498,7 +571,7 @@ class Model:
 
         _constants.set_constants(int(cfg.get("testcase", 0) or 0))  # constants.F
         s = dict(s)
-        dt = self.dt
+        dt = self.dt if dt is None else dt
         tk = {}
         tc = None
         if self.tcase:
@@ -626,13 +699,27 @@ class Model:
         )
         if hooks is not None:
             hooks("post_solve2", 0, r2)
+        if self.adapt is not None:
+            # solve2.F: calccflquick after the last RK stage's acoustic steps
+            s["cflmax"] = calccflquick(
+                bk,
+                g,
+                cfg,
+                dt=dt,
+                uh=b["uh"],
+                vh=b["vh"],
+                mh=b["mh"],
+                ua=r2["u3d"],
+                va=r2["v3d"],
+                wa=r2["w3d"],
+            )
 
         if not self.moist:  # cm1.F: microphysics only with imoist=1
             mp = {k: r2[k] for k in ("pp3d", "th3d", "rho", "prs")}
             mp.update({k: s[k] for k in ("rain", "prate", "qbudget", "asq")})
             mp["q3d"] = r2["q3d"]
         else:
-            mp = self._mp(s, b, r2)
+            mp = self._mp(s, b, r2, dt=dt)
         if hooks is not None:
             hooks("post_mp", 0, mp)
         q3d = [mp["q3d"][m] for m in range(len(r2["q3d"]))]
@@ -723,13 +810,46 @@ class Model:
                 th3d=r3["th3d"],
                 q3d=r3["q3d"],
             )
+            if self.adapt is not None:
+                # turb.F: calcksquick at the end of sfc_and_turb
+                s["ksmax"] = calcksquick(
+                    bk,
+                    g,
+                    cfg,
+                    dt=dt,
+                    uh=b["uh"],
+                    vh=b["vh"],
+                    kmh=s["kmh"],
+                    kmv=s["kmv"],
+                    khh=s["khh"],
+                )
         return s
 
-    def _mp(self, s, b, r2):
+    def _apply_new_dt(self):
+        """misclibs.F getnewdt: ``dt = dbldt; call dtsmall(dt, dbldt)``
+        (nsound for the new dt; capped at 192, shortening dt)."""
+        cfg = self.cfg
+        ds = dtsmall(
+            dt=self.adapt.dbldt,
+            dbldt=self.adapt.dbldt,
+            psolver=int(cfg.psolver),
+            nx=int(cfg.nx),
+            ny=int(cfg.ny),
+            min_dx=float(cfg.dx),
+            min_dy=float(cfg.dy),
+            min_dz=self.min_dz,
+            csound=float(cfg.csound),
+            adapt_dt=1,
+        )
+        cfg.nsound = ds["nsound"]
+        self.adapt.dbldt = float(ds["dbldt"])
+        self.dt = float(ds["dt"])
+
+    def _mp(self, s, b, r2, dt=None):
         """cm1.F: ``mp_driver`` (imoist=1)."""
         bk, g, cfg = self.bk, self.grid, self.cfg
         xp = bk.xp
-        dt = self.dt
+        dt = self.dt if dt is None else dt
         return mp_driver(
             bk,
             g,

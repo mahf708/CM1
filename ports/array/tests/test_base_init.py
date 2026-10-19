@@ -60,20 +60,25 @@ def test_namelist_reference(cfg):
     assert cfg.imove == 0 and cfg.umove == 0.0  # param.F: imove=0 -> umove=0
     assert cfg.ccn == 0.6e9 and cfg.alphahl == 0.5  # group with inline comments
     assert cfg.tsmall == 0.0001 and cfg.outunits == 1  # cm1.F defaults
-    assert cfg.not_a_variable == 0  # unset -> zero
+    assert cfg.isnd == 5 and cfg.convinit == 0  # unset module-input variable -> zero
+    with pytest.raises(AttributeError):
+        _ = cfg.not_a_variable  # not a CM1 variable: never reads as zero
     assert (cfg.numq, cfg.nqv, cfg.nqc, cfg.nqr) == (3, 1, 2, 3)
     assert "param2" in cfg.groups and cfg.groups["param2"]["isnd"] == 5
 
 
 def test_namelist_parser_misc():
-    g = parse_namelist("""
+    g = parse_namelist(
+        """
  &a
   x = 1, y = 2.5d0 ! comment, z = 3
   s = 'it''s', l = .false.,
   arr = 1, 2, 3*4,
  /
  &b n=7 /
-""")
+""",
+        strict=False,
+    )
     assert g["a"] == {"x": 1, "y": 2.5, "s": "it's", "l": False, "arr": [1, 2, 4, 4, 4]}
     assert g["b"] == {"n": 7}
 
@@ -98,7 +103,10 @@ def test_param_grid(bk, cfg):
     pg = param_grid(cfg, bk)
     zh, zf = np_(bk, pg["zh"]), np_(bk, pg["zf"])
     assert zh.shape == (42, 46, 46) and zf.shape == (43, 46, 46)
-    np.testing.assert_allclose(zh[:, 5, 7], 500.0 * (np.arange(42) - 0.5))
+    # param.F's cm1r18 ghost points: zh(0) = zf(1), zh(nk+1) = zf(nk+1)
+    zh_ref = 500.0 * (np.arange(42) - 0.5)
+    zh_ref[0], zh_ref[41] = 0.0, 20000.0
+    np.testing.assert_allclose(zh[:, 5, 7], zh_ref)
     np.testing.assert_allclose(zf[:, 0, 0], 500.0 * (np.arange(43) - 1.0))
     c1, c2 = np_(bk, pg["c1"]), np_(bk, pg["c2"])
     assert np.all(c1[1:] == 0.5) and np.all(c2[1:] == 0.5) and np.all(c1[0] == 0)
@@ -178,6 +186,18 @@ def test_base_vs_fortran(bk, cfg, variant):
         cfg.vmove,
         *(pg[k] for k in ("cgs1", "cgs2", "cgs3", "cgt1", "cgt2", "cgt3")),
         cfg.tsmall,
+        # testcase, eqtset, iice, tsk0, hurr_vg, hurr_rotate, lspgrad, wbc..nbc
+        0,
+        2,
+        0,
+        299.28,
+        40.0,
+        0.0,
+        0,
+        1,
+        1,
+        1,
+        1,
     ]
     ins = {k: np_(bk, pg[k]) for k in ("zh", "mh", "rmh", "c1", "c2", "zf", "mf")}
     ins["params"] = np.array(params, dtype=np.float64)

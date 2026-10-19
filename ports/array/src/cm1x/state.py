@@ -73,6 +73,8 @@ def initialize(cfg, bk):
         th0=b["th0"],
         thv0=b["thv0"],
         qv0=b["qv0"],
+        qc0=b["qc0"],
+        qi0=b["qi0"],
         u0=b["u0"],
         v0=b["v0"],
         centerx=b["centerx"],
