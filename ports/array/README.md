@@ -157,6 +157,22 @@ surface-layer variant namelists without a C++ case live in
 `ports/reference/pbl/`. On numpy the ipbl=2, cbl_sfc and sfcmodel=2/3 cases
 match the float64 Fortran to 1e-12 or bitwise through 150 steps.
 
+### MYJ (ipbl=6, sfcmodel=7)
+
+`sfc_myj.py` ports module_sf_myjsfc.F (`myjsfcinit`'s psi tables, built
+with libm on the host; `myjsfc`; `sfcdif`, water and land branches,
+isftcflx 0/1), and `pbl_myj.py` ports module_bl_myjpbl.F (`myjpbl`, `mixlen`,
+`prodq2`, `difcof`, `vdifq`, `vdifh`, `vdifv`; STEPBL=1, QCI mixed). They work
+on every column at once, with the downward-counted column (K = KTE+1-k) kept
+as Python lists of planes, and the level-wise parts stacked along K.
+`surface_layer(ctx)` and `pbl(ctx)` hold the turb.F glue, with cm1k's
+`cm1k_myj_coupling` as the reference. tke_myj is prognostic but not advected.
+Harness: `drv_myjsfc`, `drv_myjpbl` (`tests/test_myj.py`): 1e-12 on numpy and
+1e-11 on jax/torch, measured against each field's magnitude. The remaining
+differences are the last bit of exp/log/pow. Over land, CM1 never sets zntmyj
+(it stays 0), so the Fortran goes NaN; the land path is tested only per routine,
+with positive roughness. Not ported: sfcmodel=7 without ipbl=6, cm1setup 4, terrain.
+
 ## Performance
 
 `Model(nml, backend="jax", jit=True)` compiles the whole time step into one

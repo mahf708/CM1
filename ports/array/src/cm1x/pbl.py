@@ -61,12 +61,14 @@ from .turbtend import _cat
 
 PBL_SCHEMES = {
     2: "cm1x.pbl",  # CM1 simple scheme (Bryan and Rotunno 2009)
+    6: "cm1x.pbl_myj",  # Mellor-Yamada-Janjic
 }
 
 SURFACE_LAYERS = {
     1: "cm1x.sfcphys",  # CM1 simple scheme (getcecd, sfcflux, sfcdiags)
     2: "cm1x.sfclay",  # MM5 similarity (sf_sfclay) + SLAB
     3: "cm1x.sfclay",  # revised MM5 (sf_sfclayrev) + SLAB
+    7: "cm1x.sfc_myj",  # Mellor-Yamada-Janjic (MYJSFC) + SLAB
 }
 
 
