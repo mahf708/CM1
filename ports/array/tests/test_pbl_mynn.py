@@ -11,6 +11,8 @@ initialisation call (nstep=0) and four more steps with the state carried
 and th/qv/qc/qi/u/v advanced with the Fortran tendencies; every step both
 sides start from the Fortran state and every output is compared."""
 
+import os
+
 import numpy as np
 import pytest
 from fortran import requires_gfortran, run_driver
@@ -19,6 +21,14 @@ from cm1x import constants as C
 from cm1x.pbl_mynn import INPUT_NAMES, STATE_NAMES, TEND_NAMES, mynnedmf_wrapper_run
 
 pytestmark = requires_gfortran
+
+
+def _exact(bk):
+    """numpy with its AVX-512 paths off calls glibc's exp/log/pow like the
+    Fortran: the port is then bitwise identical."""
+    return bk.name == "numpy" and "AVX512F" in os.environ.get(
+        "NPY_DISABLE_CPU_FEATURES", ""
+    )
 
 NI, NJ, NK, NSTEP = 6, 4, 40, 4
 SFC_NAMES = (
@@ -237,8 +247,9 @@ def test_mynn_pbl(bk, case):
         nup = max(nup, ref["s2"][13].max())
         COVER["edmf_qc"] = max(COVER["edmf_qc"], ref["st3"][16].max())
         COVER["neg_maxmf"] += int((ref["s2"][14] < 0).sum())
-    bad = {k: v for k, v in worst.items() if v > TOL}
-    assert not bad, f"rel err > {TOL}: {bad}"
+    tol = 0.0 if _exact(bk) else TOL
+    bad = {k: v for k, v in worst.items() if v > tol}
+    assert not bad, f"rel err > {tol}: {bad}"
     if cfg["bl_mynn_edmf"] == 1:
         assert nup > 0  # the plumes fire
 

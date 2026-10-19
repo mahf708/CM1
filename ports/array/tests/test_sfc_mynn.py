@@ -10,6 +10,8 @@ carried over (each step both sides start from the Fortran state) and the
 inputs drifting; every isftcflx (0..3) over water and iz0tlnd (0, 1, 3) over
 land, isfflx = 0 once."""
 
+import os
+
 import numpy as np
 import pytest
 from fortran import requires_gfortran, run_driver
@@ -18,6 +20,14 @@ from cm1x import constants as C
 from cm1x.sfc_mynn import psi_init, sfclay_mynn
 
 pytestmark = requires_gfortran
+
+
+def _exact(bk):
+    """numpy with its AVX-512 paths off calls glibc's exp/log/pow like the
+    Fortran: the port is then bitwise identical."""
+    return bk.name == "numpy" and "AVX512F" in os.environ.get(
+        "NPY_DISABLE_CPU_FEATURES", ""
+    )
 
 NI, NJ, NSTEP = 10, 6, 5
 STATE = [
@@ -162,7 +172,7 @@ def test_psi_tables(bk):
     _, _, _, _, ref = next(_steps(0, 0, 1, True))
     T = psi_init(bk)
     for n, key in enumerate(("psim_stab", "psim_unstab", "psih_stab", "psih_unstab")):
-        _cmp(key, bk.to_numpy(T[key]), ref["psi"][n], 1e-14)
+        _cmp(key, bk.to_numpy(T[key]), ref["psi"][n], 0.0 if _exact(bk) else 1e-14)
 
 
 def test_sfclay_mynn(bk, case):
@@ -188,4 +198,9 @@ def test_sfclay_mynn(bk, case):
             isfflx=isfflx,
         )
         for n, k in enumerate(STATE):
-            _cmp(f"step {step} {k}", bk.to_numpy(r[k]), ref["st"][n])
+            _cmp(
+                f"step {step} {k}",
+                bk.to_numpy(r[k]),
+                ref["st"][n],
+                0.0 if _exact(bk) else 1e-12,
+            )

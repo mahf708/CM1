@@ -37,8 +37,14 @@ CASES = [
     "pbl2_sfclay_land",
     "cbl_sfc",
     "cbl_sfc_moist",
+    "mynn25_kessler",
+    "mynn3_dry",
+    "mynn25_land_dry",
+    "mynn3_land_kessler",
 ]
-PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "tkea", "qke")
+# qke3d (MYNN: qke advected by solve2) is prognostic; qke itself is set by
+# the PBL scheme in sfc_and_turb, so it is compared with the state after N-1
+PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "tkea", "qke3d")
 TOL = 1e-10  # max |cm1x - cm1| / max |cm1| per array and step
 NPY_DISABLE = (
     "AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4"
