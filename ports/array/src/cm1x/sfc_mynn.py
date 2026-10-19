@@ -315,8 +315,8 @@ def zolrib(bk, T, ri, za, z0, zt, logz0, logzt, zol1):
     nmax = 20
     zol1 = xp.where(zol1 * ri < 0.0, 0.0, zol1)
     neg = ri < 0.0
-    zolold = xp.where(neg, -99999.0, 99999.0)
-    res = xp.where(neg, -66666.0, 66666.0)
+    zolold = xp.where(neg, xp.zeros_like(ri) - 99999.0, 99999.0)
+    res = xp.where(neg, xp.zeros_like(ri) - 66666.0, 66666.0)
     n = xp.ones_like(ri)
     for it in range(nmax - 1):
         act = (xp.abs(zolold - res) > 0.01) & (n < nmax)
@@ -569,7 +569,11 @@ def sfclay_mynn(
         return xp.where(stable, s, xp.where(unstable, u, n))
 
     nan = float("nan")
-    regime = xp.where(stable, xp.where(br > 0.2, 1.0, 2.0), xp.where(neutral, 3.0, 4.0))
+    regime = xp.where(
+        stable,
+        xp.where(br > 0.2, xp.ones_like(br), 2.0),
+        xp.where(neutral, xp.ones_like(br) * 3.0, 4.0),
+    )
     psim = sel(psim_s, psim_u, 0.0)
     psih = sel(psih_s, psih_u, 0.0)
     nn = xp.where(neutral, 0.0, nan)
