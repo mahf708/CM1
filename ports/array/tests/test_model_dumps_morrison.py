@@ -8,7 +8,8 @@ periodic, eqtset=2, ihail=1, 300 steps dumped every 30) and morrison_efall
 ports/reference/<case>.
 
 numpy runs in a subprocess with numpy's AVX-512 libm disabled (as
-test_model_dumps_supercell.py) and reproduces CM1 to round-off; jax and
+test_model_dumps_supercell.py) and reproduces CM1 bitwise on x86-64 with
+glibc (the tolerance only allows for another libm); jax and
 torch use their own exp/pow/log, whose last-bit differences grow through
 the microphysics thresholds to ~1e-11 (relative to each field's maximum)
 over 300 steps.
@@ -24,7 +25,7 @@ import pytest
 
 DUMP_DIR = os.environ.get("CM1X_DUMP_DIR_MORRISON")
 REF = Path(__file__).resolve().parents[2] / "reference"
-TOL = {"numpy": 1e-10, "jax": 1e-9, "torch": 1e-9}
+TOL = {"numpy": 1e-12, "jax": 1e-9, "torch": 1e-9}
 NPY_NO_AVX512 = (
     "AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4"
 )

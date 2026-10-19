@@ -41,7 +41,10 @@ point as CM1 does.
 
 Integer powers are written as products the way gfortran expands them
 (x**2 = x*x, x**3 = (x*x)*x, x**4 = (x*x)*(x*x)); real exponents use
-``xp.pow`` (numpy's ndarray ``**`` would turn x**0.5 into sqrt).
+``_pow`` (libm ``pow`` as gfortran calls it, even for a literal 0.5:
+numpy's ``np.pow``/``**`` and torch's ``pow`` turn a scalar exponent of
+0.5, 2 or -1 into sqrt/square/reciprocal, which can differ from ``pow`` in
+the last bit, so ``_pow`` passes those exponents as a full array).
 """
 
 from __future__ import annotations
@@ -67,6 +70,22 @@ _DEFAULTS = dict(
     satadj_maxiter=20,
     nfall_max=0,
 )
+
+
+# scalar exponents that numpy (and torch) evaluate by a fast path
+# (sqrt, square, reciprocal, ...) instead of pow
+_FAST_EXPONENTS = (-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 3.0)
+
+
+def _pow(xp, x, e):
+    """``x**e`` as libm ``pow``, as gfortran evaluates a real exponent."""
+    if (
+        isinstance(e, (int, float))
+        and float(e) in _FAST_EXPONENTS
+        and hasattr(x, "shape")
+    ):
+        e = xp.full_like(x, e)
+    return xp.pow(x, e)
 
 
 def _opt(cfg, name):
@@ -721,7 +740,7 @@ def m2005micro_graupel(
         return xp.minimum(a, v if _isarr(v) else xp.full_like(a, float(v)))
 
     def pw(x, e):
-        return xp.pow(x, e)
+        return _pow(xp, x, e)
 
     def safe(m, x, v=1.0):
         return wh(m, x, v)
@@ -1924,7 +1943,7 @@ def _activation(
     W = xp.where
 
     def pw(x, e):
-        return xp.pow(x, e)
+        return _pow(xp, x, e)
 
     g_, mw, rhow, rr, ma = M["g"], M["mw"], M["rhow"], M["rr"], M["ma"]
     nanew1, nanew2 = M["nanew1"], M["nanew2"]
