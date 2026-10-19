@@ -6,7 +6,7 @@
     f = m.fields()          # numpy arrays laid out like cm1out.nc ([k, j, i])
 
 Per time step (cm1.F ``timeloop``):  solve1 (pre-RK tendencies) -> solve2
-(RK3 + acoustic steps) -> mp_driver (Kessler microphysics) -> solve3
+(RK3 + acoustic steps) -> mp_driver (microphysics, by ptype) -> solve3
 (BCs, diabatic tendencies for next step, equate time levels) ->
 sfc_and_turb (sgsmodel=1 only: eddy viscosities, stresses and TKE
 dissipation for the next step; it also runs once at t=0).  With sgsmodel=0,
@@ -408,6 +408,8 @@ class Model:
             pp3d=r2["pp3d"],
             th3d=r2["th3d"],
             q3d=xp.stack(r2["q3d"], axis=0),
+            w3d=r2["w3d"],
+            nstep=self.nstep,
         )
         if hooks is not None:
             hooks("post_mp", 0, mp)
@@ -545,9 +547,9 @@ class Model:
             "pipert": s["ppi"][K, J, I],
             "rho": s["rho"][K, J, I],
         }
-        for name, idx in (("qv", cfg.nqv), ("qc", cfg.nqc), ("qr", cfg.nqr)):
-            if idx:
-                out[name] = s["qa"][idx - 1][K, J, I]
+        # moisture arrays by their param.F names (qv, qc, qr, qi, ..., nci, ...)
+        for n, name in enumerate(cfg.get("qname", ()) or ()):
+            out[name] = s["qa"][n][K, J, I]
         if self.les:  # w-level fields [nk+1, nj, ni]
             out["tke"] = s["tkea"][g.KF, J, I]
             for name in ("kmh", "kmv", "khh", "khv"):

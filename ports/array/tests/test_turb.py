@@ -327,6 +327,61 @@ def test_calcnm(bk, case):
         assert np.ptp(ref["nm"][1:-2]) > 0
 
 
+# Morrison-like moisture table (iice=1: qv qc qr qi qs qg + 4 numbers)
+ICE = {
+    **SUPER,
+    "ptype": 5,
+    "iice": 1,
+    "numq": 10,
+    "nqi": 4,
+    "nqs1": 4,
+    "nqs2": 6,
+}
+
+
+def make_cold_state(seed=3, g=G):
+    """make_state with temperatures spanning the ice (< 233.15 K), mixed and
+    liquid (> 273.15 K) branches of calcnm, and ice species."""
+    st = make_state(seed, g)
+    rng = np.random.default_rng(seed + 100)
+    S = g.s_shape
+    z = np.array(g.zh())[:, None, None] * np.ones(S)
+    st["th0"] = 250.0 + 2.0e-3 * z
+    st["th"] = rng.uniform(-10.0, 30.0, S)
+    t = (st["th0"] + st["th"]) * (st["pi0"] + st["pp"])
+    qv = rng.uniform(0.6, 1.05, S) * _qvs(t, st["prs"])
+    q = [qv]
+    for _ in range(5):
+        q.append(np.where(rng.random(S) < 0.5, rng.uniform(0.0, 1e-3, S), 0.0))
+    for _ in range(4):
+        q.append(rng.uniform(0.0, 1e5, S))
+    st["qa"] = np.stack(q)
+    return st
+
+
+def test_calcnm_ice(bk):
+    """iice=1 (ice / mixed-phase / liquid saturated formulations)."""
+    st = make_cold_state()
+    ref = fortran(
+        1,
+        ICE,
+        st,
+        ["c1", "c2", "mf", "pi0", "th0", "prs", "pp", "th", "qa", "nm"],
+        ["nm"],
+    )
+    out = T.calcnm(
+        bk,
+        G,
+        ICE,
+        qa=qlist(bk, st["qa"]),
+        **As(bk, st, "c1", "c2", "mf", "pi0", "th0", "nm", "prs", "pp", "th"),
+    )
+    close(bk, out["nm"], ref["nm"], name="nm")
+    t = (st["th0"] + st["th"]) * (st["pi0"] + st["pp"])
+    ti = t[1:-1, 3:-3, 3:-3]
+    assert ti.min() < 233.15 and ti.max() > 273.15
+
+
 @pytest.mark.parametrize("case", list(CASES))
 def test_calcdef(bk, case):
     cfg = CASES[case]

@@ -1,7 +1,7 @@
 """RK3 loop and acoustic solver call, ported from src/solve2.F.
 
 Active path for the reference cases only: psolver=3, imoist=1, eqtset=2,
-ptype>=1 (Kessler: qv, qc, qr), icor=0, no terrain, Cartesian, apmasscon=1,
+ptype>=1 (Kessler, or an ice scheme with iice=1), icor=0, no terrain, Cartesian, apmasscon=1,
 no PBL/passive tracers.  Lateral boundaries: any type of cm1x.bc (periodic,
 open, walls), with the irbc=4 radiative phase speeds (radbcew4/radbcns4
 after each acoustic-step sequence).  Prognostic TKE (sgsmodel=1): advected
@@ -38,7 +38,7 @@ def _check(cfg):
         ("cuparam", (0,)),
         ("iprcl", (0,)),
         ("nudgeobc", (0,)),
-        ("iice", (0,)),
+        ("iice", (0, 1)),
     ):
         v = _opt(cfg, name, ok[0])
         if v not in ok:
@@ -159,7 +159,11 @@ def solve2(
         int(_opt(cfg, "ny", nj)),
         int(_opt(cfg, "nz", nk)),
     )
-    qmag = [1.0e-2] * numq
+    # param.F qmag (likely magnitude of each q array; weps = qmag*epsilon)
+    qmag = list(_opt(cfg, "qmag", None) or [1.0e-2] * numq)
+    iice = int(_opt(cfg, "iice", 0))
+    nqs1 = int(_opt(cfg, "nqs1", -2)) - 1
+    nqs2 = int(_opt(cfg, "nqs2", -2)) - 1
 
     from .sound import sound  # local import: keeps module import order free
 
@@ -225,8 +229,15 @@ def solve2(
             ql = ql + q3d[m][SI]
         zero = xp.zeros_like(ql)
         qv = xp.maximum(q3d[nqv][SI], zero)
-        qli = xp.maximum(zero, ql)  # + dum3 (=0, no ice)
-        cpli = c.cpl * xp.maximum(zero, ql)
+        if iice == 1:
+            qi = q3d[nqs1][SI]
+            for m in range(nqs1 + 1, nqs2 + 1):
+                qi = qi + q3d[m][SI]
+            qli = xp.maximum(zero, ql + qi)
+            cpli = c.cpl * xp.maximum(zero, ql) + c.cpi * xp.maximum(zero, qi)
+        else:
+            qli = xp.maximum(zero, ql)  # + dum3 (=0, no ice)
+            cpli = c.cpl * xp.maximum(zero, ql)
         dum8 = bk.set(
             dum8,
             SI,

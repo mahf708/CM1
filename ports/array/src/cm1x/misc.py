@@ -224,3 +224,23 @@ def rhoextra(bk, g, *, rho, c1, c2, rr=None, rf=None):
         + CGT3 * rho[kt - 2, Jh, Ih],
     )
     return {"rr": rr, "rf": rf}
+
+
+def getcvm(bk, g, cfg, *, q, cvm=None):
+    """misclibs.F ``getcvm``: specific heat at constant volume of moist air,
+    cv + cvv*qv + cpl*sum(liquid) + cpi*sum(ice) (iice=1) on the interior
+    (eqtset=2, imoist=1; plain cv otherwise).  ``q`` is a sequence (or
+    ``[numq, k, j, i]`` array) of the moisture arrays.  Returns
+    ``{"cvm": ...}`` (``cvm`` supplies the halos, zero by default)."""
+    S = (g.K, g.J, g.I)
+    base = bk.zeros(g.s_shape) if cvm is None else bk.copy(cvm)
+    if int(cfg.get("eqtset", 2)) <= 1 or int(cfg.get("imoist", 0)) == 0:
+        return {"cvm": bk.set(base, S, bk.full(base[S].shape, c.cv))}
+    v = c.cv + c.cvv * q[int(cfg.nqv) - 1][S]
+    if int(cfg.get("nql1", 0)) > 0:
+        for n in range(int(cfg.nql1), int(cfg.nql2) + 1):
+            v = v + c.cpl * q[n - 1][S]
+    if int(cfg.get("iice", 0)) == 1:
+        for n in range(int(cfg.nqs1), int(cfg.nqs2) + 1):
+            v = v + c.cpi * q[n - 1][S]
+    return {"cvm": bk.set(base, S, v)}

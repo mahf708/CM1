@@ -48,9 +48,10 @@ jobs:
           rm -rf ref/*/build_*
       - name: Float64 state dumps (cm1dump, from the C++/Kokkos branch)
         env:
-          # pinned commit of claude/project-thread-uq9w9c with src/cm1dump.F
-          # and cxx/scripts/make_refs.sh (-DDP gfortran build)
-          KOKKOS_REF_SHA: 6e13594cdc9223d7cd945b4c9e847703c4ecc816
+          # pinned commit of claude/project-thread-wanaau (C++/Kokkos branch) with
+          # src/cm1dump.F, cxx/scripts/make_refs.sh and the Morrison/Thompson cases
+          # (-DDP gfortran build); the cm1x Morrison cases are copied over its own
+          KOKKOS_REF_SHA: 1250f9821be771894f426aa8a1a712af0304e279
         run: |
           git fetch --no-tags --depth=1 origin "$KOKKOS_REF_SHA"
           git worktree add ../kokkos-ref FETCH_HEAD
@@ -61,7 +62,17 @@ jobs:
           sed -e 's/^ *timax *=.*/ timax  =  60.0,/' -e 's/^ *tapfrq *=.*/ tapfrq =  60.0,/' \
             ports/reference/supercell_kessler/namelist.input > "$sc/namelist.input"
           echo 5 > "$sc/every"
-          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler
+          # Morrison (ptype=5): morrison_bubble 300 steps dumped every 30,
+          # morrison_efall (efall=1, ihail=0) 200 steps dumped every 50;
+          # Thompson (ptype=3): thompson_bubble 300 steps dumped every 30
+          for c in morrison_bubble:30 morrison_efall:50 thompson_bubble:30; do
+            mc=../kokkos-ref/cxx/cases/${c%%:*}
+            mkdir -p "$mc"
+            cp ports/reference/${c%%:*}/namelist.input "$mc/namelist.input"
+            echo ${c##*:} > "$mc/every"
+          done
+          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler \
+            morrison_bubble morrison_efall thompson_bubble
           rm -f ref/dumps/*/cm1out*.nc
       - uses: actions/upload-artifact@v4
         with:
@@ -84,6 +95,8 @@ jobs:
       GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX512F,-AVX2,-FMA,-FMA4
       CM1X_TEST_ALL_BACKENDS: "1"
       CM1X_FORTRAN_CACHE: ${{ github.workspace }}/.fortran_cache
+      # numpy Thompson tables (~4 min to build), cached with the harness objects
+      CM1X_THOMPSON_CACHE: ${{ github.workspace }}/.fortran_cache/thompson_py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -116,6 +129,8 @@ jobs:
           CM1X_REF_DIR_LONG: ${{ github.workspace }}/ref/kessler_periodic_long_r8
           CM1X_DUMP_DIR: ${{ github.workspace }}/ref/dumps/kessler_periodic
           CM1X_DUMP_DIR_SC: ${{ github.workspace }}/ref/dumps/supercell_kessler
+          CM1X_DUMP_DIR_MORRISON: ${{ github.workspace }}/ref/dumps
+          CM1X_DUMP_DIR_THOMPSON: ${{ github.workspace }}/ref/dumps
           CM1X_REF_DIR_SC: ${{ github.workspace }}/ref/supercell_kessler_r8
           CM1X_REF_DIR_SC_LONG: ${{ github.workspace }}/ref/supercell_kessler_long_r8
         run: python -m pytest ports/array -v -rs --durations=15

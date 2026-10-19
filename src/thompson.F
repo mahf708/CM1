@@ -773,10 +773,12 @@
 !..Create bins of cloud ice (from min diameter up to 5x min snow size).
       xDx(1) = D0i*1.0d0
       xDx(nbi+1) = 5.0d0*D0s
+      !GCC$ NOVECTOR
       do n = 2, nbi
          xDx(n) = DEXP(DFLOAT(n-1)/DFLOAT(nbi) &
                   *DLOG(xDx(nbi+1)/xDx(1)) +DLOG(xDx(1)))
       enddo
+      !GCC$ NOVECTOR
       do n = 1, nbi
          Di(n) = DSQRT(xDx(n)*xDx(n+1))
          dti(n) = xDx(n+1) - xDx(n)
@@ -785,10 +787,12 @@
 !..Create bins of rain (from min diameter up to 5 mm).
       xDx(1) = D0r*1.0d0
       xDx(nbr+1) = 0.005d0
+      !GCC$ NOVECTOR
       do n = 2, nbr
          xDx(n) = DEXP(DFLOAT(n-1)/DFLOAT(nbr) &
                   *DLOG(xDx(nbr+1)/xDx(1)) +DLOG(xDx(1)))
       enddo
+      !GCC$ NOVECTOR
       do n = 1, nbr
          Dr(n) = DSQRT(xDx(n)*xDx(n+1))
          dtr(n) = xDx(n+1) - xDx(n)
@@ -797,10 +801,12 @@
 !..Create bins of snow (from min diameter up to 2 cm).
       xDx(1) = D0s*1.0d0
       xDx(nbs+1) = 0.02d0
+      !GCC$ NOVECTOR
       do n = 2, nbs
          xDx(n) = DEXP(DFLOAT(n-1)/DFLOAT(nbs) &
                   *DLOG(xDx(nbs+1)/xDx(1)) +DLOG(xDx(1)))
       enddo
+      !GCC$ NOVECTOR
       do n = 1, nbs
          Ds(n) = DSQRT(xDx(n)*xDx(n+1))
          dts(n) = xDx(n+1) - xDx(n)
@@ -809,10 +815,12 @@
 !..Create bins of graupel (from min diameter up to 5 cm).
       xDx(1) = D0g*1.0d0
       xDx(nbg+1) = 0.05d0
+      !GCC$ NOVECTOR
       do n = 2, nbg
          xDx(n) = DEXP(DFLOAT(n-1)/DFLOAT(nbg) &
                   *DLOG(xDx(nbg+1)/xDx(1)) +DLOG(xDx(1)))
       enddo
+      !GCC$ NOVECTOR
       do n = 1, nbg
          Dg(n) = DSQRT(xDx(n)*xDx(n+1))
          dtg(n) = xDx(n+1) - xDx(n)
@@ -821,10 +829,12 @@
 !..Create bins of cloud droplet number concentration (1 to 3000 per cc).
       xDx(1) = 1.0d0
       xDx(nbc+1) = 3000.0d0
+      !GCC$ NOVECTOR
       do n = 2, nbc
          xDx(n) = DEXP(DFLOAT(n-1)/DFLOAT(nbc)                          &
                   *DLOG(xDx(nbc+1)/xDx(1)) +DLOG(xDx(1)))
       enddo
+      !GCC$ NOVECTOR
       do n = 1, nbc
          t_Nc(n) = DSQRT(xDx(n)*xDx(n+1)) * 1.D6
       enddo
@@ -3821,12 +3831,14 @@
       ELSE
         if( dowr ) &
         CALL wrf_message("ThompMP: computing qr_acr_qg")
+        !GCC$ NOVECTOR
         do n2 = 1, nbr
 !        vr(n2) = av_r*Dr(n2)**bv_r * DEXP(-fv_r*Dr(n2))
          vr(n2) = -0.1021 + 4.932E3*Dr(n2) - 0.9551E6*Dr(n2)*Dr(n2)     &
               + 0.07934E9*Dr(n2)*Dr(n2)*Dr(n2)                          &
               - 0.002362E12*Dr(n2)*Dr(n2)*Dr(n2)*Dr(n2)
         enddo
+        !GCC$ NOVECTOR
         do n = 1, nbg
          vg(n) = av_g*Dg(n)**bv_g
         enddo
@@ -3848,6 +3860,7 @@
          lam_exp = (N0r_exp(k)*am_r*crg(1)/r_r(m))**ore1
          lamr = lam_exp * (crg(3)*org2*org1)**obmr
          N0_r = N0r_exp(k)/(crg(2)*lam_exp) * lamr**cre(2)
+         !GCC$ NOVECTOR
          do n2 = 1, nbr
             N_r(n2) = N0_r*Dr(n2)**mu_r *DEXP(-lamr*Dr(n2))*dtr(n2)
          enddo
@@ -3857,6 +3870,7 @@
             lam_exp = (N0g_exp(i)*am_g*cgg(1)/r_g(j))**oge1
             lamg = lam_exp * (cgg(3)*ogg2*ogg1)**obmg
             N0_g = N0g_exp(i)/(cgg(2)*lam_exp) * lamg**cge(2)
+            !GCC$ NOVECTOR
             do n = 1, nbg
                N_g(n) = N0_g*Dg(n)**mu_g * DEXP(-lamg*Dg(n))*dtg(n)
             enddo
@@ -3869,6 +3883,7 @@
             y2 = 0.0d0
             do n2 = 1, nbr
                massr = am_r * Dr(n2)**bm_r
+               !GCC$ NOVECTOR
                do n = 1, nbg
                   massg = am_g * Dg(n)**bm_g
 
@@ -4028,6 +4043,7 @@
       ELSE
         if( dowr ) &
         CALL wrf_message("ThompMP: computing qr_acr_qs")
+        !GCC$ NOVECTOR
         do n2 = 1, nbr
 !        vr(n2) = av_r*Dr(n2)**bv_r * DEXP(-fv_r*Dr(n2))
          vr(n2) = -0.1021 + 4.932E3*Dr(n2) - 0.9551E6*Dr(n2)*Dr(n2)     &
@@ -4035,6 +4051,7 @@
               - 0.002362E12*Dr(n2)*Dr(n2)*Dr(n2)*Dr(n2)
          D1(n2) = (vr(n2)/av_s)**(1./bv_s)
         enddo
+        !GCC$ NOVECTOR
         do n = 1, nbs
          vs(n) = 1.5*av_s*Ds(n)**bv_s * DEXP(-fv_s*Ds(n))
         enddo
@@ -4056,6 +4073,7 @@
          lam_exp = (N0r_exp(k)*am_r*crg(1)/r_r(m))**ore1
          lamr = lam_exp * (crg(3)*org2*org1)**obmr
          N0_r = N0r_exp(k)/(crg(2)*lam_exp) * lamr**cre(2)
+         !GCC$ NOVECTOR
          do n2 = 1, nbr
             N_r(n2) = N0_r*Dr(n2)**mu_r * DEXP(-lamr*Dr(n2))*dtr(n2)
          enddo
@@ -4103,6 +4121,7 @@
                slam1 = M2 * oM3 * Lam0
                slam2 = M2 * oM3 * Lam1
 
+               !GCC$ NOVECTOR
                do n = 1, nbs
                   N_s(n) = Mrat*(Kap0*DEXP(-slam1*Ds(n)) &
                       + Kap1*M0*Ds(n)**mu_s * DEXP(-slam2*Ds(n)))*dts(n)
@@ -4310,9 +4329,11 @@
 
         orho_w = 1./rho_w
 
+        !GCC$ NOVECTOR
         do n2 = 1, nbr
          massr(n2) = am_r*Dr(n2)**bm_r
         enddo
+        !GCC$ NOVECTOR
         do n = 1, nbc
          massc(n) = am_r*Dc(n)**bm_r
         enddo
@@ -4653,6 +4674,7 @@
 !      DOUBLE PRECISION:: Nt_r, N0, lam_exp, lam
 !      REAL:: xlimit_intg
 
+      !GCC$ NOVECTOR
       do n = 1, nbc
          massc(n) = am_r*Dc(n)**bm_r
       enddo

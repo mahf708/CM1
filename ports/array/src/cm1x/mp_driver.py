@@ -1,17 +1,33 @@
-"""Microphysics driver, ported from src/mp_driver.F (ptype=1, Kessler, only).
+"""Microphysics driver, ported from src/mp_driver.F.
 
-Supported path: ptype=1, efall=0, axisymm=0, no budget diagnostics
+``mp_driver`` dispatches on ``ptype`` to the branch of the scheme
+(``MP_BRANCHES``): ptype=1 (Kessler) lives here, the ice schemes in their
+own modules (ptype=3 Thompson: cm1x.thompson, ptype=5 Morrison:
+cm1x.morrison), imported on first use.  Every branch takes the same keyword
+arguments (the Fortran dummy names; unused ones are ignored) and returns a
+dict with at least q3d, th3d, pp3d, prs, rho, qbudget, asq, rain, prate.
+
+Kessler path: ptype=1, efall=0, axisymm=0, no budget diagnostics
 (dotbud/doqbud with td_mp/qd_mp) and no reflectivity diagnostic (for ptype=1
 CM1 only zeroes qdiag(qd_dbz) here).  Other options raise NotImplementedError.
 """
 
 from __future__ import annotations
 
+import importlib
+
 from . import constants as C
 from .kessler import fallout, geterain, k_fallout, kessler, satadj
 from .pdef import pdefq
 
 _DEFAULTS = dict(ptype=1, efall=0, axisymm=0, qsmall=1.0e-14, nfall_max=0)
+
+# ptype -> branch: a function here, or "module:function" imported lazily
+MP_BRANCHES = {
+    1: "mp_driver_kessler",
+    3: "cm1x.thompson:mp_driver_ptype3",
+    5: "cm1x.morrison:mp_driver_ptype5",
+}
 
 
 def _opt(cfg, name):
@@ -23,7 +39,27 @@ def _opt(cfg, name):
     return get(name, _DEFAULTS[name]) if get else getattr(cfg, name, _DEFAULTS[name])
 
 
-def mp_driver(
+def mp_driver(bk, g, cfg=None, **kw):
+    """mp_driver.F ``mp_driver``: the branch of ``MP_BRANCHES`` for
+    ``cfg.ptype`` (see the module docstring)."""
+    ptype = int(_opt(cfg, "ptype"))
+    target = MP_BRANCHES.get(ptype)
+    fn = None
+    if target is not None and ":" in target:
+        mod, name = target.split(":")
+        try:
+            fn = getattr(importlib.import_module(mod), name, None)
+        except ModuleNotFoundError as e:
+            if e.name != mod:  # a real import error inside the scheme
+                raise
+    elif target is not None:
+        fn = globals()[target]
+    if fn is None:
+        raise NotImplementedError(f"mp_driver: ptype={ptype} is not ported")
+    return fn(bk, g, cfg, **kw)
+
+
+def mp_driver_kessler(
     bk,
     g,
     cfg=None,
@@ -69,8 +105,6 @@ def mp_driver(
     Returns dict with q3d, th3d, pp3d, prs, rho, qbudget, asq, rain, prate,
     qten, thten, dum1, dum3.
     """
-    if int(_opt(cfg, "ptype")) != 1:
-        raise NotImplementedError("mp_driver: only ptype=1 (Kessler) is ported")
     if int(_opt(cfg, "efall")) != 0:
         raise NotImplementedError("mp_driver: efall>=1 not ported")
     if int(_opt(cfg, "axisymm")) != 0:

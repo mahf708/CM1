@@ -84,6 +84,9 @@ def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, c
             qt = q[cfg.nql1 - 1]
             for n in range(cfg.nql1, cfg.nql2):
                 qt = qt + q[n]
+            if int(cfg.get("iice", 0)) == 1:
+                for n in range(cfg.nqs1 - 1, cfg.nqs2):
+                    qt = qt + q[n]
             qvn = q[cfg.nqv - 1]
             thvnew = (
                 (th0[K, J, I] + tha[K, J, I]) * (one + reps * qvn) / (one + qvn + qt)

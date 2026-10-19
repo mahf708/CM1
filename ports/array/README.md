@@ -10,6 +10,71 @@ implicit acoustic steps, 5th-order flux-form advection) and Kessler warm-rain
 microphysics, on a uniform periodic grid without terrain. Reference case:
 `ports/reference/kessler_periodic/namelist.input`.
 
+Ice microphysics: Morrison two-moment (`ptype=5`, `cm1x/morrison.py`) runs
+through the same `mp_driver`; the generic ice-scheme wiring (param.F moisture
+tables for ptype=3/5, `iice=1` paths in solve2/turb/pdef/getcvm/init3d) is in
+`cm1x/namelist.py` and the dynamics modules. Morrison notes:
+
+* All columns and levels are computed at once; the Fortran's per-level GOTOs
+  become masks, sedimentation sub-steps run as masked iterations
+  (`bk.fori_loop`; `nfall_max` gives a static trip count for reverse-mode AD
+  under jit), the fall-speed fill below the precipitation edge is a `bk.scan`.
+* Switches as CM1 hard-wires them (IACT=2, IBASE=1, ISUB=1, ILIQ=0, INUC=0,
+  IGRAUP=0, IRAIN=0); `ihail`, `ndcnst`, `eqtset`, `efall`, `testcase=5` from
+  the namelist. `inum=0` (predicted droplet number, 11 moisture arrays) is a
+  cm1x option that CM1 cannot select without editing GRAUPEL_INIT.
+  Not ported: reflectivity (`getdbz`), effective radii (`dorad`), the
+  dotbud/doqbud budget diagnostics.
+* Harness: the scheme's routines are private to `module_mp_GRAUPEL`;
+  `tests/fortran.py` can link a module's *public variant*
+  (`build_driver(..., public=("morrison",))`, `public_module`) so
+  `drv_morrison.F90` calls GRAUPEL_INIT, GAMMA, DERF1, satadj2 and MP_GRAUPEL
+  directly; `drv_morrison_mp.F90` runs CM1's mp_driver. numpy reproduces them
+  bit for bit (with numpy's AVX-512 libm disabled, `NPY_DISABLE_CPU_FEATURES`),
+  jax to ~1e-14. Whole-model cases: `ports/reference/morrison_bubble`
+  (300 steps, ihail=1) and `morrison_efall` (200 steps, efall=1;
+  `tests/test_model_dumps_morrison.py`, `CM1X_DUMP_DIR_MORRISON`): numpy is
+  bitwise against CM1's float64 dumps at every dumped step, jax ~1e-11.
+* Real powers go through `_pow` (libm `pow`, as gfortran calls it even for
+  `x**0.5`): `np.pow`/`**` with a scalar exponent of 0.5, 2 or -1 (and
+  torch's `pow` with several more) take a sqrt/square/reciprocal fast path
+  that can differ from `pow` in the last bit, so `_pow` passes those
+  exponents as a full array. One such bit in the graupel fall speed
+  (`DLAMG**BG`, BG=0.5) was enough to make morrison_bubble diverge after
+  step 246.
+
+Thompson microphysics (`ptype=3`, `cm1x/thompson.py`, `cm1x/thompson_tables.py`)
+runs through the same `mp_driver` (`mp_driver_ptype3`). Notes:
+
+* `thompson_init`'s lookup tables (collection, freezing, ice autoconversion,
+  collision efficiencies, ~80 MB) are built once in numpy float64 with scalar
+  libm, in the Fortran's summation order, and match CM1's bit for bit
+  (`test_tables_bitwise`). They take ~4 min, so they are cached in
+  `$CM1X_THOMPSON_CACHE` (default `~/.cache/cm1x`), keyed by `nt_c`, the numpy
+  version and the module source, then moved to the backend.
+  `src/thompson.F` has `!GCC$ NOVECTOR` on its table loops so gfortran does
+  not route them through libmvec (CPU-dependent results).
+* `mp_thompson` works on every column at once. Branches become masks, and
+  lookups are flat integer gathers (`xp.take`). The fall-speed fill below the
+  precipitation top is a k loop. Sedimentation runs masked sub-steps through
+  `bk.fori_loop` (`nstep_max` gives a static trip count for reverse-mode AD).
+* CM1 calls the scheme without aerosols (`nc = nt_c`). Not ported: the
+  aerosol-aware path, the reflectivity diagnostic (`calc_refl10cm`, `getdbz`)
+  and effective radii (`calc_effectRad`, `radopt=2`). The scheme uses no
+  random numbers.
+* Harness: `drv_thompson_init` (tables; also writes the `.dat` table files
+  that later drivers read instead of recomputing, see `tests/thompson_ref.py`),
+  `drv_thompson_column` (the module's private `mp_thompson`, via the public
+  variant) and `drv_thompson_mp` (CM1's mp_driver).
+* Accuracy: on numpy with glibc libm (`NPY_DISABLE_CPU_FEATURES` without
+  AVX-512), `mp_thompson` and the whole `thompson_bubble` run (300 steps) are
+  bit for bit. jax is within ~1e-13 of each field's maximum per call. The
+  whole run stays within ~1e-11 until ice initiation (steps 240-270), which
+  turns last-bit differences into O(1) local differences. numpy with its
+  AVX-512 libm shows the same jump, so non-glibc backends are compared
+  through step 240 only. Whole-model case: `ports/reference/thompson_bubble`
+  (`tests/test_model_dumps_thompson.py`, `CM1X_DUMP_DIR_THOMPSON`).
+
 ```bash
 pip install -e ports/array[test]     # plus jax and/or torch if wanted
 pytest ports/array                    # every test runs on each installed backend

@@ -21,7 +21,7 @@ bc.F (non-MPI branches, as the turbulence code calls them)
 
 Supported: cm1setup=1, sgsmodel=1, ipbl=0, horizturb=0, tconfig=1/2,
 bcturbs=1/2, doimpl=0/1, idiss=0/1, ramp_sgs>=0, bbc=1, tbc=1, lateral BCs
-wbc..nbc=1..4, imoist=0 or 1 with liquid-only moisture (iice=0, e.g. Kessler),
+wbc..nbc=1..4, imoist=0 or 1 (liquid-only, iice=0, or an ice scheme, iice=1),
 no surface fluxes (isfcflx=0, sfcmodel=0 or 1), no terrain, axisymm=0,
 do_ib=F.  Diagnostics that never feed back (budgets, out3d, iamsat, stau,
 psfc, ugr/vgr, the nstep=0 print) are not ported.
@@ -63,7 +63,7 @@ def _check(cfg, who):
         ("tbc", (1,)),
         ("axisymm", (0,)),
         ("isfcflx", (0,)),
-        ("iice", (0,)),
+        ("iice", (0, 1)),
     ):
         v = int(_opt(cfg, name, ok[0]))
         if v not in ok:
@@ -96,6 +96,7 @@ def _moist(cfg):
         "iice": int(_opt(cfg, "iice", 0)),
         "nqv": int(_opt(cfg, "nqv", 1)),
         "nqc": int(_opt(cfg, "nqc", 2)),
+        "nqi": int(_opt(cfg, "nqi", 0)),
         "nql1": int(_opt(cfg, "nql1", 2 if imoist else 0)),
         "nql2": int(_opt(cfg, "nql2", 3 if imoist else 0)),
         "nqs1": int(_opt(cfg, "nqs1", -2)),
@@ -289,17 +290,25 @@ def _rslf(xp, p, t, ptype):
     return C.eps * esl / (p - esl)
 
 
+def _rsif(xp, p, t, ptype):
+    """cm1libs.F ``rsif``: ice saturation mixing ratio."""
+    if ptype == 4:
+        return 380.00 * xp.exp(21.87455 - 5807.4743 / (t - 7.66)) / p
+    esi = 611.2 * xp.exp(21.8745584 * (t - 273.15) / (t - 7.66))
+    esi = xp.minimum(esi, p * 0.5)
+    return C.eps * esi / (p - esi)
+
+
 def calcnm(
     bk, g, cfg=None, *, c1, c2, mf, pi0, th0, nm=None, prs, pp, th, qa=None, **unused
 ):
     """turb.F ``calcnm``: squared Brunt-Vaisala frequency on w levels
     (k=2..nk; 0 at k=1 and nk+1; i=1..ni, j=1..nj).  Liquid-only moist
-    formulation (iice=0).  Returns {"nm"}."""
+    formulation (iice=0) or, with an ice scheme (iice=1), the liquid / ice /
+    mixed-phase formulation by the layer-mean temperature.  Returns {"nm"}."""
     xp = bk.xp
     ni, nj, nk = g.ni, g.nj, g.nk
     m = _moist(cfg)
-    if m["imoist"] == 1 and m["iice"] == 1:
-        raise NotImplementedError("calcnm: iice=1 not ported")
     rdz = g.rdz
     gg = C.g
     nm = _copy_or_zeros(bk, nm, g.w_shape)
@@ -316,6 +325,8 @@ def calcnm(
             qvci = qv
         else:
             qvci = qv + A(_q(qa, nqc))
+        if m["iice"] == 1:
+            qvci = qvci + A(_q(qa, m["nqi"]))
         qt = xp.zeros_like(qv)
         for n in range(1, m["numq"] + 1):
             if (
@@ -335,22 +346,49 @@ def calcnm(
         tavg = cc1 * t[lo] + cc2 * t[hi]
         qtavg = cc1 * qt[lo] + cc2 * qt[hi]
         qvciavg = cc1 * qvci[lo] + cc2 * qvci[hi]
+        z = xp.zeros_like(pavg)
+        lnt = xp.log(t[hi] / t[lo]) * rdz * mff
+        lnq = xp.log((1.0 + qt[hi]) / (1.0 + qt[lo])) * rdz * mff
+
+        def nmsat(cpml, lh, qvs, a, b):
+            # saturated nm with drdt = a*(273.15-b)*qvs/(tavg-b)**2
+            dtd = tavg - b
+            drdt = a * (273.15 - b) * qvs / (dtd * dtd)
+            gamma = (
+                gg
+                * (1.0 + qtavg)
+                * (1.0 + lh * qvs / (C.rd * tavg))
+                / (cpml + lh * drdt)
+            )
+            return gg * (
+                (lnt + gamma / tavg) * (1.0 + tavg * drdt / (C.eps + qvs)) - lnq
+            )
+
+        lhl = C.lv1 - C.lv2 * tavg
         qvs = _rslf(xp, pavg, tavg, m["ptype"])
-        ql = xp.maximum(qvciavg - qvs, xp.zeros_like(qvs))
-        qvv = xp.maximum(qvciavg - ql, xp.zeros_like(qvs))
+        ql = xp.maximum(qvciavg - qvs, z)
+        qvv = xp.maximum(qvciavg - ql, z)
         cpml = C.cp + C.cpv * qvv + C.cpl * ql
-        lh = C.lv1 - C.lv2 * tavg
-        dtd = tavg - 29.65
-        drdt = 17.67 * (273.15 - 29.65) * qvs / (dtd * dtd)
-        gamma = (
-            gg * (1.0 + qtavg) * (1.0 + lh * qvs / (C.rd * tavg)) / (cpml + lh * drdt)
-        )
-        sat = gg * (
-            (xp.log(t[hi] / t[lo]) * rdz * mff + gamma / tavg)
-            * (1.0 + tavg * drdt / (C.eps + qvs))
-            - xp.log((1.0 + qt[hi]) / (1.0 + qt[lo])) * rdz * mff
-        )
-        val = xp.where(ql > 1.0e-10, sat, sub)
+        val = xp.where(ql > 1.0e-10, nmsat(cpml, lhl, qvs, 17.67, 29.65), sub)
+        if m["iice"] == 1:
+            lhi = C.ls1 - C.ls2 * tavg
+            # tavg <= 233.15: ice only
+            qvsi = _rsif(xp, pavg, tavg, m["ptype"])
+            qi = xp.maximum(qvciavg - qvsi, z)
+            qvv = xp.maximum(qvciavg - qi, z)
+            cpml = C.cp + C.cpv * qvv + C.cpi * qi
+            vice = xp.where(qi > 1.0e-10, nmsat(cpml, lhi, qvsi, 21.8745584, 7.66), sub)
+            # 233.15 < tavg < 273.15: mixed phase
+            ff = (tavg - 233.15) / (273.15 - 233.15)
+            qvsm = ff * qvs + (1.0 - ff) * qvsi
+            qim = xp.maximum(z, (1.0 - ff) * (qvciavg - qvsm))
+            qlm = xp.maximum(z, ff * (qvciavg - qvsm))
+            qvv = xp.maximum(z, qvciavg - qlm - qim)
+            cpml = C.cp + C.cpv * qvv + C.cpl * qlm + C.cpi * qim
+            nml = nmsat(cpml, lhl, qvs, 17.67, 29.65)
+            nmi = nmsat(cpml, lhi, qvsi, 21.8745584, 7.66)
+            vmix = xp.where((qlm + qim) > 1.0e-10, ff * nml + (1.0 - ff) * nmi, sub)
+            val = xp.where(tavg >= 273.15, val, xp.where(tavg <= 233.15, vice, vmix))
     nm = bk.set(nm, R.idx, val)
     for k in (1, nk + 1):
         nm = bk.set(nm, Reg(g, (k, k), (1, nj), (1, ni)).idx, 0.0)
