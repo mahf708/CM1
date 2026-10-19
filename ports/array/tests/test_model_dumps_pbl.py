@@ -47,6 +47,9 @@ CASES = [
     "sfc_sfclay_land_z0t1",
     "myj_dry",
     "myj_kessler",
+    "gfs_kessler",
+    "gfs_dry",
+    "gfs_sfclay_land",
 ]
 if os.environ.get("CM1X_PBL_CASES"):
     CASES = os.environ["CM1X_PBL_CASES"].split(",")
