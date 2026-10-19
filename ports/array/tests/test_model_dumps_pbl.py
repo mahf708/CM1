@@ -37,6 +37,9 @@ CASES = [
     "pbl2_sfclay_land",
     "cbl_sfc",
     "cbl_sfc_moist",
+    "gfs_kessler",
+    "gfs_dry",
+    "gfs_sfclay_land",
 ]
 PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "tkea", "qke")
 TOL = 1e-10  # max |cm1x - cm1| / max |cm1| per array and step

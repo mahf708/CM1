@@ -450,7 +450,7 @@ def turbparam_horiz(bk, g, cfg, *, defh, kmh, khh, dissten, xland, psfc):
         xp.zeros_like(ps) + l_h,
     )[None]
     R = Reg(g, (2, nk), (1, nj), (1, ni))
-    kmh = bk.set(bk.copy(kmh), R.idx, (tlh * tlh) * xp.sqrt(xp.maximum(R(defh), DMIN)))
+    kmh = bk.set(bk.copy(kmh), R.idx, (tlh * tlh) * xp.sqrt(xp.clip(R(defh), min=DMIN)))
     kmh = bcw(bk, g, cfg, kmh, 1)
     R1 = Reg(g, (1, 1), (0, nj + 1), (0, ni + 1))
     kmh = bk.set(
@@ -490,7 +490,7 @@ def turbparam_vert(bk, g, cfg, *, zf, nm, defv, kmv, khv, dissten, zntmp, ust):
     z0 = interior2(g, zntmp)[None]
     x = karman * ((R(zf) - _zf1(g, zf)) + z0)
     lvz = xp.sqrt(1.0 / (rlinf + 1.0 / (x * x)))
-    kv = (lvz * lvz) * xp.sqrt(xp.maximum(R(defv) - R(nm) * PRINV, DMIN))
+    kv = (lvz * lvz) * xp.sqrt(xp.clip(R(defv) - R(nm) * PRINV, min=DMIN))
     kmv = bcw(bk, g, cfg, bk.set(bk.copy(kmv), R.idx, kv), 1)
     RA = Reg(g, (1, nk + 1), (0, nj + 1), (0, ni + 1))
     khv = bk.set(bk.copy(khv), RA.idx, RA(kmv) * PRINV)
