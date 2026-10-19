@@ -5,11 +5,15 @@
 namespace cm1k {
 
 Bounds Bounds::from_namelist(const Namelist& nl) {
+  return from_namelist(nl, Decomp::serial(nl.geti("nx", 0), nl.geti("ny", 0)));
+}
+
+Bounds Bounds::from_namelist(const Namelist& nl, const Decomp& d) {
   Bounds b;
   b.nx = nl.geti("nx", 0);
   b.ny = nl.geti("ny", 0);
   b.nz = nl.geti("nz", 0);
-  b.ni = b.nx; b.nj = b.ny; b.nk = b.nz; b.nkp1 = b.nk + 1;
+  b.ni = d.ni; b.nj = d.nj; b.nk = b.nz; b.nkp1 = b.nk + 1;
 
   const int hs = nl.geti("hadvordrs", 5), hv = nl.geti("hadvordrv", 5);
   auto any = [&](int a, int c) { return hs == a || hv == a || hs == c || hv == c; };

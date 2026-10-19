@@ -32,6 +32,9 @@ public:
   int nstep() const { return m_nstep; }
   double mtime() const { return m_mtime; }
   bool has(const std::string& name) const { return m_entries.count(name) > 0; }
+  // MPI dumps (src/cm1dump.F): "#decomp nodex nodey myi myj myi1 myi2 myj1
+  // myj2" of the writing rank; empty for serial dumps.
+  const std::vector<int>& decomp() const { return m_decomp; }
   const DumpEntry& entry(const std::string& name) const;
   std::vector<std::string> names() const;
 
@@ -48,6 +51,7 @@ private:
   int m_nstep = 0;
   double m_mtime = 0;
   std::map<std::string, DumpEntry> m_entries;
+  std::vector<int> m_decomp;
 };
 
 class DumpWriter {

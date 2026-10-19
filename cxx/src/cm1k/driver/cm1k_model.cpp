@@ -10,11 +10,21 @@
 
 namespace cm1k {
 
-Model::Model(const Namelist& nl) : m_nl(nl) {
+Model::Model(const Namelist& nl) : Model(nl, Decomp::serial(nl.geti("nx", 0), nl.geti("ny", 0))) {}
+
+Model::Model(const Namelist& nl, const Decomp& d) : m_nl(nl) {
   m_c = Constants::make(nl.geti("testcase", 0));
-  const auto b = Bounds::from_namelist(nl);
-  if (b.nx <= 0 || b.ny <= 0 || b.nz <= 0)
+  if (nl.geti("nx", 0) <= 0 || nl.geti("ny", 0) <= 0 || nl.geti("nz", 0) <= 0)
     throw std::runtime_error("cm1k: nx, ny and nz must be set in the namelist");
+  if (d.nx != nl.geti("nx", 0) || d.ny != nl.geti("ny", 0))
+    throw std::runtime_error("cm1k: the decomposition is for a different nx, ny than the namelist");
+  const auto b = Bounds::from_namelist(nl, d);
+  if (d.mpi) {
+    const auto e = EdgeFlags::make(d, nl.geti("wbc", 1), nl.geti("ebc", 1), nl.geti("sbc", 1), nl.geti("nbc", 1));
+    m_comm = std::make_unique<Comm>(d, e, b.ngxy, b.nk);
+  } else {
+    m_comm = std::make_unique<Comm>();
+  }
   m_grid.allocate(b);
   // grid spacings (param.F)
   m_grid.dx = nl.getr("dx", 0.0);
@@ -204,6 +214,8 @@ void Model::write_dump(const std::string& root) const {
 }
 
 void Model::init() {
+  if (mpi())
+    throw std::runtime_error("cm1k: native init() is not ported with MPI (use init_from_dump with the rank's dump)");
   // param.F (grid), base.F (base state), init3d.F + getset (initial state);
   // see init/cm1k_init.hpp for the supported options.
   auto info = init::init_grid(m_nl, m_grid);
@@ -223,6 +235,7 @@ void Model::init() {
 Dyncore& Model::dyncore() {
   if (!m_dyn) {
     m_dyn = std::make_unique<Dyncore>();
+    m_dyn->set_comm(m_comm.get());
     m_dyn->setup(m_nl, m_c, m_grid, m_base, m_state);
     if (m_sfc_opt.has_layer()) m_dyn->set_surface(m_sfc);
     if (m_sfc_opt.wrf()) m_dyn->set_wrf_surface(m_wsfc);

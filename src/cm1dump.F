@@ -12,7 +12,12 @@
 !  one line per array:   name kind ndims lb1 ub1 [lb2 ub2 ...]
 !  step_000000 is the initial state (grid, base state and prognostics).
 !
-!  Only serial (non-MPI) runs are supported.
+!  MPI runs (USE_MPI=true) with more than one rank: every rank writes its
+!  own local arrays (halos included, local index bounds) under
+!  $CM1_DUMP_DIR/rank_RRRR/step_NNNNNN (RRRR = MPI rank, zero padded to 4
+!  digits); index.txt then also has a '#decomp' line:
+!    #decomp nodex nodey myi myj myi1 myi2 myj1 myj2
+!  (see cxx/cases/README.md).  A one-rank MPI run writes the serial layout.
 !
 !-----------------------------------------------------------------------
 
@@ -33,12 +38,24 @@
   CONTAINS
 
   subroutine dump_init()
+#ifdef MPI
+    use mpi
+    integer :: rank, nranks, ierr
+#endif
     integer :: ln, st
     character(len=32) :: buf
     if( initialized ) return
     initialized = .true.
     call get_environment_variable('CM1_DUMP_DIR',basedir,ln,st)
     enabled = ( st.eq.0 .and. ln.gt.0 )
+#ifdef MPI
+    call MPI_COMM_SIZE(MPI_COMM_WORLD,nranks,ierr)
+    call MPI_COMM_RANK(MPI_COMM_WORLD,rank,ierr)
+    if( enabled .and. nranks.gt.1 )then
+      write(buf,'(a,i4.4)') '/rank_',rank
+      basedir = trim(basedir)//trim(buf)
+    endif
+#endif
     call get_environment_variable('CM1_DUMP_EVERY',buf,ln,st)
     if( st.eq.0 .and. ln.gt.0 ) read(buf,*) every
     every = max(1,every)
@@ -62,7 +79,17 @@
     call execute_command_line('mkdir -p '//trim(curdir))
     open(unit=iunit_idx,file=trim(curdir)//'/index.txt',status='replace',form='formatted')
     write(iunit_idx,'(a,1x,i10,1x,es24.16)') '#step_time',nstep,mtime
+#ifdef MPI
+    call dump_decomp()
+#endif
   end subroutine dump_begin
+
+#ifdef MPI
+  subroutine dump_decomp()
+    use input, only : nodex,nodey,myi,myj,myi1,myi2,myj1,myj2
+    write(iunit_idx,'(a,8(1x,i6))') '#decomp',nodex,nodey,myi,myj,myi1,myi2,myj1,myj2
+  end subroutine dump_decomp
+#endif
 
   subroutine dump_end()
     close(unit=iunit_idx)

@@ -7,8 +7,9 @@
 // of the open-boundary pieces of solve1.F (irbc=1), solve2.F (nudgeobc,
 // irbc=4) and sound.F (irbc=2, ssopenbc*, roflux).
 //
-// Serial runs only (the `#ifndef MPI` view of the Fortran): ibw = 1 iff
-// wbc /= 1, etc. Cartesian grid without terrain (the terrain branches of
+// Serial runs: ibw = 1 iff wbc /= 1, etc. MPI runs (set_mpi): ibw..ibn are
+// this rank's (param.F), and restrict_openbc_we/sn reduce fluxin/fluxout
+// over the ranks with MPI_ALLREDUCE as bc.F does. Cartesian grid without terrain (the terrain branches of
 // ssopenbc* are not ported; DynConfig::check throws for terrain_flag).
 //
 // Options (namelist, with param.F/cm1.F defaults):
@@ -33,10 +34,12 @@ struct OpenBcParams {
   Real cstar = 30.0, alphobc = 60.0;
   Real dx = 0, dy = 0, rdx = 0, rdy = 0;
   int ni = 0, nj = 0, nk = 0;
+  const Comm* comm = nullptr;   // MPI: the reductions of restrict_openbc_*
 
   static OpenBcParams make(const Grid& g, const Namelist& nl);
   // Throws for option values that are not ported.
   void check() const;
+  void set_mpi(const Comm& c);
   bool any_open() const { return wbc == 2 || ebc == 2 || sbc == 2 || nbc == 2; }
 };
 

@@ -26,6 +26,11 @@ DumpReader::DumpReader(const std::string& step_dir) : m_dir(step_dir) {
     std::string name;
     if (!(is >> name)) continue;
     if (name == "#step_time") { is >> m_nstep >> m_mtime; continue; }
+    if (name == "#decomp") {
+      m_decomp.assign(8, 0);
+      for (auto& v : m_decomp) is >> v;
+      continue;
+    }
     DumpEntry e;
     e.name = name;
     int nd = 0;

@@ -40,6 +40,11 @@ struct AdvOptions {
   // ibw..ibn: "this process owns the west/... boundary and it is not
   // periodic" (param.F, serial: ibw = 1 iff wbc != 1).
   int ibw = 0, ibe = 0, ibs = 0, ibn = 0;
+  // MPI (share/cm1k_comm.hpp): ibw..ibn from the decomposition, bc.F's
+  // `#ifdef MPI` branches and pdef.F's comm_2we/comm_2sn exchanges
+  bool mpi = false;
+  Comm* comm = nullptr;
+  void set_mpi(Comm& c);
   bool terrain_flag = false;
   int axisymm = 0;
   bool do_ib = false;

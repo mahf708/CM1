@@ -18,6 +18,7 @@ endif()
 option(CM1K_ENABLE_TESTS          "Build cm1k tests" ON)
 option(CM1K_ENABLE_FORTRAN_BRIDGE "Build the CM1 Fortran sources as a library for component tests" ON)
 option(CM1K_ENABLE_PYTHON         "Build the pybind11 Python module" OFF)
+option(CM1K_ENABLE_MPI            "MPI domain decomposition (CM1's nodex x nodey layout, halo exchanges)" OFF)
 set(CM1K_REF_DIR "" CACHE PATH "Directory with Fortran reference dumps (see cases/README.md)")
 
 # Value-safe floating point: we compare against the Fortran to round-off,
@@ -41,6 +42,11 @@ set(EKAT_ENABLE_KOKKOS  ON  CACHE BOOL "")
 set(EKAT_ENABLE_PACK    ON  CACHE BOOL "")
 set(EKAT_ENABLE_ALGORITHM ON CACHE BOOL "")
 set(EKAT_DISABLE_TPL_WARNINGS ON CACHE BOOL "")
+# MPI tests: plain `-np N` without core binding. EKAT's default
+# (--map-by ppr:N:node:pe=1 --bind-to core) cannot place 4 ranks on a
+# 2-core runner or laptop.
+set(EKAT_MPI_NP_FLAG    "-np" CACHE STRING "")
+set(EKAT_MPI_EXTRA_ARGS "--bind-to none --oversubscribe" CACHE STRING "")
 add_subdirectory(externals/ekat ${CMAKE_BINARY_DIR}/externals/ekat)
 list(APPEND CMAKE_MODULE_PATH ${EKAT_CMAKE_PATH})
 

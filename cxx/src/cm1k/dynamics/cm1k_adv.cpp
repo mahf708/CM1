@@ -58,6 +58,12 @@ void AdvOptions::set_boundary_flags() {
   ibn = (nbc != 1) ? 1 : 0;
 }
 
+void AdvOptions::set_mpi(Comm& c) {
+  mpi = true;
+  comm = &c;
+  ibw = c.edges().ibw; ibe = c.edges().ibe; ibs = c.edges().ibs; ibn = c.edges().ibn;
+}
+
 void AdvOptions::check() const {
   auto fail = [](const std::string& m) { throw std::runtime_error("cm1k advection: " + m); };
   if (terrain_flag) fail("terrain_flag = .true. is not ported");
@@ -96,32 +102,38 @@ int hscheme(bool doweno, int weno_order, int order) { return doweno ? (weno_orde
 
 // Halo fill of bc.F `bcs` restricted to what pdefx2/pdefy2 read:
 // x halos for j=1..nj, k=1..nk (dir 0), y halos for i=1..ni (dir 1).
+// MPI: no periodic copy (comm_2we/comm_2sn fill those), the other branches
+// only on a rank at that boundary.
 void bcs_halo(const Bounds& b, const AdvOptions& o, const FArray3& s, int dir) {
   const int ni = b.ni, nj = b.nj, nk = b.nk, ng = b.ngxy;
   if (dir == 0) {
     const int wbc = o.wbc, ebc = o.ebc;
-    Kokkos::parallel_for("bcs_x", box3(1, ng, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      if (wbc == 1)                  s(1 - i, j, k) = s(ni + 1 - i, j, k);
-      else if (wbc == 2)             s(1 - i, j, k) = s(1, j, k);
-      else                           s(1 - i, j, k) = s(i, j, k);
-    });
-    Kokkos::parallel_for("bcs_x", box3(1, ng, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      if (ebc == 1)                  s(ni + i, j, k) = s(i, j, k);
-      else if (ebc == 2)             s(ni + i, j, k) = s(ni, j, k);
-      else                           s(ni + i, j, k) = s(ni + 1 - i, j, k);
-    });
+    if (!o.mpi || (wbc != 1 && o.ibw == 1))
+      Kokkos::parallel_for("bcs_x", box3(1, ng, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (wbc == 1)                  s(1 - i, j, k) = s(ni + 1 - i, j, k);
+        else if (wbc == 2)             s(1 - i, j, k) = s(1, j, k);
+        else                           s(1 - i, j, k) = s(i, j, k);
+      });
+    if (!o.mpi || (ebc != 1 && o.ibe == 1))
+      Kokkos::parallel_for("bcs_x", box3(1, ng, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (ebc == 1)                  s(ni + i, j, k) = s(i, j, k);
+        else if (ebc == 2)             s(ni + i, j, k) = s(ni, j, k);
+        else                           s(ni + i, j, k) = s(ni + 1 - i, j, k);
+      });
   } else {
     const int sbc = o.sbc, nbc = o.nbc;
-    Kokkos::parallel_for("bcs_y", box3(1, ni, 1, ng, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      if (sbc == 1)                  s(i, 1 - j, k) = s(i, nj + 1 - j, k);
-      else if (sbc == 2)             s(i, 1 - j, k) = s(i, 1, k);
-      else                           s(i, 1 - j, k) = s(i, j, k);
-    });
-    Kokkos::parallel_for("bcs_y", box3(1, ni, 1, ng, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      if (nbc == 1)                  s(i, nj + j, k) = s(i, j, k);
-      else if (nbc == 2)             s(i, nj + j, k) = s(i, nj, k);
-      else                           s(i, nj + j, k) = s(i, nj + 1 - j, k);
-    });
+    if (!o.mpi || (sbc != 1 && o.ibs == 1))
+      Kokkos::parallel_for("bcs_y", box3(1, ni, 1, ng, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (sbc == 1)                  s(i, 1 - j, k) = s(i, nj + 1 - j, k);
+        else if (sbc == 2)             s(i, 1 - j, k) = s(i, 1, k);
+        else                           s(i, 1 - j, k) = s(i, j, k);
+      });
+    if (!o.mpi || (nbc != 1 && o.ibn == 1))
+      Kokkos::parallel_for("bcs_y", box3(1, ni, 1, ng, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
+        if (nbc == 1)                  s(i, nj + j, k) = s(i, j, k);
+        else if (nbc == 2)             s(i, nj + j, k) = s(i, nj, k);
+        else                           s(i, nj + j, k) = s(i, nj + 1 - j, k);
+      });
   }
 }
 
@@ -277,6 +289,7 @@ void Advection::advs(int nrk, const AdvsArgs& args, Real dt, const AdvFluxes& f,
       if (rru(ni + 1, j, k) <= 0.0) dumx(i, j, k) = rho0(i, j, k)*s0(i, j, k);
     });
     bcs_halo(b, o, dumx, 0);
+    if (o.mpi) o.comm->comm_2we_start(dumx, "pdefx");
 
     Kokkos::parallel_for("pdefy1", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       dumy(i, j, k) = rho0(1, 1, k)*s0(i, j, k)+dt*( advy(i, j, k)
@@ -289,6 +302,7 @@ void Advection::advs(int nrk, const AdvsArgs& args, Real dt, const AdvFluxes& f,
       if (rrv(i, nj + 1, k) <= 0.0) dumy(i, j, k) = rho0(i, j, k)*s0(i, j, k);
     });
     bcs_halo(b, o, dumy, 1);
+    if (o.mpi) o.comm->comm_2sn_start(dumy, "pdefy");
   }
 
   // vertical fluxes
@@ -316,6 +330,10 @@ void Advection::advs(int nrk, const AdvsArgs& args, Real dt, const AdvFluxes& f,
                        -s(i, j, k)*(rrw(i, j, k + 1)-rrw(i, j, k))*rdz*mh(1, 1, k);
     });
     // pdefx2, pdefy2
+    if (o.mpi) {
+      o.comm->comm_2we_end(dumx, "pdefx");
+      o.comm->comm_2sn_end(dumy, "pdefy");
+    }
     Kokkos::parallel_for("pdefx2", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       Real mass;
       if (pdef_gather(PdefLine{dumx, i, j, k, 1, 0, 0}, smeps, mass))

@@ -8,6 +8,7 @@
 // divergence), so the values are identical.
 #include "physics/turb/cm1k_turb.hpp"
 
+#include "dynamics/cm1k_bc.hpp"
 #include "init/cm1k_cm1libs.hpp"
 
 #include <stdexcept>
@@ -100,6 +101,23 @@ void Options::set_boundary_flags() {
   ibe = (ebc != 1) ? 1 : 0;
   ibs = (sbc != 1) ? 1 : 0;
   ibn = (nbc != 1) ? 1 : 0;
+}
+
+// bc.F's MPI-only corner routines (bct2, bcs2_2d) with this rank's flags
+BcParams mpi_bc(const Options& o, const Bounds& b) {
+  BcParams p;
+  p.wbc = o.wbc; p.ebc = o.ebc; p.sbc = o.sbc; p.nbc = o.nbc;
+  p.ni = b.ni; p.nj = b.nj; p.nk = b.nk; p.ngxy = b.ngxy;
+  p.ib = b.ib; p.ie = b.ie; p.jb = b.jb; p.je = b.je;
+  p.mpi = true;
+  p.ibw = o.ibw; p.ibe = o.ibe; p.ibs = o.ibs; p.ibn = o.ibn;
+  return p;
+}
+
+void Options::set_mpi(Comm& c) {
+  mpi = true;
+  comm = &c;
+  ibw = c.edges().ibw; ibe = c.edges().ibe; ibs = c.edges().ibs; ibn = c.edges().ibn;
 }
 
 void Options::check() const {
@@ -198,43 +216,43 @@ void bcw(const Options& o, const Bounds& b, const FArray3& w, int flag) {
   const int ni = b.ni, nj = b.nj, nk = b.nk, ng = b.ngxy;
   if (nk >= 2) {
     // west
-    if (o.wbc == 1)
+    if (o.wbc == 1 && !o.mpi)
       Kokkos::parallel_for("bcw_w", box3(1, ng, b.jb, b.je, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(1 - i, j, k) = w(ni + 1 - i, j, k); });
-    else if (o.wbc == 2)
+    else if (o.wbc == 2 && o.on_w())
       Kokkos::parallel_for("bcw_w", box3(1 - ng, 0, 0, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, j, k) = w(1, j, k); });
-    else
+    else if (o.wbc != 1 && o.on_w())
       Kokkos::parallel_for("bcw_w", box3(1, ng, 0, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(1 - i, j, k) = w(i, j, k); });
     // east
-    if (o.ebc == 1)
+    if (o.ebc == 1 && !o.mpi)
       Kokkos::parallel_for("bcw_e", box3(1, ng, b.jb, b.je, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(ni + i, j, k) = w(i, j, k); });
-    else if (o.ebc == 2)
+    else if (o.ebc == 2 && o.on_e())
       Kokkos::parallel_for("bcw_e", box3(ni + 1, ni + ng, 0, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, j, k) = w(ni, j, k); });
-    else
+    else if (o.ebc != 1 && o.on_e())
       Kokkos::parallel_for("bcw_e", box3(1, ng, 0, nj + 1, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(ni + i, j, k) = w(ni + 1 - i, j, k); });
     // south
-    if (o.sbc == 1)
+    if (o.sbc == 1 && !o.mpi)
       Kokkos::parallel_for("bcw_s", box3(b.ib, b.ie, 1, ng, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, 1 - j, k) = w(i, nj + 1 - j, k); });
-    else if (o.sbc == 2)
+    else if (o.sbc == 2 && o.on_s())
       Kokkos::parallel_for("bcw_s", box3(0, ni + 1, 1 - ng, 0, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, j, k) = w(i, 1, k); });
-    else
+    else if (o.sbc != 1 && o.on_s())
       Kokkos::parallel_for("bcw_s", box3(0, ni + 1, 1, ng, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, 1 - j, k) = w(i, j, k); });
     // north
-    if (o.nbc == 1)
+    if (o.nbc == 1 && !o.mpi)
       Kokkos::parallel_for("bcw_n", box3(b.ib, b.ie, 1, ng, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, nj + j, k) = w(i, j, k); });
-    else if (o.nbc == 2)
+    else if (o.nbc == 2 && o.on_n())
       Kokkos::parallel_for("bcw_n", box3(0, ni + 1, nj + 1, nj + ng, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, j, k) = w(i, nj, k); });
-    else
+    else if (o.nbc != 1 && o.on_n())
       Kokkos::parallel_for("bcw_n", box3(0, ni + 1, 1, ng, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         w(i, nj + j, k) = w(i, nj + 1 - j, k); });
   }
@@ -248,32 +266,32 @@ void bcw(const Options& o, const Bounds& b, const FArray3& w, int flag) {
 void bc2d_level(const Options& o, const Bounds& b, const FArray3& s, int k) {
   const int ni = b.ni, nj = b.nj, ng = b.ngxy;
   // west
-  if (o.wbc == 1)
+  if (o.wbc == 1 && !o.mpi)
     Kokkos::parallel_for("bc2d_w", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(1 - i, j, k) = s(ni + 1 - i, j, k); });
-  else if (o.wbc == 2)
+  else if (o.wbc == 2 && o.on_w())
     Kokkos::parallel_for("bc2d_w", box2(1 - ng, 0, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(i, j, k) = s(1, j, k); });
-  else
+  else if (o.wbc != 1 && o.on_w())
     Kokkos::parallel_for("bc2d_w", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(1 - i, j, k) = s(i, j, k); });
   // east
-  if (o.ebc == 1)
+  if (o.ebc == 1 && !o.mpi)
     Kokkos::parallel_for("bc2d_e", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(ni + i, j, k) = s(i, j, k); });
-  else if (o.ebc == 2)
+  else if (o.ebc == 2 && o.on_e())
     Kokkos::parallel_for("bc2d_e", box2(ni + 1, ni + ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(i, j, k) = s(ni, j, k); });
-  else
+  else if (o.ebc != 1 && o.on_e())
     Kokkos::parallel_for("bc2d_e", box2(1, ng, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) { s(ni + i, j, k) = s(ni + 1 - i, j, k); });
   // south
-  if (o.sbc == 1)
+  if (o.sbc == 1 && !o.mpi)
     Kokkos::parallel_for("bc2d_s", box2(b.ib, b.ie, 1, ng), KOKKOS_LAMBDA(int i, int j) { s(i, 1 - j, k) = s(i, nj + 1 - j, k); });
-  else if (o.sbc == 2)
+  else if (o.sbc == 2 && o.on_s())
     Kokkos::parallel_for("bc2d_s", box2(b.ib, b.ie, 1 - ng, 0), KOKKOS_LAMBDA(int i, int j) { s(i, j, k) = s(i, 1, k); });
-  else
+  else if (o.sbc != 1 && o.on_s())
     Kokkos::parallel_for("bc2d_s", box2(b.ib, b.ie, 1, ng), KOKKOS_LAMBDA(int i, int j) { s(i, 1 - j, k) = s(i, j, k); });
   // north
-  if (o.nbc == 1)
+  if (o.nbc == 1 && !o.mpi)
     Kokkos::parallel_for("bc2d_n", box2(b.ib, b.ie, 1, ng), KOKKOS_LAMBDA(int i, int j) { s(i, nj + j, k) = s(i, j, k); });
-  else if (o.nbc == 2)
+  else if (o.nbc == 2 && o.on_n())
     Kokkos::parallel_for("bc2d_n", box2(b.ib, b.ie, nj + 1, nj + ng), KOKKOS_LAMBDA(int i, int j) { s(i, j, k) = s(i, nj, k); });
-  else
+  else if (o.nbc != 1 && o.on_n())
     Kokkos::parallel_for("bc2d_n", box2(b.ib, b.ie, 1, ng), KOKKOS_LAMBDA(int i, int j) { s(i, nj + j, k) = s(i, nj + 1 - j, k); });
 }
 
@@ -572,10 +590,27 @@ void tkekm(const Options& o, const Grid& g, const FArray3& nm,
         khv(i, j, k) = kmv(i, j, k) * prinv;
       }
     });
+  // set values at boundaries, start comms; finish comms (turb.F)
+  Comm* cm = o.mpi ? o.comm : nullptr;
   bcw(o, b, kmh, 1);
+  if (cm) cm->comm_1t_start(kmh, "kmh");
   bcw(o, b, kmv, 1);
+  if (cm) cm->comm_1t_start(kmv, "kmv");
   bcw(o, b, khh, 1);
+  if (cm) cm->comm_1t_start(khh, "khh");
   bcw(o, b, khv, 1);
+  if (cm) cm->comm_1t_start(khv, "khv");
+  if (cm) {
+    const BcParams p = mpi_bc(o, b);
+    cm->comm_1t_end(kmh, "kmh");
+    bct2(p, kmh);
+    cm->comm_1t_end(kmv, "kmv");
+    bct2(p, kmv);
+    cm->comm_1t_end(khh, "khh");
+    cm->comm_1t_end(khv, "khv");
+    cm->getcornert(kmh);
+    cm->getcornert(kmv);
+  }
 }
 
 void tkebc(const Options& o, const Bounds& b, const FArray3& tkea,
@@ -598,8 +633,20 @@ void tkebc(const Options& o, const Bounds& b, const FArray3& tkea,
       kmh(i, j, 1) = 0.0;
     });
   }
+  Comm* cm = o.mpi ? o.comm : nullptr;
   bc2d_level(o, b, tkea, 1);
+  if (cm) cm->comm_1s2d_start(tkea, 1, "tkebc_tkea");
   bc2d_level(o, b, kmh, 1);
+  if (cm) {
+    const BcParams p = mpi_bc(o, b);
+    cm->comm_1s2d_start(kmh, 1, "tkebc_kmh");
+    cm->comm_1s2d_end(tkea, 1, "tkebc_tkea");
+    bcs2_2d(p, tkea, 1);
+    cm->comm_1s2d_end(kmh, 1, "tkebc_kmh");
+    bcs2_2d(p, kmh, 1);
+    cm->comm_2d_corner(tkea, 1);
+    cm->comm_2d_corner(kmh, 1);
+  }
   Kokkos::parallel_for("tkebc_k1", box2(0, b.ni + 1, 0, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
     kmv(i, j, 1) = kmh(i, j, 1);
     khv(i, j, 1) = kmv(i, j, 1) * (khv(i, j, 2) / (1.0e-10 + kmv(i, j, 2)));
@@ -723,7 +770,22 @@ void sfc_and_turb(const Options& o, const Constants& c, const Grid& g, const Bas
 }
 
 void sfc_bcs(const Options& o, const Bounds& b, const sfc::SfcState& s) {
-  for (const FArray3* a : {&s.ust, &s.u1, &s.v1, &s.s1, &s.znt, &s.wspd}) bc2d_level(o, b, *a, 1);
+  // turb.F "bc/comms (very important)": bc2d and start; finish, bcs2_2d; corners
+  const FArray3* arrs[6] = {&s.ust, &s.u1, &s.v1, &s.s1, &s.znt, &s.wspd};
+  const char* names[6] = {"sfc_ust", "sfc_u1", "sfc_v1", "sfc_s1", "sfc_znt", "sfc_wspd"};
+  Comm* cm = o.mpi ? o.comm : nullptr;
+  for (int n = 0; n < 6; ++n) {
+    bc2d_level(o, b, *arrs[n], 1);
+    if (cm) cm->comm_1s2d_start(*arrs[n], 1, names[n]);
+  }
+  if (cm) {
+    const BcParams p = mpi_bc(o, b);
+    for (int n = 0; n < 6; ++n) {
+      cm->comm_1s2d_end(*arrs[n], 1, names[n]);
+      bcs2_2d(p, *arrs[n], 1);
+    }
+    for (int n = 0; n < 6; ++n) cm->comm_2d_corner(*arrs[n], 1);
+  }
   const auto zntmp = s.zntmp, znt = s.znt;
   Kokkos::parallel_for("sfc_zntmp", box2(0, b.ni + 1, 0, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
     zntmp(i, j, 1) = znt(i, j, 1);

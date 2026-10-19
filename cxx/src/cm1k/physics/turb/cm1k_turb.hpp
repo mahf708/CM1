@@ -89,6 +89,7 @@
 //------------------------------------------------------------------------------
 
 #include "physics/sfc/cm1k_sfc.hpp"
+#include "dynamics/cm1k_bc.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
 #include "share/cm1k_namelist.hpp"
@@ -107,6 +108,15 @@ struct Options {
   int bbc = 1, tbc = 1;
   int wbc = 1, ebc = 1, sbc = 1, nbc = 1;
   int ibw = 0, ibe = 0, ibs = 0, ibn = 0;   // serial: 1 iff the boundary is not periodic
+  // MPI (share/cm1k_comm.hpp): comm.F exchanges at the turb.F call sites,
+  // bc.F's `#ifdef MPI` branches, and ibw..ibn from the decomposition
+  bool mpi = false;
+  Comm* comm = nullptr;
+  bool on_w() const { return !mpi || ibw == 1; }
+  bool on_e() const { return !mpi || ibe == 1; }
+  bool on_s() const { return !mpi || ibs == 1; }
+  bool on_n() const { return !mpi || ibn == 1; }
+  void set_mpi(Comm& c);
   bool terrain_flag = false;
   int axisymm = 0;
   bool do_ib = false;
@@ -303,6 +313,9 @@ void tke_copy(const Bounds& b, const FArray3& tke3d, const FArray3& tkea);
 void bcw(const Options& o, const Bounds& b, const FArray3& w, int flag);
 // bc.F bc2d applied to level k of a 3D array (bc2d(a(ib,jb,k))).
 void bc2d_level(const Options& o, const Bounds& b, const FArray3& a, int k);
+// MPI: BcParams with this rank's boundary flags, for bc.F's MPI-only corner
+// routines (bct2, bcs2_2d, ...) at turb.F's call sites
+BcParams mpi_bc(const Options& o, const Bounds& b);
 
 } // namespace cm1k::turb
 

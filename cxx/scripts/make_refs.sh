@@ -111,7 +111,7 @@ for c in "${cases[@]}"; do
   cp "$src/namelist.input" "$run/"
   # extra input files some cases need (e.g. input_sounding)
   for f in "$src"/*; do
-    case "$(basename "$f")" in namelist.input|every|README*) ;; *) cp -r "$f" "$run/" ;; esac
+    case "$(basename "$f")" in namelist.input|every|ranks|README*) ;; *) cp -r "$f" "$run/" ;; esac
   done
   every=1
   [ -f "$src/every" ] && every=$(tr -d '[:space:]' <"$src/every")

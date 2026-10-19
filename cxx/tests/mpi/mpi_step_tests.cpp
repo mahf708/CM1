@@ -1,0 +1,242 @@
+// MPI step tests: each rank starts from its own Fortran dump (MPI run with
+// the same number of ranks, <ref>/<case>/np<N>/rank_RRRR/step_000000),
+// advances with Model::step and is compared, halos included, with every
+// dumped step of that rank at tolerance 0. The interior is also compared
+// with the serial reference of the same case (<ref>/<case>/step_*); that
+// difference is printed, and checked to be zero for cases that the Fortran
+// itself runs independently of the rank count (see cases/README.md).
+#include "driver/cm1k_model.hpp"
+#include "share/cm1k_comm.hpp"
+#include "share/cm1k_dump_io.hpp"
+
+#include "cm1k_test_utils.hpp"
+
+#include <mpi.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+
+using namespace cm1k;
+
+namespace {
+
+int nranks() {
+  int n = 0;
+  MPI_Comm_size(MPI_COMM_WORLD, &n);
+  return n;
+}
+
+// The rank counts a case has MPI references for (its `ranks` file).
+bool case_has_ranks(const std::string& case_name, int np) {
+  const auto nl = std::filesystem::path(cm1k::testing::case_namelist(case_name));
+  std::ifstream f(nl.parent_path() / "ranks");
+  int n;
+  while (f >> n)
+    if (n == np) return true;
+  return false;
+}
+
+// Collective "any rank": logical or over the ranks.
+bool any_rank(bool b) {
+  int v = b ? 1 : 0;
+  MPI_Allreduce(MPI_IN_PLACE, &v, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  return v != 0;
+}
+
+struct Result {
+  double rank_max_abs = 0;    // vs the MPI Fortran at this rank count (halos included)
+  double serial_max_abs = 0;  // interior vs the serial Fortran
+};
+
+// rank_independent: also require the interior to match the serial run bitwise.
+Result run_mpi_case(const std::string& case_name, bool turb, bool rank_independent) {
+  Result res;
+  const int np = nranks();
+  if (!case_has_ranks(case_name, np)) {
+    WARN(case_name << ": no MPI references at " << np << " ranks (cases/" << case_name << "/ranks)");
+    return res;
+  }
+  const auto ref = cm1k::testing::case_ref(case_name);
+  if (ref.empty()) return res;
+  const auto nl = Namelist::from_file(cm1k::testing::case_namelist(case_name));
+  const auto d = Decomp::make(MPI_COMM_WORLD, nl.geti("nx", 0), nl.geti("ny", 0));
+  char rk[32];
+  std::snprintf(rk, sizeof rk, "np%d/rank_%04d", np, d.myid);
+  const std::string rref = ref + "/" + rk;
+  const bool missing = !std::filesystem::exists(DumpReader::step_dir(rref, 0));
+  if (any_rank(missing)) {
+    if (cm1k::testing::refs_required()) FAIL("missing MPI reference dumps " << rref);
+    WARN("missing MPI reference dumps " << rref);
+    return res;
+  }
+
+  // the Fortran's decomposition (dump_decomp) is ours
+  {
+    DumpReader r0(DumpReader::step_dir(rref, 0));
+    const std::vector<int> want{d.nodex, d.nodey, d.myi, d.myj, d.myi1, d.myi2, d.myj1, d.myj2};
+    REQUIRE(r0.decomp() == want);
+  }
+
+  Model m(nl, d);
+  REQUIRE(m.mpi());
+  m.init_from_dump(DumpReader::step_dir(rref, 0));
+
+  std::vector<std::string> fields = {"ua", "va", "wa", "ppi", "tha", "rho", "prs"};
+  if (turb) for (const char* n : {"tkea", "kmh", "kmv", "khh", "khv"}) fields.push_back(n);
+  if (m.has_surface())   // sfcmodel>=1: every dumped surface array
+    for (auto& [n, a] : m.surface().dumped()) fields.push_back(n);
+  if (m.has_wrf_surface())   // sfcmodel=2,3
+    for (auto& [n, a] : m.wrf_surface().dumped()) fields.push_back(n);
+  for (auto& n : m.pbl_field_names()) fields.push_back(n);   // PBL schemes
+  for (auto& n : m.field_names())
+    if (n.rfind("qa_", 0) == 0) fields.push_back(n);
+
+  std::vector<int> steps;
+  for (auto& e : std::filesystem::directory_iterator(rref)) {
+    const auto n = e.path().filename().string();
+    if (n.rfind("step_", 0) == 0 && std::stoi(n.substr(5)) > 0) steps.push_back(std::stoi(n.substr(5)));
+  }
+  std::sort(steps.begin(), steps.end());
+  cm1k::testing::limit_steps(steps);
+  REQUIRE(!steps.empty());
+
+  const int ni = d.ni, nj = d.nj, oi = d.myi1 - 1, oj = d.myj1 - 1;
+  for (int step : steps) {
+    while (m.nstep() < step) m.step();
+    DumpReader r(DumpReader::step_dir(rref, step));
+    REQUIRE(r.nstep() == m.nstep());
+    REQUIRE(r.mtime() == m.mtime());
+    const auto sdir = DumpReader::step_dir(ref, step);
+    const bool have_serial = std::filesystem::exists(sdir);
+    std::unique_ptr<DumpReader> rs;
+    if (have_serial) rs = std::make_unique<DumpReader>(sdir);
+    double step_rank = 0, step_serial = 0;
+    std::string worst_field, worst_serial;
+    for (auto& n : fields) {
+      auto a = m.field3(n).to_host();
+      auto b = r.read_host<3>(n);
+      std::array<int, 3> lo, hi;
+      for (int k = 0; k < 3; ++k) { lo[k] = b.lb(k); hi[k] = b.ub(k); }
+      const auto st = diff<3>(a, b, lo, hi);
+      INFO(case_name << " np" << np << " rank " << d.myid << " step " << step << " field " << n << ": max abs "
+                     << st.max_abs << " at (" << (st.where.size() == 3 ? st.where[0] : 0) << ","
+                     << (st.where.size() == 3 ? st.where[1] : 0) << ","
+                     << (st.where.size() == 3 ? st.where[2] : 0) << ")");
+      CHECK(st.max_abs == 0.0);
+      if (st.max_abs > step_rank) { step_rank = st.max_abs; worst_field = n; }
+      if (have_serial && rs->has(n)) {
+        // interior (and all levels of the local array) vs the global array
+        // (within both arrays' bounds: some arrays are not sized 1..ni, 1..nj)
+        auto g = rs->read_host<3>(n);
+        double mx = 0;
+        const int i1 = std::max({1, a.lb(0), g.lb(0) - oi}), i2 = std::min({ni, a.ub(0), g.ub(0) - oi});
+        const int j1 = std::max({1, a.lb(1), g.lb(1) - oj}), j2 = std::min({nj, a.ub(1), g.ub(1) - oj});
+        const int k1 = std::max(a.lb(2), g.lb(2)), k2 = std::min(a.ub(2), g.ub(2));
+        for (int k = k1; k <= k2; ++k)
+          for (int j = j1; j <= j2; ++j)
+            for (int i = i1; i <= i2; ++i)
+              mx = std::max(mx, std::abs(a(i, j, k) - g(oi + i, oj + j, k)));
+        if (mx > step_serial) { step_serial = mx; worst_serial = n; }
+      }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &step_rank, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &step_serial, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    res.rank_max_abs = std::max(res.rank_max_abs, step_rank);
+    res.serial_max_abs = std::max(res.serial_max_abs, step_serial);
+    if (d.myid == 0)
+      std::printf("%s np%d step %d: max |cm1k - Fortran np%d| = %.3e, interior max |cm1k np%d - Fortran serial| = %.3e%s%s\n",
+                  case_name.c_str(), np, step, np, step_rank, np, step_serial, have_serial ? "" : " (no serial ref)",
+                  worst_serial.empty() ? "" : (" (rank 0: " + worst_serial + ")").c_str());
+  }
+  if (rank_independent) CHECK(res.serial_max_abs == 0.0);
+  return res;
+}
+
+} // namespace
+
+TEST_CASE("mpi: mpi_kessler_periodic vs MPI Fortran", "[mpi][step]") {
+  run_mpi_case("mpi_kessler_periodic", false, false);
+}
+
+TEST_CASE("mpi: mpi_kessler_2x1 vs MPI Fortran", "[mpi][step]") {
+  run_mpi_case("mpi_kessler_2x1", false, false);
+}
+
+TEST_CASE("mpi: mpi_kessler_tke vs MPI Fortran", "[mpi][step][turb]") {
+  run_mpi_case("mpi_kessler_tke", true, false);
+}
+
+TEST_CASE("mpi: mpi_kessler_tke_nomc vs MPI Fortran (rank-count independent)", "[mpi][step][turb]") {
+  // apmasscon=0: no global sum in the time step, the Fortran is the same at
+  // any rank count, and so is cm1k
+  run_mpi_case("mpi_kessler_tke_nomc", true, true);
+}
+
+// Coriolis, Rayleigh damping (irdamp, hrdamp), explicit diffusion
+TEST_CASE("mpi: mpi_dry_cor_damp vs MPI Fortran", "[mpi][step]") {
+  run_mpi_case("mpi_dry_cor_damp", false, false);
+}
+
+TEST_CASE("mpi: mpi_kessler_cor_diff6 vs MPI Fortran", "[mpi][step][turb]") {
+  run_mpi_case("mpi_kessler_cor_diff6", true, false);
+}
+
+TEST_CASE("mpi: mpi_dry_diff2 vs MPI Fortran", "[mpi][step]") {
+  run_mpi_case("mpi_dry_diff2", false, false);
+}
+
+// open-radiative boundaries and walls
+TEST_CASE("mpi: mpi_dry_openbc vs MPI Fortran", "[mpi][step][openbc]") {
+  run_mpi_case("mpi_dry_openbc", false, false);
+}
+
+TEST_CASE("mpi: mpi_kessler_openbc vs MPI Fortran", "[mpi][step][openbc]") {
+  run_mpi_case("mpi_kessler_openbc", false, false);
+}
+
+TEST_CASE("mpi: mpi_dry_openbc_walls vs MPI Fortran", "[mpi][step][openbc]") {
+  run_mpi_case("mpi_dry_openbc_walls", false, false);
+}
+
+TEST_CASE("mpi: mpi_kessler_tke_openbc vs MPI Fortran", "[mpi][step][openbc][turb]") {
+  run_mpi_case("mpi_kessler_tke_openbc", true, false);
+}
+
+// surface layer (sfcmodel=1) with the LES TKE scheme
+TEST_CASE("mpi: mpi_cbl_sfc vs MPI Fortran", "[mpi][step][turb][sfc]") {
+  run_mpi_case("mpi_cbl_sfc", true, false);
+}
+
+TEST_CASE("mpi: mpi_cbl_sfc_moist vs MPI Fortran", "[mpi][step][turb][sfc]") {
+  run_mpi_case("mpi_cbl_sfc_moist", true, false);
+}
+
+// boundary-layer schemes (cm1setup=2) with their surface layers
+TEST_CASE("mpi: PBL cases vs MPI Fortran", "[mpi][step][pbl][sfc]") {
+  for (const char* c : {"mpi_pbl2_dry", "mpi_pbl2_kessler", "mpi_pbl2_sfclay_land", "mpi_ysu_dry", "mpi_ysu_kessler",
+                        "mpi_gfs_dry", "mpi_gfs_kessler", "mpi_gfs_sfclay_land", "mpi_mynn25_kessler",
+                        "mpi_mynn25_land_dry", "mpi_mynn3_dry", "mpi_mynn3_land_kessler", "mpi_myj_dry",
+                        "mpi_myj_kessler"}) {
+    SECTION(c) { run_mpi_case(c, true, false); }
+  }
+}
+
+// what is not ported with MPI throws
+TEST_CASE("mpi: unported combinations throw", "[mpi]") {
+  auto nl = Namelist::from_file(cm1k::testing::case_namelist("mpi_kessler_periodic"));
+  {
+    // native initialization (init3d.F's per-rank fields): from the rank's dump only
+    Model m(nl, Decomp::make(MPI_COMM_WORLD, nl.geti("nx", 0), nl.geti("ny", 0)));
+    REQUIRE(m.mpi());
+    CHECK_THROWS_WITH(m.init(), Catch::Contains("not ported with MPI"));
+  }
+  {
+    // 2D domains
+    nl.set("ny", "1");
+    CHECK_THROWS(Model(nl, Decomp::make(MPI_COMM_WORLD, nl.geti("nx", 0), 1)).dyncore());
+  }
+}

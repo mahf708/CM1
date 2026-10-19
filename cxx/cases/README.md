@@ -136,3 +136,50 @@ and OpenMP 1 vs 2 threads. The Fortran reference is deterministic and
 thread-count independent for these configurations, so bitwise parity with
 the Fortran is a realistic target for ports that keep its operation order
 (reductions over the domain, if any are added later, would be the exception).
+
+## MPI references
+
+The `mpi_*` cases are copies of the serial cases above (same physics and
+grid, except `mpi_kessler_2x1`: `kessler_bubble` on 48×24 for 180 s, so that
+2 ranks split the domain in x) that also run with MPI. Each has a `ranks`
+file listing the rank counts (`2 4`), writes netCDF output
+(`output_format = 2`; CM1's GrADS output does not work with MPI in double
+precision) and dumps every 5 to 30 steps (`every`).
+`mpi_kessler_tke_nomc` is `mpi_kessler_tke` with `apmasscon = 0`.
+
+```bash
+cxx/scripts/make_refs.sh     OUT_DIR    # serial: OUT_DIR/<case>/step_*  (all cases, incl. mpi_*)
+cxx/scripts/make_refs_mpi.sh OUT_DIR    # MPI:    OUT_DIR/<case>/np<N>/rank_RRRR/step_*
+```
+
+`make_refs_mpi.sh` builds the Fortran with `USE_MPI`, `USE_DOUBLE` and
+`USE_NETCDF` (`src/Makefile` maps `MPI_REAL` to `MPI_DOUBLE_PRECISION`
+in double precision) and runs every case with a `ranks` file (knobs:
+`CM1_BUILD_DIR`, `MPIRUN`, `MPIRUN_ARGS`, `JOBS`, `FC`). Every rank dumps its
+own subdomain, halos included, to `rank_RRRR/` in the layout above;
+`index.txt` has one more line, `#decomp nodex nodey myi myj myi1 myi2 myj1 myj2`
+(the process grid and the rank's global index range). Both scripts can
+write to the same OUT_DIR. In CI, job `fortran-refs-mpi` uploads the
+artifact **`cm1-refs-mpi`**, and job `cm1k-mpi` downloads it and `cm1-refs`
+into one directory.
+
+CM1 picks the process grid (`nodex × nodey`) from the rank count and the
+grid: 32×32, 40×40 and 24×24 run as 1×2 on 2 ranks and 2×2 on 4 ranks;
+48×24 as 2×1 and 2×2.
+
+`tests/mpi` (`ctest -L mpi`: tests `mpi_tests_np2`, `mpi_tests_np4`) starts
+each rank of cm1k from its own step-0 dump, steps, and compares every dumped
+array of the rank, halos included, with the MPI Fortran at the same rank
+count at tolerance 0. It also prints the largest interior difference from
+the serial Fortran run of the case.
+
+Rank-count dependence of the Fortran (gfortran 13.3, OpenMPI 4.1, 2026-10):
+with `apmasscon = 1` (all cases except `mpi_kessler_tke_nomc`) the global
+mass sum is an `MPI_ALLREDUCE` of per-rank partial sums, so the result
+depends on the rank count at round-off level. Interior max |np2 or np4 −
+serial| over 150 steps is about 1e-10 to 2e-9 (absolute, mostly on `prs`
+and `psfc`, ~1e5 Pa, so about 1e-15 relative) for most cases;
+`mpi_pbl2_sfclay_land` reaches 2e-7, and the moist turbulent cases
+`mpi_kessler_cor_diff6` (5e-5) and `mpi_myj_kessler` (1e-4) amplify it
+further. With `apmasscon = 0` (`mpi_kessler_tke_nomc`) the Fortran is
+bitwise identical at 1, 2 and 4 ranks, and so is cm1k (the test checks it).
