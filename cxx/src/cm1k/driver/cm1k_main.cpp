@@ -30,7 +30,13 @@ int main(int argc, char** argv) {
     if (!from_dump.empty()) m.init_from_dump(from_dump);
     else m.init();
     if (!dump_dir.empty()) m.write_dump(dump_dir);
-    const double timax = m.namelist().getr("timax", 0.0);
+    // cm1.F: iconly=1 stops after the initial conditions; run_time > 0
+    // runs for run_time seconds from the start time instead of to timax
+    const auto& nl = m.namelist();
+    if (nl.geti("iconly", 0) == 1 && steps < 0) steps = 0;
+    double timax = nl.getr("timax", 0.0);
+    const double run_time = nl.getr("run_time", -999.0);
+    if (run_time > 0.0) timax = m.mtime() + run_time;
     while (steps < 0 ? m.mtime() < timax : m.nstep() < steps) {
       m.step();
       std::printf("cm1k: nstep %d  mtime %.3f\n", m.nstep(), m.mtime());

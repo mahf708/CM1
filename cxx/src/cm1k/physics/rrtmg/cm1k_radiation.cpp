@@ -73,7 +73,6 @@ void RadOptions::check() const {
   if (ipbl == 4 || ipbl == 5) unsupported("radopt=2 with the MYNN PBL (icloud_bl coupling)");
   if (ipbl != 0 && ipbl != 1 && ipbl != 2 && ipbl != 3)
     unsupported("radopt=2 with ipbl=" + std::to_string(ipbl) + " (only 0..3)");
-  if (testcase != 0) unsupported("radopt=2 with testcase=" + std::to_string(testcase));
   if (month < 1 || month > 12) throw std::runtime_error("cm1k radiation: month must be 1..12");
 }
 
@@ -265,6 +264,12 @@ void Radiation::driver(double mtime, int /*nstep*/, Real dt, const Grid& g, cons
       coszen_(i, j, 1) = cz;
       hrang_(i, j, 1) = hr;
     });
+  }
+  if (o.testcase == 8) {
+    // radiation_driver.F: Bretherton et al. (2005) fixed values (coszen is
+    // set on the whole array)
+    solcon = 650.83;
+    coszen.fill(std::cos(50.5 * cm1k::phys::pi / 180.0));
   }
   {
     auto gsw_ = gsw, glw_ = glw;

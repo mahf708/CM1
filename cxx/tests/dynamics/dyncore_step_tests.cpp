@@ -27,6 +27,7 @@ double run_case(const std::string& case_name, double tol, bool native_init = fal
     WARN("missing " << DumpReader::step_dir(ref, start_step));
     return 0;
   }
+  cm1k::testing::use_case_inputs(case_name);
   Model m(Namelist::from_file(cm1k::testing::case_namelist(case_name)));
   if (native_init) m.init();   // init/ port: param.F, base.F, init3d.F
   else             m.init_from_dump(DumpReader::step_dir(ref, start_step));
@@ -424,7 +425,8 @@ TEST_CASE("radiation options: unsupported ones throw", "[rrtmg]") {
   CHECK_THROWS(with([](auto& p) { p.ipbl = 3; p.sfcmodel = 4; }).check());   // GFDL surface layer
   CHECK_THROWS(with([](auto& p) { p.sfcmodel = 6; }).check());               // MYNN surface layer
   REQUIRE_NOTHROW(with([](auto& p) { p.ipbl = 3; p.sfcmodel = 3; }).check()); // GFS-EDMF
-  CHECK_THROWS(with([](auto& p) { p.testcase = 8; }).check());
+  CHECK_THROWS(with([](auto& p) { p.testcase = 4; }).check());                 // simple radiation
+  REQUIRE_NOTHROW(with([](auto& p) { p.testcase = 8; }).check());              // fixed solcon, coszen
   CHECK_THROWS(with([](auto& p) { p.rterm = 1; }).check());
   REQUIRE_NOTHROW(with([](auto& p) { p.radopt = 0; p.ptype = 0; }).check());
 }
@@ -529,6 +531,51 @@ TEST_CASE("dyncore: dry_bubble from Model::init (no dump), every step", "[dyn][s
 
 TEST_CASE("dyncore + Kessler: kessler_saturated from Model::init (no dump)", "[dyn][step][init][kessler]") {
   run_case("kessler_saturated", 1e-12, true);
+}
+
+// base-state soundings and wind profiles (isnd / iwnd), 3 steps from Model::init
+TEST_CASE("dyncore: snd_les_shcu from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_les_shcu", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_les_shcu_precip from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_les_shcu_precip", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_les_shcu_land from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_les_shcu_land", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_les_sbl from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_les_sbl", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_les_cbl from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_les_cbl", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_les_shear from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_les_shear", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_les_hbl from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_les_hbl", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_input_sounding from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_input_sounding", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_hurricane17 from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_hurricane17", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_tropical from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_tropical", 1e-12, true);
+}
+
+TEST_CASE("dyncore: snd_moist_neutral from Model::init (no dump)", "[dyn][step][init][snd]") {
+  run_case("snd_moist_neutral", 1e-12, true);
 }
 
 TEST_CASE("dyncore: option checks", "[dyn]") {

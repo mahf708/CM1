@@ -99,7 +99,7 @@ jobs:
     name: cm1k (${{ matrix.name }})
     needs: fortran-refs
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -109,12 +109,15 @@ jobs:
             cmake_args: -DKokkos_ENABLE_OPENMP=ON
             python: true
             max_step: ""
+            ctest_jobs: 1
           - name: serial-debug
             build_type: Debug
             cmake_args: -DKokkos_ENABLE_DEBUG_BOUNDS_CHECK=ON
             python: false
-            # bounds-checked Debug is ~20x slower: compare dumps up to step 10
+            # bounds-checked Debug is ~20x slower: compare dumps up to step 10,
+            # and run the (serial) test executables 4 at a time
             max_step: "10"
+            ctest_jobs: 4
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
@@ -160,6 +163,7 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCM1K_REF_DIR="$GITHUB_WORKSPACE/refs" \
+            -DEKAT_MPI_NP_FLAG=-np -DEKAT_MPI_EXTRA_ARGS="--bind-to none" \
             ${{ matrix.cmake_args }}
 
       - name: Build
@@ -170,7 +174,9 @@ jobs:
 
       - name: Test
         working-directory: build
-        run: ctest --output-on-failure --timeout 1800
+        # mpiexec's default --map-by ppr:1:node:pe=1 binds every test to core 0;
+        # unbound (configure above), parallel ctest jobs use separate cores
+        run: ctest --output-on-failure --timeout 3600 -j ${{ matrix.ctest_jobs }}
 
       - name: Python bindings
         if: matrix.python

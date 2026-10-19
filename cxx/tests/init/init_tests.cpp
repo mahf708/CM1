@@ -21,6 +21,7 @@ namespace {
 void check_case(const std::string& case_name) {
   const auto ref = testing::case_ref(case_name);
   if (ref.empty()) return;
+  testing::use_case_inputs(case_name);
   Model m(Namelist::from_file(testing::case_namelist(case_name)));
   m.init();
   DumpReader r(DumpReader::step_dir(ref, 0));
@@ -84,18 +85,37 @@ TEST_CASE("init: kessler_terrain_tke", "[init][ref][terrain]") { check_case("kes
 TEST_CASE("init: nh_mountain_waves_long", "[init][ref][terrain]") { check_case("nh_mountain_waves_long"); }
 TEST_CASE("init: kessler_terrain_tke_openbc", "[init][ref][terrain]") { check_case("kessler_terrain_tke_openbc"); }
 
+// base-state soundings and wind profiles (base.F isnd / iwnd), small grids,
+// testcase = 0 (see cases/README.md):
+TEST_CASE("init: snd_les_shcu", "[init][ref][snd]") { check_case("snd_les_shcu"); }
+TEST_CASE("init: snd_les_shcu_precip", "[init][ref][snd]") { check_case("snd_les_shcu_precip"); }
+TEST_CASE("init: snd_les_shcu_land", "[init][ref][snd]") { check_case("snd_les_shcu_land"); }
+TEST_CASE("init: snd_les_sbl", "[init][ref][snd]") { check_case("snd_les_sbl"); }
+TEST_CASE("init: snd_les_cbl", "[init][ref][snd]") { check_case("snd_les_cbl"); }
+TEST_CASE("init: snd_les_shear", "[init][ref][snd]") { check_case("snd_les_shear"); }
+TEST_CASE("init: snd_les_hbl", "[init][ref][snd]") { check_case("snd_les_hbl"); }
+TEST_CASE("init: snd_input_sounding", "[init][ref][snd]") { check_case("snd_input_sounding"); }
+TEST_CASE("init: snd_hurricane17", "[init][ref][snd]") { check_case("snd_hurricane17"); }
+TEST_CASE("init: snd_tropical", "[init][ref][snd]") { check_case("snd_tropical"); }
+TEST_CASE("init: snd_moist_neutral", "[init][ref][snd]") { check_case("snd_moist_neutral"); }
+
 TEST_CASE("init: unsupported options throw", "[init]") {
   const auto nl0 = Namelist::from_file(testing::case_namelist("dry_bubble"));
   const std::vector<std::pair<std::string, std::string>> bad = {
-      {"isnd", "7"},      {"iwnd", "5"},           {"iinit", "4"},  {"stretch_z", "2"},
+      {"isnd", "6"},      {"iwnd", "12"},          {"iinit", "4"},  {"stretch_z", "2"},
       {"stretch_x", "1"}, {"irandp", "2"}, {"ibalance", "2"},
-      {"testcase", "1"},  {"iorigin", "3"},        {"wbc", "5"}};
+      {"iorigin", "3"},   {"wbc", "5"}};
   for (const auto& kv : bad) {
     INFO(kv.first << " = " << kv.second);
     auto nl = nl0;
     nl.set(kv.first, kv.second);
     Model m(nl);
     REQUIRE_THROWS_AS(m.init(), std::runtime_error);
+  }
+  {   // no such test case: the Model constructor already throws
+    auto nl = nl0;
+    nl.set("testcase", "16");
+    REQUIRE_THROWS_AS(Model(nl), std::runtime_error);
   }
   // terrain: itern=1,2,3 are ported; 0 and 4 (GrADS perts.dat) throw
   for (const char* it : {"0", "4"}) {

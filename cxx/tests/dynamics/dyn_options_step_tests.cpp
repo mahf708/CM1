@@ -138,7 +138,7 @@ TEST_CASE("dyncore options: checks", "[dyn][cor][rdamp][diff]") {
     REQUIRE(c.umove == 0.0);   // imove = 0
   }
   for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
-         {"betaplane", "1"}, {"lspgrad", "2"}, {"irdamp", "2"}, {"idiff", "2"},
+         {"betaplane", "1"}, {"lspgrad", "5"}, {"irdamp", "2"}, {"idiff", "2"},
          {"difforder", "4"}, {"do_adapt_move", ".true."}}) {
     auto x = nl;
     x.set(k, v);

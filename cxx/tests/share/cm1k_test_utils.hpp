@@ -72,6 +72,15 @@ inline std::string case_namelist(const std::string& case_name) {
   return (std::filesystem::path(e ? e : dflt) / case_name / "namelist.input").string();
 }
 
+// Points the native initialization at the extra input files of a case (the
+// input_sounding read for isnd = 7, 17: CM1K_INPUT_SOUNDING), as make_refs.sh
+// copies them next to the namelist for the Fortran run.
+inline void use_case_inputs(const std::string& case_name) {
+  const auto snd = std::filesystem::path(case_namelist(case_name)).parent_path() / "input_sounding";
+  if (std::filesystem::exists(snd)) setenv("CM1K_INPUT_SOUNDING", snd.string().c_str(), 1);
+  else unsetenv("CM1K_INPUT_SOUNDING");
+}
+
 } // namespace cm1k::testing
 
 #endif

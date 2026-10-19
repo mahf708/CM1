@@ -21,7 +21,7 @@
   implicit none
 
   private
-  public :: dump_enabled, dump_due, dump_begin, dump_end, dump1, dump3, dump4
+  public :: dump_enabled, dump_due, dump_begin, dump_end, dump1, dump3, dump4, dump_adapt
 
   logical, save :: initialized = .false.
   logical, save :: enabled = .false.
@@ -63,6 +63,26 @@
     open(unit=iunit_idx,file=trim(curdir)//'/index.txt',status='replace',form='formatted')
     write(iunit_idx,'(a,1x,i10,1x,es24.16)') '#step_time',nstep,mtime
   end subroutine dump_begin
+
+  ! adapt_dt = 1: the time-step state at the dump (cm1.F, right after
+  ! mtime = mtime + dbldt): dt of the step just taken, its nsound, cflmax
+  ! (from solve2's last RK stage), ksmax, the output timers (not yet
+  ! advanced for this step) and the output flags of this step.
+  subroutine dump_adapt(dt,nsound,cflmax,ksmax,taptim,stattim,rsttim,dowriteout,dostat,dorestart)
+    real, intent(in) :: dt,cflmax,ksmax
+    integer, intent(in) :: nsound
+    double precision, intent(in) :: taptim,stattim,rsttim
+    logical, intent(in) :: dowriteout,dostat,dorestart
+    integer :: l1,l2,l3
+    l1 = 0
+    l2 = 0
+    l3 = 0
+    if( dowriteout ) l1 = 1
+    if( dostat ) l2 = 1
+    if( dorestart ) l3 = 1
+    write(iunit_idx,'(a,1x,es24.16,1x,i6,5(1x,es24.16),3(1x,i1))') '#adapt_dt',dble(dt),nsound,  &
+          dble(cflmax),dble(ksmax),taptim,stattim,rsttim,l1,l2,l3
+  end subroutine dump_adapt
 
   subroutine dump_end()
     close(unit=iunit_idx)

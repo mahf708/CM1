@@ -504,7 +504,7 @@ TEST_CASE("sfc options: unsupported values throw", "[sfc]") {
   bad([](S::Options& x) { x.cecd = 0; });
   bad([](S::Options& x) { x.initsfc = 2; });
   bad([](S::Options& x) { x.tbc = 3; });
-  bad([](S::Options& x) { x.testcase = 1; });
+  bad([](S::Options& x) { x.testcase = 1; x.sfcmodel = 2; });
   bad([](S::Options& x) { x.imove = 1; });
   bad([](S::Options& x) { x.axisymm = 1; });
   bad([](S::Options& x) { x.terrain_flag = true; });

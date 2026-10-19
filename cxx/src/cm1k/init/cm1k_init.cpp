@@ -1,10 +1,13 @@
 #include "init/cm1k_init.hpp"
 
+#include "init/cm1k_base_snd.hpp"
 #include "init/cm1k_cm1libs.hpp"
 #include "dynamics/cm1k_adv_routines.hpp"
 
 #include <cmath>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
@@ -32,7 +35,70 @@ int nint(Real x) { return int(std::lround(x)); }
 // smeps for the double-precision build (cm1.F, #ifdef DP)
 constexpr Real smeps = 1.0e-60;
 
+// x**n for real x and integer n as gfortran evaluates it (libgcc __powidf2:
+// binary exponentiation)
+double powi(double x, int m) {
+  unsigned n = m < 0 ? unsigned(-m) : unsigned(m);
+  double y = (n % 2) ? x : 1.0;
+  while (n >>= 1) {
+    x = x * x;
+    if (n % 2) y = y * x;
+  }
+  return m < 0 ? 1.0 / y : y;
+}
+
+// param.F FUNCTION ZHEIGHT: height of a geometrically stretched grid
+double zheight(Real dzbot, double r, int nz, Real dzmax, int n1, Real zctop, Real ztopr, Real dzmax2) {
+  double sum = 0.0;
+  const double dzmaxdp = dzmax;
+  int n2 = 0;
+  Real dzm = 0.0;
+  for (int k = 1; k <= nz; ++k) {
+    double dznew;
+    if (k <= n1) {
+      dznew = dzbot;
+    } else {
+      const int k2 = k - n1;
+      dznew = std::min(dzbot * powi(r, k2 - 1), dzmaxdp);
+      if (sum >= zctop) {
+        if (n2 == 0) dzm = std::min(dznew, dzmaxdp);
+        n2 = n2 + 1;
+        dznew = std::min(dzm * powi(ztopr, n2), double(dzmax2));
+      }
+    }
+    sum = sum + dznew;
+  }
+  return sum;
+}
+
 } // namespace
+
+// param.F SUBROUTINE ZGRID (stretch_z = 2): w levels gze(1..nz) of a
+// geometrically stretched grid (bisection for the stretch factor); gze is
+// indexed 0..nz+1 (ng = 1), only 1..nz are set here.
+void zgrid(Real dz, Real dz_stretch, int nz, int nbndlyr, Real dzmax, Real ztopstr, Real rtop,
+           Real dzmaxtop, std::vector<double>& gze) {
+  const double ztop = dz * (nz - 1);
+  double zx = 1.0, stretch = 1.0;
+  if (dz > dz_stretch) {
+    for (int n = 1; n <= 50; ++n) {
+      if (std::abs(zx) > 1.0e-12) {
+        zx = zx * 0.5;
+        const double xmid = stretch + zx;
+        const double fmid = zheight(dz_stretch, xmid, nz - 1, dzmax, nbndlyr, ztopstr, rtop, dzmaxtop) - ztop;
+        if (fmid <= 0.0) stretch = xmid;
+        if (fmid == 0.0) break;
+      }
+    }
+  }
+  if (stretch > 1.1)
+    throw std::runtime_error("cm1k init: stretch_z=2: stretch factor too big (" + std::to_string(stretch) +
+                             "); increase nz or dz_bot");
+  gze.assign(nz + 2, 0.0);
+  gze[1] = 0.0;
+  for (int k = 1; k <= nz - 1; ++k)
+    gze[k + 1] = zheight(dz_stretch, stretch, k, dzmax, nbndlyr, ztopstr, rtop, dzmaxtop);
+}
 
 //---------------------------------------------------------------------------
 // param.F: 2nd-order extrapolation coefficients (Fornberg 1988)
@@ -101,7 +167,7 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
   if (nl.geti("stretch_x", 0) != 0) unsupported("stretch_x != 0");
   if (nl.geti("stretch_y", 0) != 0) unsupported("stretch_y != 0");
   const int stretch_z = nl.geti("stretch_z", 0);
-  if (stretch_z != 0 && stretch_z != 1) unsupported("stretch_z = " + std::to_string(stretch_z));
+  if (stretch_z < 0 || stretch_z > 4) unsupported("stretch_z = " + std::to_string(stretch_z));
   if (nl.geti("axisymm", 0) != 0) unsupported("axisymm = 1");
   if (nl.geti("irst", 0) != 0) unsupported("irst = 1 (restart)");
   if (nk < 4) unsupported("nz < 4");
@@ -110,6 +176,7 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
   Real dz = nl.getr("dz", 0.0);
   Real ztop = nl.getr("ztop", 0.0);
   if (stretch_z < 1) ztop = dz * double(nk);
+  if (stretch_z == 2) dz = ztop / double(nk);   // nk is the number of scalar levels
 
   g.dx = dx; g.dy = dy; g.dz = dz;
   g.rdx = 1.0 / dx; g.rdy = 1.0 / dy; g.rdz = 1.0 / dz;
@@ -198,7 +265,7 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
   for (int k = kb; k <= ke + 1; ++k) sigmaf(k) = zf(1, 1, k);
   for (int k = kb; k <= ke; ++k) sigma(k) = 0.5 * (sigmaf(k) + sigmaf(k + 1));
 
-  if (stretch_z >= 1) {
+  if (stretch_z == 1) {
     // stretch_z = 1: hard-wired analytic stretching function
     const Real str_bot = nl.getr("str_bot", 0.0), str_top = nl.getr("str_top", 0.0);
     const Real dz_bot = nl.getr("dz_bot", 0.0), dz_top = nl.getr("dz_top", 0.0);
@@ -232,7 +299,65 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
     for (int k = nk1 + nk2 + 2; k <= nk1 + nk2 + nk3 + 1; ++k) sigmaf(k) = sigmaf(k - 1) + dz_top;
     sigmaf(0) = -sigmaf(2);
     sigmaf(nk + 2) = sigmaf(nk + 1) + (sigmaf(nk + 1) - sigmaf(nk));
+  } else if (stretch_z == 2) {
+    // geometric stretching from COMMAS (param.F ZGRID/ZHEIGHT); dz = ztop/nk
+    // (set above). gze(0:ke+1)
+    if (B.terrain_flag) unsupported("stretch_z = 2 with terrain (param.F: terrain not yet compatible with stretch_z == 2)");
+    const Real str_bot = nl.getr("str_bot", 0.0);
+    const Real dz_bot = nl.getr("dz_bot", 0.0), dz_top = nl.getr("dz_top", 0.0);
+    // param.F locals (not namelist variables)
+    const Real rtop = 1.0, ztopstr = 100000.0, dzmaxtop = 700.0;
+    const int nbndlyr = std::max(0, int(str_bot / dz_bot + 0.01) - 1);
+    std::vector<double> gze_v(ke + 2, 0.0);
+    auto gze = [&](int k) -> double& { return gze_v[k]; };
+    zgrid(dz, dz_bot, ke, nbndlyr, dz_top, ztopstr, rtop, dzmaxtop, gze_v);
+    gze(0) = -gze(2);
+    gze(ke + 1) = gze(ke) + (gze(ke) - gze(ke - 1));
+    for (int k = kb; k <= ke + 1; ++k)
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie; ++i) zf(i, j, k) = gze(k);
+    for (int k = kb; k <= ke + 1; ++k) sigmaf(k) = zf(1, 1, k);
+  } else if (stretch_z == 3 || stretch_z == 4) {
+    // cm1r19: levels from the file input_grid_z (in meters): scalar levels
+    // (stretch_z = 3) or w levels (stretch_z = 4, cm1r19.8). sigmaf(0) and
+    // sigmaf(nk+2) keep their uniform-grid values, as in param.F.
+    const std::string path = nl.input_path("input_grid_z");
+    std::ifstream f(path);
+    if (!f) throw std::runtime_error("cm1k init: stretch_z=" + std::to_string(stretch_z) + ": cannot open '" + path + "'");
+    // list-directed read(40,*): one value per record (the first item of
+    // each line)
+    auto next = [&](const char* what) {
+      std::string line, tok;
+      while (std::getline(f, line)) {
+        std::istringstream is(line);
+        if (is >> tok) break;
+        tok.clear();
+      }
+      if (tok.empty()) throw std::runtime_error("cm1k init: input_grid_z: cannot read " + std::string(what));
+      if (tok.back() == ',') tok.pop_back();
+      for (auto& ch : tok) if (ch == 'd' || ch == 'D') ch = 'e';   // Fortran 1.0d3
+      return std::stod(tok);
+    };
+    if (stretch_z == 3) {
+      sigmaf(1) = 0.0;
+      for (int k = 1; k <= nk; ++k) {
+        sigma(k) = next("sigma");
+        sigmaf(k + 1) = 2.0 * sigma(k) - sigmaf(k);
+      }
+    } else {
+      for (int k = 1; k <= nk + 1; ++k) sigmaf(k) = next("sigmaf");
+      for (int k = 1; k <= nk; ++k) sigma(k) = 0.5 * (sigmaf(k) + sigmaf(k + 1));
+    }
+    ztop = sigmaf(nk + 1);
+    for (int k = 1; k <= nk + 1; ++k)
+      for (int j = jb; j <= je; ++j)
+        for (int i = ib; i <= ie; ++i) zf(i, j, k) = sigmaf(k);
+  } else if (stretch_z != 0) {
+    unsupported("stretch_z = " + std::to_string(stretch_z));
+  }
 
+  if (stretch_z >= 1) {
+    // param.F, common to every stretch_z: zh, mh, mf from zf
     for (int j = jb; j <= je; ++j)
       for (int i = ib; i <= ie; ++i) {
         zf(i, j, 0) = -zf(i, j, 2);
@@ -425,21 +550,27 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
 //---------------------------------------------------------------------------
 // base.F
 void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& info, BaseState& bs) {
+  // base.F's testcase forcing profiles (wprof, ufrc/vfrc, thfrc/qvfrc,
+  // ug/vg, dvdr, ulspg/vlspg): physics/testcase (init_profiles)
+  const int imoist = nl.geti("imoist", 0), ptype = nl.geti("ptype", 0);
+  if (imoist == 1 && ptype != 0 && ptype != 1) unsupported("ptype = " + std::to_string(ptype));
+  init_base_state(nl, c, g, info, bs);
+}
+
+void init_base_state(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& info, BaseState& bs) {
   using namespace phys;
   const auto& B = g.b;
   const auto& bc = info.bc;
   const auto& ex = info.ex;
   const int ni = B.ni, nj = B.nj, nk = B.nk;
   const int ib = B.ib, ie = B.ie, jb = B.jb, je = B.je, kb = B.kb, ke = B.ke;
-  const int isnd = nl.geti("isnd", 1), iwnd = nl.geti("iwnd", 0);
-  const int imoist = nl.geti("imoist", 0), ptype = nl.geti("ptype", 0);
+  const int imoist = nl.geti("imoist", 0);
   const int psolver = nl.geti("psolver", 3), imove = nl.geti("imove", 0);
-  if (nl.geti("testcase", 0) != 0) unsupported("testcase != 0");
+  const int testcase = nl.geti("testcase", 0), isnd = nl.geti("isnd", 1);
+  if (testcase < 0 || testcase > 15) unsupported("testcase = " + std::to_string(testcase));
   if (nl.getb("do_adapt_move", false)) unsupported("do_adapt_move = .true.");
-  if (imoist == 1 && ptype != 0 && ptype != 1) unsupported("ptype = " + std::to_string(ptype));
 
-  const Real g_ = c.g, cp = c.cp, rd = c.rd, cpdrd = c.cpdrd, reps = c.reps, eps = c.eps;
-  auto rslf = [&](Real p, Real t) { return cm1libs::rslf(ptype, eps, p, t); };
+  const Real rd = c.rd, cpdrd = c.cpdrd, reps = c.reps;
 
   auto zh = g.zh.to_host(), c1 = g.c1.to_host(), c2 = g.c2.to_host();
   auto pi0 = bs.pi0.to_host(), th0 = bs.th0.to_host(), prs0 = bs.prs0.to_host(), rho0 = bs.rho0.to_host();
@@ -449,165 +580,9 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
   HArray3 rh0(Kokkos::View<Real***, Kokkos::LayoutLeft, HostSpace>("rh0", ie - ib + 1, je - jb + 1, ke - kb + 1), {ib, jb, kb});
   HArray3 t0(Kokkos::View<Real***, Kokkos::LayoutLeft, HostSpace>("t0", ie - ib + 1, je - jb + 1, ke - kb + 1), {ib, jb, kb});
 
-  // ---- base-state sounding (isnd) ----
-  if (isnd == 1) {
-    // dry adiabatic
-    const Real th_sfc = 300.0, pi_sfc = 1.0;
-    for (int k = kb; k <= ke; ++k)
-      for (int j = jb; j <= je; ++j)
-        for (int i = ib; i <= ie; ++i) {
-          th0(i, j, k) = th_sfc;
-          pi0(i, j, k) = pi_sfc - g_ * zh(i, j, k) / (cp * th_sfc);
-          prs0(i, j, k) = p00 * std::pow(pi0(i, j, k), cpdrd);
-        }
-    for (int k = kb; k <= ke; ++k)
-      for (int j = jb; j <= je; ++j)
-        for (int i = ib; i <= ie; ++i) { qv0(i, j, k) = 0.0; rh0(i, j, k) = 0.0; }
-  } else if (isnd == 4) {
-    // saturated, neutrally-stable sounding (Bryan and Fritsch 2002)
-    const Real thec_mb = 320.0, qt_mb = 0.020, prs_sfc = 100000.0;
-    const Real cpl = c.cpl, lv1 = c.lv1, lv2 = c.lv2;
-    for (int j = jb; j <= je; ++j)
-      for (int i = ib; i <= ie; ++i) {
-        prs0(i, j, 1) = prs_sfc;
-        Real qv1 = qt_mb, tmp = thec_mb, tlast = tmp;
-        for (int n = 1; n <= 20; ++n) {
-          const Real thbar = (tmp * std::pow(p00 / prs0(i, j, 1), rd / cp)) * (1.0 + qv1 * reps) / (1.0 + qt_mb);
-          pi0(i, j, 1) = 1.0 - g_ * zh(i, j, 1) / (cp * thbar);
-          prs0(i, j, 1) = p00 * std::pow(pi0(i, j, 1), cpdrd);
-          qv1 = rslf(prs0(i, j, 1), tmp);
-          tmp = thec_mb * std::pow(prs0(i, j, 1) / (1.0 + qv1 / eps) / p00, rd / (cp + cpl * qt_mb))
-                / std::exp((lv1 - lv2 * tmp) * qv1 / (tmp * (cp + cpl * qt_mb)));
-          tmp = tlast + 0.3 * (tmp - tlast);
-          tlast = tmp;
-        }
-        t0(i, j, 1) = tmp;
-        th0(i, j, 1) = tmp / pi0(i, j, 1);
-        rh0(i, j, 1) = 1.0;
-        qv0(i, j, 1) = rslf(prs0(i, j, 1), tmp);
-        Real t1 = tmp, th1 = th0(i, j, 1);
-        qv1 = qv0(i, j, 1);
-        for (int k = 2; k <= nk; ++k) {
-          tlast = th1;
-          Real t2 = t1, qv2 = qv1, th2 = th1;
-          int n = 0;
-          pi0(i, j, k) = pi0(i, j, k - 1) - g_ * (zh(i, j, k) - zh(i, j, k - 1)) / (cp * th2);
-          while (true) {
-            n = n + 1;
-            th2 = tlast;
-            t2 = th2 * pi0(i, j, k);
-            const Real thbar = 0.5 * (th1 * (1.0 + qv1 * reps) / (1.0 + qt_mb) + th2 * (1.0 + qv2 * reps) / (1.0 + qt_mb));
-            pi0(i, j, k) = pi0(i, j, k - 1) - g_ * (zh(i, j, k) - zh(i, j, k - 1)) / (cp * thbar);
-            prs0(i, j, k) = p00 * std::pow(pi0(i, j, k), cpdrd);
-            qv2 = rslf(prs0(i, j, k), t2);
-            t2 = thec_mb * std::pow(prs0(i, j, k) / (1.0 + qv2 / eps) / p00, rd / (cp + cpl * qt_mb))
-                 / std::exp((lv1 - lv2 * t2) * qv2 / (t2 * (cp + cpl * qt_mb)));
-            th2 = t2 / pi0(i, j, k);
-            if (std::abs(th2 - tlast) > 0.0001 && n < 100) {
-              tlast = tlast + 0.3 * (th2 - tlast);
-              continue;
-            } else if (n >= 100) {
-              throw std::runtime_error("cm1k init: isnd=4 iteration stuck in loop");
-            }
-            break;
-          }
-          t0(i, j, k) = t2;
-          th0(i, j, k) = th2;
-          qv0(i, j, k) = rslf(prs0(i, j, k), th0(i, j, k) * pi0(i, j, k));
-          rh0(i, j, k) = 1.0;
-          th1 = th2; qv1 = qv2; t1 = t2;
-        }
-        for (int k = 1; k <= nk; ++k) qc0(i, j, k) = qt_mb - qv0(i, j, k);
-      }
-  } else if (isnd == 5) {
-    // Weisman-Klemp analytic sounding
-    const Real z_trop = 12000.0, th_trop = 343.0, t_trop = 213.0, th_sfc = 300.0;
-    const Real prs_sfc = 100000.0, qv_pbl = 0.014;
-    const Real pi_sfc = std::pow(prs_sfc / p00, rd / cp);
-    const Real qv_sfc = rslf(prs_sfc, th_sfc * pi_sfc);
-    const Real thv_sfc = th_sfc * (1.0 + qv_sfc * reps) / (1.0 + qv_sfc);
-    for (int j = jb; j <= je; ++j)
-      for (int i = ib; i <= ie; ++i) {
-        for (int k = kb; k <= ke; ++k) rh0(i, j, k) = 0.0;
-        for (int k = 1; k <= nk; ++k) {
-          if (zh(i, j, k) < z_trop) {
-            th0(i, j, k) = th_sfc + (th_trop - th_sfc) * std::pow(zh(i, j, k) / z_trop, 1.25);
-            if (imoist == 1) rh0(i, j, k) = 1.0 - 0.75 * std::pow(zh(i, j, k) / z_trop, 1.25);
-          } else {
-            th0(i, j, k) = th_trop * std::exp((g_ / (t_trop * cp)) * (zh(i, j, k) - z_trop));
-            if (imoist == 1) rh0(i, j, k) = 0.25;
-          }
-        }
-        th0(i, j, 0) = th0(i, j, 1);
-        th0(i, j, nk + 1) = th0(i, j, nk);
-        for (int k = kb; k <= ke; ++k) qv0(i, j, k) = 0.0;
-        for (int n = 1; n <= 20; ++n) {
-          for (int k = kb; k <= ke; ++k)
-            thv0(i, j, k) = th0(i, j, k) * (1.0 + reps * qv0(i, j, k)) / (1.0 + qv0(i, j, k));
-          pi0(i, j, 1) = pi_sfc - g_ * zh(i, j, 1) / (cp * 0.5 * (thv_sfc + thv0(i, j, 1)));
-          for (int k = 2; k <= nk; ++k)
-            pi0(i, j, k) = pi0(i, j, k - 1) - g_ * (zh(i, j, k) - zh(i, j, k - 1)) / (cp * 0.5 * (thv0(i, j, k) + thv0(i, j, k - 1)));
-          for (int k = 1; k <= nk; ++k) prs0(i, j, k) = p00 * std::pow(pi0(i, j, k), cp / rd);
-          for (int k = 1; k <= nk; ++k) {
-            qv0(i, j, k) = rh0(i, j, k) * rslf(prs0(i, j, k), th0(i, j, k) * pi0(i, j, k));
-            if (qv0(i, j, k) > qv_pbl) qv0(i, j, k) = qv_pbl;
-          }
-        }
-        for (int k = 1; k <= nk; ++k)
-          rh0(i, j, k) = qv0(i, j, k) / (rslf(prs0(i, j, k), th0(i, j, k) * pi0(i, j, k)));
-      }
-  } else if (isnd == 9) {
-    // constant Brunt-Vaisala frequency
-    const Real ns1 = 0.0001, ns2 = 0.0000, zl1 = 40000.0;
-    for (int j = jb; j <= je; ++j)
-      for (int i = ib; i <= ie; ++i) {
-        Real th_sfc = 288.00, pi_sfc = 1.0, zsfc, ns;
-        if (zh(i, j, 1) < zl1) {
-          zsfc = 0.0;
-          ns = ns1;
-        } else {
-          if (std::abs(ns1) < 1.0e-6) {
-            pi_sfc = pi_sfc - g_ * zl1 / (cp * th_sfc);
-          } else {
-            pi_sfc = pi_sfc + g_ * g_ / (cp * ns1 * th_sfc) * (std::exp(-ns1 * zl1 / g_) - 1.0);
-            th_sfc = th_sfc * std::exp(ns1 * zl1 / g_);
-          }
-          zsfc = zl1;
-          ns = ns2;
-        }
-        for (int k = 1; k <= nk; ++k) {
-          qv0(i, j, k) = 0.0;
-          qc0(i, j, k) = 0.0;
-          rh0(i, j, k) = 0.0;
-          if (std::abs(ns) < 1.0e-6) {
-            thv0(i, j, k) = th_sfc;
-            pi0(i, j, k) = pi_sfc - g_ * (zh(i, j, k) - zsfc) / (cp * th_sfc);
-          } else {
-            thv0(i, j, k) = th_sfc * std::exp(ns * (zh(i, j, k) - zsfc) / g_);
-            pi0(i, j, k) = pi_sfc + g_ * g_ / (cp * ns * th_sfc) * (std::exp(-ns * (zh(i, j, k) - zsfc) / g_) - 1.0);
-          }
-          prs0(i, j, k) = p00 * std::pow(pi0(i, j, k), cpdrd);
-          th0(i, j, k) = thv0(i, j, k);
-          for (int n = 1; n <= 20; ++n) {
-            t0(i, j, k) = th0(i, j, k) * pi0(i, j, k);
-            qv0(i, j, k) = rh0(i, j, k) * rslf(prs0(i, j, k), t0(i, j, k));
-            th0(i, j, k) = thv0(i, j, k) * (1.0 + qv0(i, j, k) + qc0(i, j, k)) / (1.0 + reps * qv0(i, j, k));
-          }
-          if (zh(i, j, k + 1) > zl1 && zsfc < 1.0) {
-            if (std::abs(ns1) < 1.0e-6) {
-              pi_sfc = pi_sfc - g_ * zl1 / (cp * th_sfc);
-            } else {
-              pi_sfc = pi_sfc + g_ * g_ / (cp * ns1 * th_sfc) * (std::exp(-ns1 * zl1 / g_) - 1.0);
-              th_sfc = th_sfc * std::exp(ns1 * zl1 / g_);
-            }
-            zsfc = zl1;
-            ns = ns2;
-          }
-        }
-      }
-  } else {
-    unsupported("isnd = " + std::to_string(isnd));
-  }
+  // ---- base-state sounding (isnd): cm1k_base_snd.cpp ----
+  BaseArrays ba{zh, pi0, prs0, th0, thv0, qv0, qc0, qi0, rh0, t0, rho0, u0, v0};
+  base_sounding(nl, c, g, info, ba);
 
   // ---- fill in ghost cells ----
   for (auto* a : {&pi0, &prs0, &th0, &qv0, &qc0, &qi0, &rh0}) bcs(bc, *a);
@@ -663,70 +638,8 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
     for (int j = jb; j <= je; ++j)
       for (int i = ib; i <= ie; ++i) rrf0(i, j, k) = 1.0 / rf0(i, j, k);
 
-  // ---- base-state wind (iwnd) ----
-  for (int k = 1; k <= nk; ++k)
-    for (int j = 1; j <= nj; ++j)
-      for (int i = 1; i <= ni + 1; ++i) u0(i, j, k) = 0.0;
-  for (int k = 1; k <= nk; ++k)
-    for (int j = 1; j <= nj + 1; ++j)
-      for (int i = 1; i <= ni; ++i) v0(i, j, k) = 0.0;
-
-  if (iwnd == 0) {
-    // zero wind
-  } else if (iwnd == 1) {
-    // RKW-type wind profile
-    const Real udep1 = 0.0, udep2 = 2500.0, uconst1 = 0.0, uconst2 = 10.0;
-    for (int k = 1; k <= nk; ++k)
-      for (int j = 0; j <= nj + 1; ++j)
-        for (int i = 0; i <= ni + 2; ++i) {
-          const Real zu = 0.5 * (zh(i - 1, j, k) + zh(i, j, k));
-          if (zu < udep1) u0(i, j, k) = uconst1;
-          else if (zu > udep1 && zu < udep2) u0(i, j, k) = (uconst2 - uconst1) * (zu - udep1) / (udep2 - udep1) + uconst1;
-          else u0(i, j, k) = uconst2;
-        }
-    for (int k = 1; k <= nk; ++k)
-      for (int j = 0; j <= nj + 2; ++j)
-        for (int i = 0; i <= ni + 1; ++i) v0(i, j, k) = 0.0;
-  } else if (iwnd == 2) {
-    // Weisman-Klemp type supercell profile
-    const Real udep1 = 2000.0, udep2 = 6000.0, umax1 = 7.0, umax2 = 31.0;
-    for (int k = 1; k <= nk; ++k)
-      for (int j = 1; j <= nj; ++j)
-        for (int i = 1; i <= ni + 1; ++i) {
-          const Real zu = 0.5 * (zh(i - 1, j, k) + zh(i, j, k));
-          if (zu <= udep1) {
-            const Real angle = 90.0 * (zu / udep1) * (pi / 180.0);
-            u0(i, j, k) = umax1 - umax1 * std::cos(angle);
-          } else if (zu > udep1 && zu <= udep2) {
-            u0(i, j, k) = umax1 + (zu - udep1) * (umax2 - umax1) / (udep2 - udep1);
-          } else {
-            u0(i, j, k) = umax2;
-          }
-        }
-    const Real vmax1 = umax1;
-    for (int k = 1; k <= nk; ++k)
-      for (int j = 1; j <= nj + 1; ++j)
-        for (int i = 1; i <= ni; ++i) {
-          const Real zv = 0.5 * (zh(i, j - 1, k) + zh(i, j, k));
-          if (zv <= udep1) {
-            const Real angle = 90.0 * (zv / udep1) * (pi / 180.0);
-            v0(i, j, k) = vmax1 * std::sin(angle);
-          } else {
-            v0(i, j, k) = vmax1;
-          }
-        }
-  } else if (iwnd == 6) {
-    // constant wind (testcase = 0: the default uval, vval)
-    const Real uval = 10.0, vval = 0.0;
-    for (int k = kb; k <= ke; ++k)
-      for (int j = jb; j <= je; ++j)
-        for (int i = ib; i <= ie + 1; ++i) u0(i, j, k) = uval;
-    for (int k = kb; k <= ke; ++k)
-      for (int j = jb; j <= je + 1; ++j)
-        for (int i = ib; i <= ie; ++i) v0(i, j, k) = vval;
-  } else {
-    unsupported("iwnd = " + std::to_string(iwnd));
-  }
+  // ---- base-state wind (iwnd): cm1k_base_snd.cpp ----
+  base_wind(nl, c, g, info, ba);
 
   // subtract off umove and vmove
   if (imove == 1) {
@@ -755,6 +668,13 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
       v0(i, j, 0) = ex.cgs1 * v0(i, j, 1) + ex.cgs2 * v0(i, j, 2) + ex.cgs3 * v0(i, j, 3);
       v0(i, j, nk + 1) = ex.cgt1 * v0(i, j, nk) + ex.cgt2 * v0(i, j, nk - 1) + ex.cgt3 * v0(i, j, nk - 2);
     }
+
+  // testcase 13 (UF Boundary Layer Wind Tunnel): base.F sets the whole
+  // u0, v0 arrays after the ghost cells (forcing profiles: physics/testcase)
+  if (testcase == 13 && isnd != 7) {
+    Kokkos::deep_copy(u0.view(), 18.0);
+    Kokkos::deep_copy(v0.view(), 0.0);
+  }
 
   for (int k = kb; k <= ke; ++k)
     for (int j = jb; j <= je; ++j)
@@ -872,6 +792,33 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
     for (int j = jb; j <= je + 1; ++j)
       for (int i = ib; i <= ie; ++i) va(i, j, k) = v0(i, j, k);
 
+  // initial TKE of some test cases (init3d.F)
+  const int testcase = nl.geti("testcase", 0);
+  auto zf = g.zf.to_host();
+  if (idoles && iusetke && (testcase == 3 || testcase == 4 || testcase == 5 || testcase == 9 || testcase == 11)) {
+    if (testcase == 3) {
+      // shallow Cu case (Siebesma at al, 2003, JAS)
+      for (int k = 1; k <= nk + 1; ++k)
+        for (int j = B.jbt; j <= B.jet; ++j)
+          for (int i = B.ibt; i <= B.iet; ++i) tkea(i, j, k) = std::max(0.0, 1.0 - zf(i, j, k) / 3000.0);
+    } else if (testcase == 9 || testcase == 11) {
+      // stable boundary layer (Beare et al. 2006, BLM)
+      for (int k = 1; k <= nk + 1; ++k)
+        for (int j = B.jbt; j <= B.jet; ++j)
+          for (int i = B.ibt; i <= B.iet; ++i) {
+            if (zh(i, j, k) < 255.0) {
+              const Real r = 1.0 - zf(i, j, k) / 255.0;
+              tkea(i, j, k) = 0.4 * ((r * r) * r);   // r**3
+            } else {
+              tkea(i, j, k) = 0.0;
+            }
+          }
+    } else {
+      Kokkos::deep_copy(tkea.view(), 1.0);
+    }
+    bcw(bc, tkea, 1);
+  }
+
   if (imoist == 1) {
     auto qv = q3(nqv);
     for (int k = B.kbm; k <= B.kem; ++k)
@@ -908,21 +855,121 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
   }
   // (maintain_rh is .false. for iinit = 0, 1)
 
-  // random perturbations (testcase = 0): +-0.25 K on theta, two draws per
-  // point of (0:nx+2, 0:ny+2, 1:nk), i fastest (serial: i = ii, j = jj).
-  // init3d.F seeds the generator and draws one number ("rand-1") first.
+  // random perturbations (init3d.F), by test case. Draws are made over the
+  // whole domain, i fastest (serial: i = ii, j = jj); init3d.F seeds the
+  // generator and draws one number ("rand-1") first.
   if (irandp == 1) {
     GfortranRandom rng;
     (void)rng.next();   // rand-1
-    const Real amplitude = 0.25;
-    for (int k = 1; k <= nk; ++k)
-      for (int jj = 0; jj <= B.ny + 2; ++jj)
-        for (int ii = 0; ii <= B.nx + 2; ++ii) {
-          const Real rand = rng.next();
-          (void)rng.next();   // rand2
-          const int i = ii, j = jj;
-          if (i >= ib && i <= ie && j >= jb && j <= je) tha(i, j, k) = tha(i, j, k) + amplitude * (2.0 * rand - 1.0);
-        }
+    auto inside = [&](int i, int j) { return i >= ib && i <= ie && j >= jb && j <= je; };
+    if (testcase == 0) {
+      // +-0.25 K on theta, two draws per point of (0:nx+2, 0:ny+2, 1:nk)
+      const Real amplitude = 0.25;
+      for (int k = 1; k <= nk; ++k)
+        for (int jj = 0; jj <= B.ny + 2; ++jj)
+          for (int ii = 0; ii <= B.nx + 2; ++ii) {
+            const Real rand = rng.next();
+            (void)rng.next();   // rand2
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+    } else if (testcase == 1 || testcase == 2 || testcase == 6 || testcase == 10 || testcase == 11 || testcase == 15) {
+      // boundary layers: +-0.1 K below 100 m, two draws per point
+      const Real amplitude = 0.10;
+      for (int k = 1; k <= nk; ++k) {
+        if (!(zh(1, 1, k) <= 100.0)) continue;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            (void)rng.next();   // rand2
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+      }
+    } else if (testcase == 3) {
+      // shallow Cu (Siebesma et al, 2003): theta and qv below 1600 m
+      if (imoist != 1) unsupported("testcase = 3 needs imoist = 1");
+      auto qv = q3(nqv);
+      for (int k = 1; k <= nk; ++k) {
+        if (!(zh(1, 1, k) <= 1600.0)) continue;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            const Real rand2 = rng.next();
+            if (inside(ii, jj)) {
+              tha(ii, jj, k) = tha(ii, jj, k) + 0.1 * (2.0 * rand - 1.0);
+              qv(ii, jj, k) = qv(ii, jj, k) + 0.001 * 0.025 * (2.0 * rand2 - 1.0);
+            }
+          }
+      }
+    } else if (testcase == 4 || testcase == 5 || testcase == 7) {
+      // +-0.1 K below 1000 m, one draw per point
+      const Real amplitude = 0.10;
+      for (int k = 1; k <= nk; ++k) {
+        if (!(zh(1, 1, k) <= 1000.0)) continue;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+      }
+    } else if (testcase == 8) {
+      // RCEMIP: the lowest five levels, amplitude 0.10 .. 0.02
+      for (int k = 1; k <= 5; ++k) {
+        const Real amplitude = 0.10 - (k - 1) * 0.02;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+      }
+    } else if (testcase == 9) {
+      // stable boundary layer (Beare et al. 2006): below 50 m
+      const Real amplitude = 0.10;
+      for (int k = 1; k <= nk; ++k) {
+        if (!(zh(1, 1, k) < 50.0)) continue;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+      }
+    } else if (testcase == 12 || testcase == 13) {
+      // velocity perturbations (+-0.5 m/s) on the base-state wind at scalar
+      // points (dum1, dum2), then interpolated to the u, v points
+      const Real amplitude = 0.5;
+      std::vector<Real> d1v(size_t(ie - ib + 1) * (je - jb + 1)), d2v(d1v.size());
+      auto d1 = [&](int i, int j) -> Real& { return d1v[size_t(i - ib) + size_t(ie - ib + 1) * (j - jb)]; };
+      auto d2 = [&](int i, int j) -> Real& { return d2v[size_t(i - ib) + size_t(ie - ib + 1) * (j - jb)]; };
+      for (int k = 1; k <= nk; ++k) {
+        for (int j = 0; j <= nj + 1; ++j)
+          for (int i = 0; i <= ni + 1; ++i) {
+            d1(i, j) = u0(1, 1, k);
+            d2(i, j) = v0(1, 1, k);
+          }
+        for (int jj = 0; jj <= B.ny + 2; ++jj)
+          for (int ii = 0 + 5; ii <= B.nx + 1 - 5; ++ii) {
+            const Real rand = rng.next();
+            const Real rand2 = rng.next();
+            if (inside(ii, jj)) {
+              d1(ii, jj) = d1(ii, jj) + amplitude * (2.0 * rand - 1.0);
+              d2(ii, jj) = d2(ii, jj) + amplitude * (2.0 * rand2 - 1.0);
+            }
+          }
+        for (int j = 1; j <= nj + 1; ++j)
+          for (int i = 1; i <= ni + 1; ++i) {
+            ua(i, j, k) = 0.5 * (d1(i - 1, j) + d1(i, j));
+            va(i, j, k) = 0.5 * (d2(i, j - 1) + d2(i, j));
+          }
+      }
+    } else {
+      // other test cases (e.g. 14): +-0.1 K everywhere, one draw per point
+      const Real amplitude = 0.10;
+      for (int k = 1; k <= nk; ++k)
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+    }
   }
 
   // ---- 3d pressure (setppi) ----

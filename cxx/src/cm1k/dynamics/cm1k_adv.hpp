@@ -8,7 +8,9 @@
 // Supported (everything else throws in AdvOptions::check):
 //   * Cartesian grid (axisymm=0), with or without terrain (terrain_flag:
 //     the terrain branches of adv.F and pdef.F, metrics from the Grid),
-//     no immersed boundaries (do_ib=.false.), no large-scale w (dolsw=.false.)
+//     no immersed boundaries (do_ib=.false.)
+//   * large-scale w (dolsw: testcase 3..7, wsub; Cartesian only), with the
+//     profile from set_wprof (physics/testcase)
 //   * flux-form advection of orders 2..10 (hadvord*, vadvord*)
 //   * WENO for scalars/velocities with weno_order = 5 (advwenos/advwenov = 1,2),
 //     including the pdef / pdefweno variants used for moisture
@@ -102,6 +104,12 @@ public:
 
   const AdvOptions& options() const { return m_opt; }
 
+  // dolsw: the large-scale w profile wprof(kb:ke) (base.F)
+  void set_wprof(const FArray1& wprof);
+  // adv_routines.F wsub on a(1..ix, 1..jy): subs = subsidence tendency
+  void wsub(int ix, int jy, const FArray3& a, double weps) const;
+  FArray3 subs, dumzs;
+
   // Scratch arrays (dumx..advz as in adv.F), exposed for tests.
   FArray3 dumx, dumy, dumz, advx, advy, advz;
 
@@ -109,6 +117,7 @@ private:
   Grid m_g;
   BaseState m_b;
   AdvOptions m_opt;
+  FArray1 m_wprof;
 };
 
 // Low-level flux routines (adv_routines.F), exposed for tests.

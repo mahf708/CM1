@@ -1,4 +1,5 @@
 #include "cm1k_dyncore.hpp"
+#include "dynamics/cm1k_adapt_dt.hpp"
 
 #include "dynamics/cm1k_adv.hpp"
 #include "dynamics/cm1k_rdamp_cor.hpp"
@@ -43,6 +44,12 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   c.idiff = nl.geti("idiff", 0);
   c.difforder = nl.geti("difforder", 6);
   c.imoist = std::min(std::max(nl.geti("imoist", 1), 0), 1);
+  {
+    // param.F: testcase 1, 2 are dry, 3, 4, 5, 7, 8, 11 moist
+    const int tc = nl.geti("testcase", 0);
+    if (tc == 1 || tc == 2) c.imoist = 0;
+    if (tc == 3 || tc == 4 || tc == 5 || tc == 7 || tc == 8 || tc == 11) c.imoist = 1;
+  }
   c.ptype = nl.geti("ptype", 0);
   c.eqtset = std::min(std::max(nl.geti("eqtset", 2), 1), 2);
   c.psolver = nl.geti("psolver", 3);
@@ -130,6 +137,8 @@ DynConfig DynConfig::from_namelist(const Namelist& nl) {
   // MYJ (ipbl=6, sfcmodel=7)
   c.myj_opt = myj::Coupling::from_namelist(nl);
   c.myj = c.pbl && c.myj_opt.pbl_active();
+  // testcase forcing (param.F: imoist forced by the test case)
+  c.tc_opt = testcase::Options::from_namelist(nl);
   // param.F: dissipative heating is computed within ipbl=3,4,5
   if ((c.ipbl == 3 || c.ipbl == 4 || c.ipbl == 5) && c.idiss >= 1 && c.cm1setup != 4) c.idiss = 0;
   return c;
@@ -163,8 +172,10 @@ void DynConfig::check() const {
   if (hrdamp != 0 && hrdamp != 1) unsupported("hrdamp=" + std::to_string(hrdamp));
   if (icor == 1 && betaplane != 0) unsupported("betaplane=1");
   if (do_adapt_move) unsupported("do_adapt_move");
-  if (lspgrad != 0 && lspgrad != 1) unsupported("lspgrad=" + std::to_string(lspgrad) + " (only 0, 1)");
-  if (testcase != 0) unsupported("testcase");
+  // lspgrad = 0..4 and testcase = 0..15 (physics/testcase; its check throws
+  // for the combinations that are not ported)
+  tc_opt.check();
+  if (testcase != tc_opt.testcase || lspgrad != tc_opt.lspgrad) unsupported("inconsistent testcase options");
   if (axisymm != 0) unsupported("axisymm");
   if (cuparam != 0) unsupported("cuparam");
   // radopt=2 (RRTMG): rrtmg::RadOptions::check has the supported subset
@@ -182,7 +193,8 @@ void DynConfig::check() const {
   // ipbl=6: as ipbl=1 without ysudiss, turbparam_horiz only)
   if (idiss != 0 && ipbl != 0 && ipbl != 1 && ipbl != 2 && ipbl != 6) unsupported("idiss=1 with PBL dissipation (ipbl=" + std::to_string(ipbl) + ")");
   if (rterm != 0) unsupported("rterm");
-  if (adapt_dt != 0) unsupported("adapt_dt");
+  // adapt_dt=1: cm1k_adapt_dt.cpp (AdaptDt::from_namelist) checks the options
+  if (adapt_dt != 0 && adapt_dt != 1) unsupported("adapt_dt=" + std::to_string(adapt_dt));
   // surface layer: sfcmodel=0, or sfcmodel=1 (bbc=3, isfcflx=0/1) with the
   // LES TKE scheme or a PBL scheme, or sfcmodel=2,3 with a PBL scheme;
   // sfc_opt.check throws for every option not ported
@@ -303,6 +315,7 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
   for (int j = 1; j <= nj; ++j) min_dy = std::min(min_dy, yf(j + 1) - yf(j));
   for (int k = 1; k <= nk; ++k) for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni; ++i)
     min_dz = std::min(min_dz, zf(i, j, k + 1) - zf(i, j, k));
+  m_min_dx = min_dx; m_min_dy = min_dy; m_min_dz = min_dz;
   m_nsound = sound_nsound(m_cfg.psolver, B.nx, B.ny, min_dx, min_dy, min_dz, m_cfg.csound, double(m_dt));
 
   // param.F: Rayleigh damping coefficients (cm1k_rdamp_cor.cpp)
@@ -360,6 +373,20 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
 }
 
 //===========================================================================
+int Dyncore::dtsmall(double& dbldt) const {
+  return cm1k::dtsmall(m_cfg.psolver, m_g.b.nx, m_g.b.ny, m_min_dx, m_min_dy, m_min_dz, m_cfg.csound, dbldt,
+                       m_cfg.adapt_dt == 1);
+}
+
+Real Dyncore::cflquick() const {
+  return calccflquick(m_g.b, m_cfg.axisymm, m_dt, m_g.rdx, m_g.rdy, m_g.rdz, m_g.uh, m_g.vh, m_g.mh, u3d, v3d, w3d);
+}
+
+Real Dyncore::ksquick() const {
+  return calcksquick(m_g.b, m_cfg.axisymm, m_dt, m_g.rdx, m_g.rdy, m_g.uh, m_g.vh, m_s.kmh, m_s.kmv, m_s.khh,
+                     m_s.khv);
+}
+
 void Dyncore::start_from_state() {
   const auto& B = m_g.b;
   const int ni = B.ni, nj = B.nj, nk = B.nk;
@@ -456,6 +483,7 @@ void Dyncore::sfc_and_turb(double rtime, int nstep) {
   const bool update_sfc = (nstep > 0);   // cm1.F: .false. in the startup pass
   auto& s = m_s;
   m_nstep = nstep;
+  m_mtime = rtime;
   if (m_cfg.pbl) {
     // mesoscale path (cm1setup=2, see physics/pbl/cm1k_pbl.hpp)
     const auto& to = m_cfg.turb_opt;
@@ -495,7 +523,7 @@ void Dyncore::sfc_and_turb(double rtime, int nstep) {
       sfc_gfdl::gfdl_surface_layer(so, w.c, m_g.zh, B.ni, B.nj, m_dt, m_cfg.smeps, update_sfc, w.d1, w.d2, w.d4,
                                    w.qv, s.prs, rf, m_gsfc);
     } else {
-      sfc::sfc_layer(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc);
+      sfc::sfc_layer(so, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc, Real(rtime));
     }
     turb::sfc_bcs(to, B, m_sfc);
     if (so.gfdl()) sfc_gfdl::gfdl_bcs(to, B, m_gsfc, m_sfc.zntmp);   // bc2d(mznt), zntmp = mznt
@@ -519,11 +547,17 @@ void Dyncore::sfc_and_turb(double rtime, int nstep) {
     // surface block of sfc_and_turb (bbc=3): psfc, u1/v1/s1, getcecd,
     // sfcflux, sfcdiags
     if (!m_has_sfc) throw std::runtime_error("cm1k dyncore: sfcmodel=1 needs set_surface()");
-    sfc::sfc_layer(m_cfg.sfc_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc);
+    sfc::sfc_layer(m_cfg.sfc_opt, m_c, m_g, m_b, m_cgs1, m_cgs2, m_cgs3, u3d, v3d, th3d, q3d, s.prs, rf, m_sfc, Real(rtime));
     sp = &m_sfc;
   }
   turb::sfc_and_turb(m_cfg.turb_opt, m_c, m_g, m_b, Real(rtime), u3d, v3d, w3d, pp3d, th3d, q3d, s.prs,
                      s.rho, rf, s.tkea, tke3d, s.kmh, s.kmv, s.khh, s.khv, ts, m_tw, sp);
+}
+
+void Dyncore::set_testcase(const testcase::Forcing& f) {
+  m_tcf = f;   // shallow: the views are shared with the caller
+  m_has_tc = true;
+  if (m_cfg.tc_opt.dolsw()) m_adv->set_wprof(f.wprof);
 }
 
 void Dyncore::set_surface(const sfc::SfcState& s) {
@@ -758,6 +792,12 @@ void Dyncore::solve1() {
     });
   }
 
+  //  lspgrad = 2, 3, 4 (geostrophic / gradient wind, or specified)
+  if (cfg.lspgrad >= 2) {
+    if (!m_has_tc) throw std::runtime_error("cm1k dyncore: lspgrad>=2 needs set_testcase()");
+    testcase::lspgrad(cfg.tc_opt, B, m_tcf, uten1, vten1);
+  }
+
   //  2nd-order diffusion, fixed viscosity (idiff=1, difforder=2; diff2.F)
   if (cfg.diff2()) {
     const auto p = diff2_params(cfg, m_g);
@@ -805,6 +845,15 @@ void Dyncore::solve1() {
     pbl::add_tendencies(cfg.pbl_opt, B, m_pt, uten1, vten1, qten);
   } else if (cfg.radopt != 0) {
     add_thraten(B, rad_thraten(), thten1);   // (~1056)
+  }
+
+  //  testcase 10: nudging of the domain-mean theta and qv (~1403), then
+  //  the tendencies of the pre-configured cases (testcase_simple_phys, ~1495)
+  if (cfg.tc_opt.testcase >= 1) {
+    if (!m_has_tc) throw std::runtime_error("cm1k dyncore: testcase>=1 needs set_testcase()");
+    if (cfg.tc_opt.tqnudge())
+      testcase::tqnudge(cfg.tc_opt, m_g, m_b, m_mtime, ua, va, tha, qa, thten1, qten);
+    testcase::simple_phys(cfg.tc_opt, c, m_g, m_b, m_mtime, ua, va, tha, qa, m_tcf, uten1, vten1, thten1, qten);
   }
 
   //  contribution to pressure tendency from potential temperature
@@ -1077,6 +1126,11 @@ void Dyncore::solve2() {
       }
       sound(m_bc, a);
     }
+
+    //  on final RK step, get max CFL (adapt_dt; solve2.F calls it always,
+    //  only getnewdt reads it)
+    if (cfg.adapt_dt == 1 && nrk == nrkmax)
+      m_cflmax = calccflquick(m_g.b, cfg.axisymm, dt, rdx, rdy, rdz, m_g.uh, m_g.vh, m_g.mh, u3d, v3d, w3d);
 
     //  radbc (irbc=4)
     openbc_radbc4(dttmp);

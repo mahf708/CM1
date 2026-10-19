@@ -12,6 +12,7 @@
 #include "physics/sfc_gfdl/cm1k_gfdl_driver.hpp"
 #include "physics/pbl_ysu/cm1k_pbl_ysu.hpp"
 #include "physics/sfclay/cm1k_sfclay_driver.hpp"
+#include "physics/testcase/cm1k_testcase.hpp"
 #include "physics/turb/cm1k_turb.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
@@ -65,6 +66,7 @@ struct DynConfig {
   // physics/myj/cm1k_myj_coupling.hpp
   bool myj = false;
   myj::Coupling myj_opt;
+  testcase::Options tc_opt;   // testcase forcing, lspgrad = 2..4 (physics/testcase)
 
   // explicit diffusion: 6th order inside advection, or diff2.F
   bool diff6() const { return idiff >= 1 && difforder == 6; }
@@ -159,6 +161,9 @@ public:
   // MYJ's carried arrays (DynConfig::myj), owned by the Model (most are in
   // the dumps). Call after setup().
   void set_myj(const myj::Carried& c);
+  // testcase forcing profiles (testcase >= 1 or lspgrad >= 2; Model::init
+  // or a dump fills them)
+  void set_testcase(const testcase::Forcing& f);
   // solve2.F: qke advection for the MYNN PBL, one RK stage (public: it
   // launches device lambdas)
   void advect_qke(int nrk, Real dttmp);
@@ -209,6 +214,22 @@ public:
   int nsound() const { return m_nsound; }
   double mass1() const { return m_mass1; }
 
+  // Adaptive time step (adapt_dt=1, see dynamics/cm1k_adapt_dt.hpp). The
+  // large step dt and nsound are fixed at setup (dtl) unless set_dt changes
+  // them; solve2 records cflmax (calccflquick on u3d/v3d/w3d after the last
+  // acoustic step) when adapt_dt=1.
+  Real dt() const { return m_dt; }
+  void set_dt(Real dt, int nsound) { m_dt = dt; m_nsound = nsound; }
+  // misclibs.F dtsmall for the large step dbldt (may shorten it, adapt_dt)
+  int dtsmall(double& dbldt) const;
+  Real cflmax() const { return m_cflmax; }
+  void set_cflmax(Real c) { m_cflmax = c; }
+  // calccflquick on u3d/v3d/w3d at the current dt (cm1.F before the time
+  // loop, where u3d = ua)
+  Real cflquick() const;
+  // calcksquick on kmh..khv at the current dt (turb.F sfc_and_turb end)
+  Real ksquick() const;
+
   // Arrays microphysics works on (mp_driver's th3d, q3d, pp3d, ...).
   FArray3 u3d, v3d, w3d, pp3d, th3d, ppx;
   FArray4 q3d;
@@ -251,6 +272,9 @@ private:
   myj::Carried m_myc;       // MYJ (DynConfig::myj)
   myj::Work m_myw;
   bool m_has_myj = false;
+  testcase::Forcing m_tcf;
+  bool m_has_tc = false;
+  double m_mtime = 0;       // model time at sfc_and_turb (solve1's mtime)
   int m_nstep = 0;          // model step at sfc_and_turb (MYNN initflag, SFCLAY_mynn itimestep)
   Real m_cgs1 = 0, m_cgs2 = 0, m_cgs3 = 0, m_cgt1 = 0, m_cgt2 = 0, m_cgt3 = 0;
 
@@ -270,6 +294,7 @@ private:
 
   bool m_setup = false;
   int m_nsound = 0;
+  Real m_min_dx = 0, m_min_dy = 0, m_min_dz = 0, m_cflmax = 0;
   Real m_dt = 0;
   double m_mass1 = 0, m_mass2 = 0;
 

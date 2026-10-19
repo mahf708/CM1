@@ -45,10 +45,58 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `nh_mountain_waves_long` | 100×1×100, 200 m, 200 m | 900 steps (1800 s, `dtl = 2 s`) | every 150 steps | `nh_mountain_waves` run for 30 min, for long-run drift checks |
 | `kessler_terrain_tke` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | `kessler_tke` over a 3D hill (`terrain_flag = .true.`, `itern = 3`: 500 m, half width 20 km): terrain branches of the TKE scheme (implicit vertical diffusion, `idiss = 1`), Kessler, advection, sound and the warm bubble on sigma levels |
 | `kessler_terrain_tke_openbc` | 32×32×20, 2 km, 500 m | 50 steps (300 s) | every 10 steps | `kessler_terrain_tke` with open-radiative E/W boundaries and free-slip/no-slip walls S/N (`wbc = ebc = 2`, `sbc = 3`, `nbc = 4`, as `kessler_tke_openbc`): `ssopenbc*` and the open-boundary pieces of the terrain turbulence branches |
+| `tc1_cbl` | 24×24×40, 100 m, 50 m | 60 steps (120 s, `dtl = 2 s`) | every 10 steps | `testcase = 1` (dry CBL) as `cbl_sfc` (`pertflx = 0`) with `isnd = 9`, `iwnd = 6` (1 m/s from the testcase), `icor = 1`, `lspgrad = 2`: `use_avg_sfc` (domain-mean `getcecd`/`sfcstress`), the max-gradient `hpbl`, the testcase random perturbations (`zh <= 100 m`) |
+| `tc2_shear_long` | 24×24×20, 200 m, 100 m | 640 steps (3200 s, `dtl = 5 s`) | every 80 steps | `testcase = 2` (shear PBL): `iwnd = 6` (15 m/s), `use_avg_sfc`, the surface heat flux switched off after 3000 s (`sfcflux`) |
+| `tc3_shcu` | 24×24×40, 100 m, 50 m | 60 steps (120 s) | every 10 steps | `testcase = 3` (shallow Cu) with Kessler (`imoist` forced to 1), `isnd = 5`, `iwnd = 2`, the surface layer over water (`lu0 = 16`, `set_flx = 1`), `lspgrad = 2`: large-scale subsidence (`dolsw`: `wsub` in advection), `thfrc`, `qvfrc`, `ug`, the initial TKE profile, θ/qv perturbations below 1600 m |
+| `tc4_simplerad` | 24×24×40, 100 m, 100 m | 60 steps (120 s) | every 10 steps | `testcase = 4` (stratocumulus): the testcase constants (`cp = 1015`, ...), simple radiation (`frad`, `thraten`, `zir`) on Kessler clouds, `dolsw`, `iwnd = 6` (7, -5.5 m/s), TKE = 1 initially, `lspgrad = 1`, surface layer over water |
+| `tc5_simplerad_nosfc` | 24×24×40, 100 m, 100 m | 60 steps (120 s) | every 10 steps | `testcase = 5` constants and simple radiation without a surface layer (`sfcmodel = 0`, `bbc = 1`) |
+| `tc6_hurr_long` | 24×24×30, 300 m, 50 m | 770 steps (3080 s, `dtl = 4 s`) | every 70 steps | `testcase = 6` (hurricane BL): `isnd = 8`, `iwnd = 8`, `lspgrad = 3` (gradient-wind `ulspg`/`vlspg`, the mesoscale `ufrc`/`vfrc` from domain means) rotated by `hurr_rotate = 30`, heat flux off after 3000 s. |
+| `tc7_dycoms` | 24×24×40, 100 m, 50 m | 60 steps (120 s) | every 10 steps | `testcase = 7` (DYCOMS): surface fluxes and stress from the lowest-level wind (`sfcflux`, `sfcstress`), `dolsw`, `thfrc`/`qvfrc`, `ug`/`vg`, `lspgrad = 2`, Kessler |
+| `tc8_rrtmg` | 24×24×25, 2 km, 200 m | 60 steps (360 s) | every 10 steps | `rrtmg_ysu_kessler` with `testcase = 8`: RRTMG at the fixed `solcon = 650.83`, `coszen = cos(50.5°)`, testcase perturbations in k = 1..5 (`irandp = 1`, no bubble) |
+| `tc9_sbl` | 24×24×30, 12.5 m, 10 m | 60 steps (30 s, `dtl = 0.5 s`) | every 10 steps | `testcase = 9` (stable BL): `use_avg_sfc`, initial TKE below 255 m, perturbations below 50 m, `iwnd = 6` (8 m/s) |
+| `tc10_nudge` | 4×4×30, 200 m, 50 m | 100 steps (200 s) | every 10 steps | `testcase = 10`: the θ/qv nudging towards the base state (`tqnudge`), `lspgrad = 3`, the simple PBL (`cm1setup = 2`, `ipbl = 2`), Kessler, `isnd = 8`, `iwnd = 8` |
+| `tc11_sas` | 24×24×40, 100 m, 50 m | 60 steps (120 s) | every 10 steps | `testcase = 11` (SAS): the `sfcflux` branch (`thmag`), `use_avg_sfc`, initial TKE, `iwnd = 6` (2 m/s), Kessler |
+| `tc12_windtunnel` | 24×16×20, 2 mm, 2 mm | 30 steps (1.2 ms, `dtl = 40 µs`) | every 10 steps | `testcase = 12` (wind tunnel): `lspgrad = 4` (`ulspg = 36`), `isnd = 9`, `iwnd = 6` (20 m/s), velocity perturbations (`ii = 5..nx-4`), no surface layer |
+| `tc13_blwt` | 32×16×30, 50 m, 20 m | 60 steps (30 s, `dtl = 0.5 s`) | every 10 steps | `testcase = 13` (BL wind tunnel): `u0 = ug = 18 m/s`, `lspgrad = 4`, the upstream-third roughness (`nx > ny`), velocity perturbations, `isfcflx = 0` |
+| `tc14_sgp` | 24×24×40, 100 m, 50 m | 60 steps (240 s, `dtl = 4 s`) | every 10 steps | `testcase = 14` (SGP shallow Cu): time-dependent `thfrc`/`qvfrc`, `use_avg_sfc`, `iwnd = 6`, Kessler |
+| `tc15_hurr` | 24×24×30, 300 m, 50 m | 60 steps (240 s) | every 10 steps | `testcase = 15` (hurricane coast): `lspgrad = 3`, perturbations, `isfcflx = 0`, `isnd = 8`, `iwnd = 8` |
+| `tc3_nosfc`, `tc7_nosfc`, `tc9_nosfc`, `tc11_nosfc`, `tc13_nosfc`, `tc14_nosfc` | as `tc3_shcu`, `tc7_dycoms`, `tc9_sbl`, `tc11_sas`, `tc13_blwt`, `tc14_sgp` | 60 steps | every 10 steps | the same test cases without a surface layer (`sfcmodel = 0`, `isfcflx = 0`, `bbc = 1`): the configurations the array port (cm1x, isnd = 5, 9, no surface fluxes with TKE) runs too |
+| `tc4_nosfc` | as `tc5_simplerad_nosfc` | 60 steps (120 s) | every 10 steps | `tc5_simplerad_nosfc` with `testcase = 4` (its constants) |
+| `tc6_nosfc` | as `tc3_shcu` | 60 steps (120 s) | every 10 steps | `testcase = 6` on the `tc3_shcu` grid with `isnd = 5`, `iwnd = 2`, dry, no surface layer: `lspgrad = 3` mesoscale tendencies from the domain-mean (sheared) wind, rotated by `hurr_rotate = 30`, `dolsw`, perturbations below 100 m |
+| `tc10_les` | as `tc3_shcu` | 60 steps (120 s) | every 10 steps | `testcase = 10` with LES TKE instead of the PBL scheme, no surface layer, Kessler: θ/qv nudging (`get_avg_uvtq`), `lspgrad = 3` |
+| `dry_stretch` | 32×32×20, 2 km, stretched (250-750 m) | 20 steps (120 s) | every step | `dry_shear` with the `isnd = 5` sounding on the analytic stretched grid (`stretch_z = 1`: 250 m below 1 km, 750 m above 7 km, `ztop = 10 km`) with Rayleigh damping above `zd = 7 km` |
+| `kessler_tke_stretch` | 32×32×24, 2 km, stretched (250-1000 m) | 150 steps (900 s) | every 10 steps | `kessler_tke` on the COMMAS geometric grid (`stretch_z = 2`, param.F ZGRID: 250 m to 1 km, dz = ztop/nz = 583.3 m, `ztop = 14 km`), Rayleigh damping above 10 km |
+| `cbl_sfc_stretch` | 32×32×40, 100 m, stretched (20-80 m) | 150 steps (300 s, `dtl = 2 s`) | every 10 steps | `cbl_sfc` (TKE LES with the surface layer) on scalar levels read from `input_grid_z` (`stretch_z = 3`) |
+| `pbl2_kessler_stretch` | 24×24×25, 2 km, stretched (50-400 m) | 150 steps (900 s) | every 10 steps | `pbl2_kessler` on w levels read from `input_grid_z` (`stretch_z = 4`) |
+| `ysu_kessler_stretch`, `mynn25_kessler_stretch`, `gfs_kessler_stretch`, `myj_kessler_stretch` | 24×24×25, 2 km, stretched (100-300 m) | 150 steps (900 s) | every 10 steps | `ysu_kessler`, `mynn25_kessler`, `gfs_kessler`, `myj_kessler` with `stretch_z = 1` (100 m below 500 m, 300 m above 2.9 km, `ztop = 5.3 km`) |
+| `kessler_terrain_stretch` | 32×32×20, 2 km, stretched (250-750 m) | 150 steps (900 s) | every 10 steps | `kessler_terrain_tke` (3D hill, TKE, Kessler) on the `dry_stretch` grid (`stretch_z = 1` nominal levels `sigma/sigmaf`) |
+| `kessler_tke_openbc_stretch` | 32×32×20, 2 km, stretched (200-1000 m) | 150 steps (900 s) | every 10 steps | `kessler_tke_openbc` on w levels from `input_grid_z` (`stretch_z = 4`) |
+| `adapt_dry` | 32×32×20, 250 m, 500 m | 35 steps (60 s) | every 5 steps | adaptive time step (`adapt_dt = 1`, `dtl = 1 s`): `dry_shear` (`isnd = 5` sounding) with `cm1setup = 0` (CFL-only), output (`tapfrq = 15 s`) and stat (`statfrq = 25 s`) ramp-down; dt 1.1-2 s, nsound 4/6. Dumps carry an `#adapt_dt` line (dt, nsound, cflmax, ksmax, taptim, stattim, rsttim, flags; src/cm1dump.F `dump_adapt`) |
+| `adapt_kessler_tke` | 32×32×20, 500 m, 500 m | 50 steps (300 s) | every 5 steps | adaptive time step with the TKE LES (`ksmax`) and Kessler, `dtl = 3 s` (dt 3.3-6 s, nsound 4/6/8), `tapfrq = 60 s`, `statfrq = 90 s` |
+| `snd_les_shcu` | 10×10×36, 100 m, 80 m | 3 steps (3 s, `dtl = 1 s`) | every step | BOMEX shallow-Cu sounding and winds (`isnd = 19`, `iwnd = 9`, as `les_ShallowCu` but `testcase = 0`), Kessler, no warm bubble, random θ perturbations (`iinit = 0`, `irandp = 1`). The grid stays below the 3-km top of the sounding table (above it CM1 leaves θ = 0) |
+| `snd_les_shcu_precip` | 10×10×40, 100 m, 80 m | 3 steps (3 s) | every step | as `snd_les_shcu` with the RICO sounding and winds (`isnd = 20`, `iwnd = 11`, as `les_ShallowCuPrecip`) |
+| `snd_les_shcu_land` | 10×10×40, 100 m, 100 m | 3 steps (3 s) | every step | as `snd_les_shcu` with the ARM shallow-Cu-over-land sounding (`isnd = 23`, as `les_ShallowCuLand`) and the `iwnd = 3` wind profile |
+| `snd_les_sbl` | 10×10×40, 100 m, 10 m | 3 steps (1.5 s, `dtl = 0.5 s`) | every step | dry, GABLS stable boundary layer sounding (`isnd = 22`, as `les_StableBoundLayer`) with the DYCOMS-II wind profile (`iwnd = 10`) |
+| `snd_les_cbl` | 10×10×40, 100 m, 50 m | 3 steps (3 s) | every step | dry convective boundary layer sounding (`isnd = 14`, as `les_ConvBoundLayer`) with the `iwnd = 4` wind profile |
+| `snd_les_shear` | 10×10×40, 100 m, 50 m | 3 steps (3 s) | every step | dry sheared boundary layer sounding (`isnd = 18`, as `les_ShearBoundLayer`) with the `iwnd = 5` wind profile |
+| `snd_les_hbl` | 10×10×40, 100 m, 60 m | 3 steps (3 s) | every step | dry, hurricane boundary layer sounding and gradient wind (`isnd = 8`, `iwnd = 8`, as `les_HurrBoundLayer` but `testcase = 0`, `lspgrad = 0`: `hurr_rotate = 30` has no effect, as in CM1) |
+| `snd_input_sounding` | 10×10×40, 1 km, 250 m | 3 steps (9 s, `dtl = 3 s`) | every step | sounding and winds read from `input_sounding` (`isnd = 7`; the `sea_breeze` file, copied into the case directory), Kessler, warm bubble |
+| `snd_hurricane17` | 10×10×40, 1 km, 400 m | 3 steps (9 s) | every step | thermodynamic sounding from `input_sounding` (`isnd = 17`; the `hurricane_axisymmetric` file) with the hurricane gradient wind (`iwnd = 8`), Kessler |
+| `snd_tropical` | 10×10×40, 1 km, 400 m | 3 steps (9 s) | every step | saturated moist sounding with constant moist Brunt-Väisälä frequency (`isnd = 10`: `qc0` is copied into `qc` by init3d), `iwnd = 7` (no branch in base.F: zero wind), Kessler |
+| `snd_moist_neutral` | 10×10×40, 1 km, 400 m | 3 steps (9 s) | every step | moist-neutral pseudoadiabatic sounding from `tsk0 = 300 K` (`isnd = 11`; tropopause at 15 km), Weisman-Klemp winds (`iwnd = 2`), Kessler |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 
 The table is descriptive; the namelists are authoritative.
+
+The `snd_*` cases cover the base-state soundings and wind profiles of base.F
+(`isnd`, `iwnd`) on small grids with `testcase = 0` (the testcase forcing
+profiles are not part of them); every `isnd`/`iwnd` is also compared with
+src/base.F directly, with the namelist settings of the bundled
+run/config_files cases, by the Fortran-bridge test `[base]`
+(tests/fortran_bridge/base_tests.cpp). cm1k reads `input_sounding` from
+`$CM1K_INPUT_SOUNDING` (else `./input_sounding`); the tests point it at the
+case directory.
 
 ## Making the references
 
@@ -120,6 +168,10 @@ What is written is defined by `src/cm1dump_state.inc`; at format_version 1:
 - turbulence: `tkea`, `kmh kmv khh khv` (dimensioned `1:1` in every
   direction when the scheme that uses them is off; check the bounds)
 - `rain` (`ib:ie, jb:je, 1:nrain`)
+- test cases (`testcase >= 1` or `lspgrad >= 2`): the forcing profiles
+  `wprof ufrc vfrc thfrc qvfrc ug vg dvdr ulspg vlspg` (`kb:ke`); with
+  `testcase = 4, 5` also `frad` (`kb:ke+1`), `thraten` and `zir` (`1:1` in
+  k); with `testcase = 1..7`, `bbc = 3` and no PBL scheme also `hpbl`
 
 Typical bounds for the 32×32×20 cases: `ib = jb = -2`, `ie = je = 35`
 (3 halo points), `kb = 0`, `ke = 21`.

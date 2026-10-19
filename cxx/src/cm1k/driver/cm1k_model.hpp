@@ -1,6 +1,7 @@
 #ifndef CM1K_MODEL_HPP
 #define CM1K_MODEL_HPP
 
+#include "dynamics/cm1k_adapt_dt.hpp"
 #include "physics/pbl/cm1k_pbl.hpp"
 #include "physics/myj/cm1k_myj_coupling.hpp"
 #include "physics/pbl_gfs/cm1k_pbl_gfs.hpp"
@@ -8,6 +9,7 @@
 #include "physics/sfc/cm1k_sfc.hpp"
 #include "physics/sfc_gfdl/cm1k_gfdl_driver.hpp"
 #include "physics/sfclay/cm1k_sfclay_driver.hpp"
+#include "physics/testcase/cm1k_testcase.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
 #include "share/cm1k_namelist.hpp"
@@ -107,10 +109,14 @@ public:
   // RRTMG radiation (radopt=2; its arrays are registered fields, as
   // src/cm1dump_state.inc dumps them). nullptr with radopt=0.
   rrtmg::Radiation* radiation() { return m_rad.get(); }
+  // testcase forcing profiles (allocated with testcase >= 1 or lspgrad >= 2)
+  const testcase::Forcing& testcase_forcing() const { return m_tc; }
 
   int nstep() const { return m_nstep; }
   double mtime() const { return m_mtime; }
   Real dt() const { return m_dt; }
+  // adapt_dt = 1: the time-step state (cflmax, ksmax, output timers)
+  const AdaptDt& adapt_dt() const { return m_adapt; }
 
 private:
   void build_registry();
@@ -133,11 +139,18 @@ private:
   pbl_mynn::Carried m_mynn;
   bool m_use_myj = false;
   myj::Carried m_myj;
+  testcase::Options m_tc_opt;   // testcase forcing / lspgrad >= 2
+  testcase::Forcing m_tc;
   FieldRegistry m_reg;
 
   int m_nstep = 0;
   double m_mtime = 0;
   Real m_dt = 0;
+  // adapt_dt = 1 (dynamics/cm1k_adapt_dt.hpp): the time-step state, and
+  // whether cm1.F's initial getnewdt (doinit) is still due (after init())
+  AdaptDt m_adapt;
+  bool m_adapt_doinit = false;
+  void apply_new_dt();   // dtsmall for m_adapt.dbldt, then dt = dbldt
 
   std::unique_ptr<rrtmg::Radiation> m_rad;   // radopt=2
   std::unique_ptr<Dyncore> m_dyn;   // created/started lazily in step()
