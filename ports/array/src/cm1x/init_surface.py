@@ -4,6 +4,7 @@ MM5/WRF land-use parameters of LANDUSE.TBL (``getlanduse``)."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from ._ftables import cm1_root
@@ -17,8 +18,10 @@ def _opt(cfg, name, default):
 def getlanduse(season, lu_index, path=None):
     """init_surface.F ``getlanduse`` for a uniform land-use category: albedo,
     emissivity, roughness length, thermal inertia, moisture availability and
-    xland (2 for water, category 16, else 1) from LANDUSE.TBL."""
-    path = cm1_root() / "run" / "LANDUSE.TBL" if path is None else path
+    xland (2 for water, category 16, else 1) from LANDUSE.TBL (``path``, else
+    env CM1X_LANDUSE_TBL, else run/LANDUSE.TBL)."""
+    if path is None:
+        path = os.environ.get("CM1X_LANDUSE_TBL") or cm1_root() / "run" / "LANDUSE.TBL"
     lines = Path(path).read_text().splitlines()
     pos, tab = 2, {}
     for isn in (1, 2):
