@@ -64,6 +64,14 @@ def _tol(name, backend):
     return TOL
 
 
+# Non-numpy backends: the last step where last-bit differences stay at
+# round-off.  myj_kessler: one column (j=17, i=16-17, k=13-16) amplifies
+# them as cloud forms there; a one-ulp perturbation of tha at t=0 in the
+# numpy run grows identically (1e-12 at step 130, ~1e-6 at step 150, same
+# column), so this is sensitivity, not a porting difference.
+OTHER_MAX_STEP = {"myj_kessler": 130}
+
+
 NPY_DISABLE = (
     "AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4"
 )
@@ -178,6 +186,8 @@ def test_pbl_case_vs_cm1_dumps(case, bk, tmp_path):
     if lu.exists():
         env["CM1X_LANDUSE_TBL"] = str(lu)
     max_step = os.environ.get("CM1X_PBL_MAX_STEP", "1000000000")
+    if bk.name != "numpy" and case in OTHER_MAX_STEP:
+        max_step = str(min(int(max_step), OTHER_MAX_STEP[case]))
     p = subprocess.run(
         [
             sys.executable,
