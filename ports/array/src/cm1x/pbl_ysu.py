@@ -551,7 +551,7 @@ def ysudiss(bk, *, dz, rmh, mf, upten, vpten, dum1, dum2, dissten):
     du = dum1[ks] - dum1[1:nk]
     dv = dum2[ks] - dum2[1:nk]
     add = t13 * du * tem2 + t23 * dv * tem2
-    return bk.set(dissten, ks, dissten[ks] + add)
+    return bk.set(bk.copy(dissten), ks, dissten[ks] + add)
 
 
 def pbl(ctx):
@@ -600,14 +600,14 @@ def pbl(ctx):
         dt=ctx.dt,
         ysu_topdown_pblmix=False,
     )
-    zs = bk.zeros(g.s_shape)
 
     def put3(v):
-        return bk.set(zs, (K, J, I), v)
+        # a fresh array each time: bk.set updates numpy/torch arrays in place
+        return bk.set(bk.zeros(g.s_shape), (K, J, I), v)
 
     def put2(name, v):
         old = s.get(name)
-        base = old if old is not None else bk.zeros(g.s_shape[1:])
+        base = bk.copy(old) if old is not None else bk.zeros(g.s_shape[1:])
         return bk.set(base, (J, I), xp.astype(v, base.dtype))
 
     out = {
@@ -638,5 +638,5 @@ def pbl(ctx):
             dum2=w["v"][KK, J, I],
             dissten=dt3[KK, J, I],
         )
-        out["dissten"] = bk.set(dt3, (KK, J, I), col)
+        out["dissten"] = bk.set(bk.copy(dt3), (KK, J, I), col)
     return out

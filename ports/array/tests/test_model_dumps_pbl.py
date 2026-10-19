@@ -127,6 +127,8 @@ for step in steps:
         ai, bi = inner(a), inner(b)
         sc = float(np.abs(bi).max())
         e = float(np.abs(ai - bi).max()) / (sc if sc > 0 else 1.0)
+        if not np.isfinite(e):
+            e = float("inf")  # max(0.0, nan) would hide a NaN
         res["compared"][k] = max(res["compared"].get(k, 0.0), e)
 print("RESULT" + json.dumps(res))
 """
