@@ -195,7 +195,7 @@ def _lookup(bk, tab, zz):
     xp = bk.xp
     t = bk.asarray(tab)
     n = xp.astype(xp.trunc(zz), _ity(bk))
-    n = xp.minimum(xp.maximum(n, 0), 999)
+    n = xp.where(n < 0, 0, xp.where(n > 999, 999, n))
     r = zz - xp.astype(n, zz.dtype)
     sh = zz.shape
     flat = xp.reshape(n, (-1,))
@@ -220,10 +220,10 @@ def sfclay(bk, cfg, *, ux, vx, t1d, qv1d, p1d, dz8w1d, rhox, psfcpa, tsk, xland,
     psimtb, psihtb = sfclayinit()
 
     def mx(a, b):
-        return xp.maximum(a, b)
+        return xp.maximum(a, b if hasattr(b, "shape") else bk.asarray(b))
 
     def mn(a, b):
-        return xp.minimum(a, b)
+        return xp.minimum(a, b if hasattr(b, "shape") else bk.asarray(b))
 
     PSFC = psfcpa / 1000.0
     TGDSA = tsk
@@ -525,10 +525,10 @@ def sfclayrev(bk, cfg, *, ux, vx, t1d, qv1d, p1d, dz8w1d, psfcpa, tsk, xland, ma
     cp, g, rovcp, r, K = C.cp, C.g, C.rovcp, C.rd, C.karman
 
     def mx(a, b):
-        return xp.maximum(a, b)
+        return xp.maximum(a, b if hasattr(b, "shape") else bk.asarray(b))
 
     def mn(a, b):
-        return xp.minimum(a, b)
+        return xp.minimum(a, b if hasattr(b, "shape") else bk.asarray(b))
 
     psfc = psfcpa / 1000.0
     tgdsa = tsk

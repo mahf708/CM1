@@ -131,10 +131,31 @@ halos; K arrays, `dissten`, the PBL tendencies `thpten, qvpten, qcpten,
 qipten, upten, vpten` 3-D), the base state `b`, the new time level `u3d, v3d,
 w3d, pp3d, th3d, q3d` with `rho, rr, rf, prs`, and `ctx.w`, the WRF column
 inputs of turb.F (`pbl.wrf_inputs`: u, v at scalar points, th, pi, t, dz8w,
-p3di, qv, qc, qi, rthraten). PBL tendencies are rho-weighted as in CM1 and
-filled on the interior; the core applies bcs to upten/vpten and adds them in
-solve1. `tests/test_model_dumps_pbl.py` compares every array a CM1 dump holds
-(`CM1X_DUMP_DIR_PBL`, layout `<case>/step_NNNNNN`).
+p3di, qv, qc, qi, rthraten). PBL tendencies are returned exactly as the
+Fortran scheme stores them (solve1 adds `thpten`, `q*pten` and the u/v-point
+average of `upten`/`vpten` with no extra factor; any rho weighting is the
+scheme's own, e.g. ipbl=2) and filled on the interior; the core applies bcs to
+upten/vpten. WRF-type surface layers end with `pbl.wrf_sfc_epilogue` (SLAB
+when `update_sfc`, else the qsfc diagnosis; ch, cq, s10; thflux, qvflux).
+
+Supported here: cm1setup=2 with ipbl=2 (Bryan 2009 simple PBL) and
+horizturb=1; LES (cm1setup=1, sgsmodel=1) with a surface layer; sfcmodel=1
+(land and water, isfcflx, cecd 1-3, set_flx, set_znt, pertflx), sfcmodel=2
+(`sfclay.py`, MM5 similarity) and 3 (revised MM5, isftcflx 0-2, iz0tlnd 0-2)
+with the SLAB land model (`slab.py`, 5 soil layers); irandp=1 and isnd=1 in
+the initial state. The sfclayinit tables call glibc's libmvec (as gfortran's
+vectorised loop does) when it is available.
+
+`tests/test_model_dumps_pbl.py` compares every array a CM1 dump holds with
+the model state (`CM1X_DUMP_DIR_PBL`, layout `<case>/step_NNNNNN`; cases in
+`CASES`, overridable with `CM1X_PBL_CASES`, steps capped by
+`CM1X_PBL_MAX_STEP`): prognostics against step N, surface / K / PBL arrays
+against step N-1 (CM1 dumps before sfc_and_turb). Tolerance 1e-10 relative to
+each array's maximum; on jax and torch the PBL tendencies get 1e-9 (their
+(new-old)/dt cancellation amplifies last-bit libm differences). The
+surface-layer variant namelists without a C++ case live in
+`ports/reference/pbl/`. On numpy the ipbl=2, cbl_sfc and sfcmodel=2/3 cases
+match the float64 Fortran to 1e-12 or bitwise through 150 steps.
 
 ### MYJ (ipbl=6, sfcmodel=7)
 
