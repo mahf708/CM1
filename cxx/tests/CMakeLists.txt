@@ -1,20 +1,25 @@
 include(EkatCreateUnitTest)
 
-# cm1k_add_test(<name> SOURCES ... [LIBS ...] [THREADS ...])
+# cm1k_add_test(<name> SOURCES ... [LIBS ...] [THREADS ...] [EXE_ARGS ...])
 #   Catch2 unit test linked against cm1k. Tests that need Fortran reference
 #   dumps use $CM1K_REF_DIR, defaulting to the CMake cache variable of the
 #   same name, and are skipped (with a warning) when neither is set.
 function(cm1k_add_test name)
-  cmake_parse_arguments(T "" "" "SOURCES;LIBS;THREADS;LABELS" ${ARGN})
+  cmake_parse_arguments(T "" "" "SOURCES;LIBS;THREADS;LABELS;EXE_ARGS" ${ARGN})
   set(threads 1)
   if (T_THREADS)
     set(threads ${T_THREADS})
+  endif()
+  set(exe_args)
+  if (T_EXE_ARGS)
+    set(exe_args EXE_ARGS ${T_EXE_ARGS})
   endif()
   EkatCreateUnitTest(${name}
     SOURCES ${T_SOURCES}
     LIBS cm1k cm1k_testing ${T_LIBS}
     THREADS ${threads}
     LABELS cm1k ${T_LABELS}
+    ${exe_args}
     COMPILER_CXX_DEFS CM1K_DEFAULT_REF_DIR="${CM1K_REF_DIR}" CM1K_DEFAULT_CASES_DIR="${CMAKE_SOURCE_DIR}/cases")
 endfunction()
 
