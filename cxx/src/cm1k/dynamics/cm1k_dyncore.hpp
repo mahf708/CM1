@@ -197,7 +197,7 @@ public:
   void pbl(double rtime);
   // DynConfig::check for MPI runs: throws for every option whose MPI code
   // path (exchanges, reductions) is not ported or not validated
-  void check_mpi() const;
+  void check_mpi(const Bounds& b) const;
   // solve3.F/init3d.F: rf from rho on 0..ni+1, 0..nj+1 (public: it launches
   // device lambdas, which nvcc does not allow in private member functions)
   void compute_rf();

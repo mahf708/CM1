@@ -10,7 +10,13 @@
 #   cm1k                 build cm1k and run ctest against the references, for the
 #                        Kokkos OpenMP (Release) and Serial (Debug + bounds checks)
 #                        backends; the OpenMP leg also runs cxx/scripts/ci_python.sh.
-#   cm1k-cuda-compile    compile-only check for CUDA (no GPU on hosted runners).
+#   cm1k-cuda-compile    compile-only check for CUDA (no GPU on hosted runners),
+#                        with CM1K_ENABLE_MPI=ON.
+#   fortran-refs-mpi     build the Fortran with MPI and run the cases that have a
+#                        `ranks` file on 2 and 4 ranks (cxx/scripts/make_refs_mpi.sh);
+#                        artifact `cm1-refs-mpi`, cached like fortran-refs.
+#   cm1k-mpi             build cm1k with CM1K_ENABLE_MPI=ON and run the MPI tests on
+#                        2 and 4 ranks against both reference sets, then the rest.
 name: cm1k
 
 on:
@@ -224,6 +230,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DKokkos_ENABLE_CUDA=ON \
             -DKokkos_ARCH_AMPERE80=ON \
+            -DCM1K_ENABLE_MPI=ON \
             -DCM1K_ENABLE_FORTRAN_BRIDGE=OFF \
             -DCM1K_ENABLE_TESTS=ON
 
@@ -232,3 +239,116 @@ jobs:
           ccache -z
           cmake --build build -j4
           ccache -s
+
+  fortran-refs-mpi:
+    name: Fortran MPI reference dumps
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore cached MPI references
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: refs-mpi
+          key: cm1-refs-mpi-${{ env.REFS_CACHE_VERSION }}-${{ hashFiles('src/**', 'cxx/cases/**', 'cxx/scripts/make_refs.sh', 'cxx/scripts/make_refs_mpi.sh') }}
+
+      - name: Install Fortran and MPI toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gfortran libnetcdff-dev libopenmpi-dev openmpi-bin
+
+      - name: Build Fortran CM1 (MPI) and write per-rank reference dumps
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: JOBS=4 cxx/scripts/make_refs_mpi.sh refs-mpi
+
+      - name: Show manifest
+        run: |
+          cat refs-mpi/MANIFEST_MPI.txt
+          du -sh refs-mpi/*
+
+      - name: Upload MPI references
+        uses: actions/upload-artifact@v4
+        with:
+          name: cm1-refs-mpi
+          path: refs-mpi
+          if-no-files-found: error
+          retention-days: 5
+          compression-level: 6
+
+  cm1k-mpi:
+    name: cm1k (MPI, 2 and 4 ranks)
+    needs: [fortran-refs, fortran-refs-mpi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 500M
+      CCACHE_COMPRESS: "true"
+      # one thread per rank (4 ranks on a 4-core runner)
+      OMP_NUM_THREADS: 1
+      CM1K_REQUIRE_REFS: 1
+      OMP_PROC_BIND: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout submodules (EKAT, Kokkos)
+        run: |
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git submodule update --init --recursive --depth 1 cxx/externals/ekat
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gfortran g++ cmake ninja-build ccache libopenmpi-dev openmpi-bin
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-cm1k-mpi-${{ github.sha }}
+          restore-keys: |
+            ccache-cm1k-mpi-
+
+      # one directory holds both: refs/<case>/step_* (serial, for the interior
+      # comparison) and refs/<case>/np<N>/rank_RRRR/step_* (per rank)
+      - name: Download serial references
+        uses: actions/download-artifact@v4
+        with:
+          name: cm1-refs
+          path: refs
+
+      - name: Download MPI references
+        uses: actions/download-artifact@v4
+        with:
+          name: cm1-refs-mpi
+          path: refs
+
+      - name: Configure
+        run: |
+          cmake -S cxx -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCM1K_REF_DIR="$GITHUB_WORKSPACE/refs" \
+            -DKokkos_ENABLE_OPENMP=ON \
+            -DCM1K_ENABLE_MPI=ON
+
+      - name: Build
+        run: |
+          ccache -z
+          cmake --build build -j4
+          ccache -s
+
+      - name: MPI tests (2 and 4 ranks, bitwise per rank)
+        working-directory: build
+        run: ctest -L mpi --output-on-failure --timeout 3600
+
+      - name: Other tests (MPI build, serial runs)
+        working-directory: build
+        env:
+          OMP_NUM_THREADS: 2
+        run: ctest -LE mpi --output-on-failure --timeout 1800

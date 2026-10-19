@@ -115,7 +115,7 @@ Result run_mpi_case(const std::string& case_name, bool turb, bool rank_independe
     std::unique_ptr<DumpReader> rs;
     if (have_serial) rs = std::make_unique<DumpReader>(sdir);
     double step_rank = 0, step_serial = 0;
-    std::string worst_field;
+    std::string worst_field, worst_serial;
     for (auto& n : fields) {
       auto a = m.field3(n).to_host();
       auto b = r.read_host<3>(n);
@@ -130,13 +130,17 @@ Result run_mpi_case(const std::string& case_name, bool turb, bool rank_independe
       if (st.max_abs > step_rank) { step_rank = st.max_abs; worst_field = n; }
       if (have_serial && rs->has(n)) {
         // interior (and all levels of the local array) vs the global array
+        // (within both arrays' bounds: some arrays are not sized 1..ni, 1..nj)
         auto g = rs->read_host<3>(n);
         double mx = 0;
-        for (int k = a.lb(2); k <= a.ub(2); ++k)
-          for (int j = 1; j <= nj; ++j)
-            for (int i = 1; i <= ni; ++i)
+        const int i1 = std::max({1, a.lb(0), g.lb(0) - oi}), i2 = std::min({ni, a.ub(0), g.ub(0) - oi});
+        const int j1 = std::max({1, a.lb(1), g.lb(1) - oj}), j2 = std::min({nj, a.ub(1), g.ub(1) - oj});
+        const int k1 = std::max(a.lb(2), g.lb(2)), k2 = std::min(a.ub(2), g.ub(2));
+        for (int k = k1; k <= k2; ++k)
+          for (int j = j1; j <= j2; ++j)
+            for (int i = i1; i <= i2; ++i)
               mx = std::max(mx, std::abs(a(i, j, k) - g(oi + i, oj + j, k)));
-        step_serial = std::max(step_serial, mx);
+        if (mx > step_serial) { step_serial = mx; worst_serial = n; }
       }
     }
     MPI_Allreduce(MPI_IN_PLACE, &step_rank, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
@@ -144,8 +148,9 @@ Result run_mpi_case(const std::string& case_name, bool turb, bool rank_independe
     res.rank_max_abs = std::max(res.rank_max_abs, step_rank);
     res.serial_max_abs = std::max(res.serial_max_abs, step_serial);
     if (d.myid == 0)
-      std::printf("%s np%d step %d: max |cm1k - Fortran np%d| = %.3e, interior max |cm1k np%d - Fortran serial| = %.3e%s\n",
-                  case_name.c_str(), np, step, np, step_rank, np, step_serial, have_serial ? "" : " (no serial ref)");
+      std::printf("%s np%d step %d: max |cm1k - Fortran np%d| = %.3e, interior max |cm1k np%d - Fortran serial| = %.3e%s%s\n",
+                  case_name.c_str(), np, step, np, step_rank, np, step_serial, have_serial ? "" : " (no serial ref)",
+                  worst_serial.empty() ? "" : (" (rank 0: " + worst_serial + ")").c_str());
   }
   if (rank_independent) CHECK(res.serial_max_abs == 0.0);
   return res;
@@ -217,5 +222,21 @@ TEST_CASE("mpi: PBL cases vs MPI Fortran", "[mpi][step][pbl][sfc]") {
                         "mpi_mynn25_land_dry", "mpi_mynn3_dry", "mpi_mynn3_land_kessler", "mpi_myj_dry",
                         "mpi_myj_kessler"}) {
     SECTION(c) { run_mpi_case(c, true, false); }
+  }
+}
+
+// what is not ported with MPI throws
+TEST_CASE("mpi: unported combinations throw", "[mpi]") {
+  auto nl = Namelist::from_file(cm1k::testing::case_namelist("mpi_kessler_periodic"));
+  {
+    // native initialization (init3d.F's per-rank fields): from the rank's dump only
+    Model m(nl, Decomp::make(MPI_COMM_WORLD, nl.geti("nx", 0), nl.geti("ny", 0)));
+    REQUIRE(m.mpi());
+    CHECK_THROWS_WITH(m.init(), Catch::Contains("not ported with MPI"));
+  }
+  {
+    // 2D domains
+    nl.set("ny", "1");
+    CHECK_THROWS(Model(nl, Decomp::make(MPI_COMM_WORLD, nl.geti("nx", 0), 1)).dyncore());
   }
 }

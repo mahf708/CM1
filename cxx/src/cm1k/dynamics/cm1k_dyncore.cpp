@@ -220,13 +220,16 @@ void DynConfig::check() const {
 
 //===========================================================================
 // MPI runs: what is ported and validated against the MPI Fortran
-void Dyncore::check_mpi() const {
+// (validated bitwise at 2 and 4 ranks, tests/mpi: periodic, open-radiative
+// (irbc=1,2,4, roflux, nudgeobc) and wall boundaries; Kessler; the LES TKE
+// scheme; Coriolis, Rayleigh damping, diffusion (difforder 2, 6); the surface
+// layers sfcmodel=1,2,3,4,6,7 and the PBL schemes ipbl=1..6)
+void Dyncore::check_mpi(const Bounds& b) const {
   auto fail = [](const std::string& what) {
     throw std::runtime_error("cm1k dyncore: not ported with MPI (run serially): " + what);
   };
-  const auto& c = m_cfg;
-  (void)c;
-  (void)fail;
+  // 2D runs: CM1 decomposes them along the one long axis; not validated
+  if (b.nx == 1 || b.ny == 1) fail("2D domains (nx=1 or ny=1)");
 }
 
 Dyncore::Dyncore() = default;
@@ -240,7 +243,7 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
   m_obc = OpenBcParams::make(grid, nl);
   m_obc.check();
   if (mpi()) {
-    check_mpi();
+    check_mpi(grid.b);
     m_bc.set_mpi(m_comm->edges());
     m_obc.set_mpi(*m_comm);
     if (m_cfg.turb || m_cfg.pbl) m_cfg.turb_opt.set_mpi(*m_comm);
