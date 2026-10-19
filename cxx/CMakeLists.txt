@@ -42,6 +42,11 @@ set(EKAT_ENABLE_KOKKOS  ON  CACHE BOOL "")
 set(EKAT_ENABLE_PACK    ON  CACHE BOOL "")
 set(EKAT_ENABLE_ALGORITHM ON CACHE BOOL "")
 set(EKAT_DISABLE_TPL_WARNINGS ON CACHE BOOL "")
+# MPI tests: plain `-np N` without core binding. EKAT's default
+# (--map-by ppr:N:node:pe=1 --bind-to core) cannot place 4 ranks on a
+# 2-core runner or laptop.
+set(EKAT_MPI_NP_FLAG    "-np" CACHE STRING "")
+set(EKAT_MPI_EXTRA_ARGS "--bind-to none --oversubscribe" CACHE STRING "")
 add_subdirectory(externals/ekat ${CMAKE_BINARY_DIR}/externals/ekat)
 list(APPEND CMAKE_MODULE_PATH ${EKAT_CMAKE_PATH})
 

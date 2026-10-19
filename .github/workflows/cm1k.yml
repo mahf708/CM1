@@ -45,9 +45,6 @@ env:
   OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
   # OpenMPI on hosted runners: allow more ranks than cores.
   OMPI_MCA_rmaps_base_oversubscribe: 1
-  # ... and don't bind ranks to cores (4 ranks on a 2-core runner fail to bind).
-  OMPI_MCA_hwloc_base_binding_policy: none
-  PRTE_MCA_hwloc_default_binding_policy: none
 
 jobs:
   fortran-refs:
