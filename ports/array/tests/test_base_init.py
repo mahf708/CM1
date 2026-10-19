@@ -103,7 +103,10 @@ def test_param_grid(bk, cfg):
     pg = param_grid(cfg, bk)
     zh, zf = np_(bk, pg["zh"]), np_(bk, pg["zf"])
     assert zh.shape == (42, 46, 46) and zf.shape == (43, 46, 46)
-    np.testing.assert_allclose(zh[:, 5, 7], 500.0 * (np.arange(42) - 0.5))
+    # param.F's cm1r18 ghost points: zh(0) = zf(1), zh(nk+1) = zf(nk+1)
+    zh_ref = 500.0 * (np.arange(42) - 0.5)
+    zh_ref[0], zh_ref[41] = 0.0, 20000.0
+    np.testing.assert_allclose(zh[:, 5, 7], zh_ref)
     np.testing.assert_allclose(zf[:, 0, 0], 500.0 * (np.arange(43) - 1.0))
     c1, c2 = np_(bk, pg["c1"]), np_(bk, pg["c2"])
     assert np.all(c1[1:] == 0.5) and np.all(c2[1:] == 0.5) and np.all(c1[0] == 0)
