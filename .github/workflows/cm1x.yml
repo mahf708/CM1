@@ -65,7 +65,14 @@ jobs:
         env:
           # pinned commit of claude/project-thread-uq9w9c with src/cm1dump.F
           # and cxx/scripts/make_refs.sh (-DDP gfortran build)
-          KOKKOS_REF_SHA: 6e13594cdc9223d7cd945b4c9e847703c4ecc816
+          KOKKOS_REF_SHA: 1cb69957d47b93def70b668279ac135fb5edba57
+          # boundary-layer / surface-layer cases (cxx/cases there, plus the
+          # cm1x-only surface-layer variants in ports/reference/pbl)
+          PBL_CASES: >-
+            pbl2_dry pbl2_kessler pbl2_sfclay_land cbl_sfc cbl_sfc_moist
+            ysu_dry ysu_kessler gfs_dry gfs_kessler gfs_sfclay_land
+            myj_dry myj_kessler mynn25_kessler mynn25_land_dry mynn3_dry
+            mynn3_land_kessler
         run: |
           git fetch --no-tags --depth=1 origin "$KOKKOS_REF_SHA"
           git worktree add ../kokkos-ref FETCH_HEAD
@@ -78,6 +85,21 @@ jobs:
           echo 5 > "$sc/every"
           ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler
           rm -f ref/dumps/*/cm1out*.nc
+          # PBL cases: 20 steps, dumped at steps 0, 10 and 20 (the full runs
+          # are 120-280 MB of dumps each)
+          extra=$(ls ports/reference/pbl)
+          for c in $extra; do
+            mkdir -p "../kokkos-ref/cxx/cases/$c"
+            cp ports/reference/pbl/$c/namelist.input run/LANDUSE.TBL "../kokkos-ref/cxx/cases/$c/"
+          done
+          for c in $PBL_CASES $extra; do
+            nml=../kokkos-ref/cxx/cases/$c/namelist.input
+            dt=$(sed -n 's/^ *dtl *= *\([0-9.]*\).*/\1/p' "$nml")
+            sed -i "s/^ *timax *=.*/ timax  =  $(python3 -c "print(20*$dt)"),/" "$nml"
+            echo 10 > "../kokkos-ref/cxx/cases/$c/every"
+          done
+          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps_pbl" $PBL_CASES $extra
+          rm -f ref/dumps_pbl/*/cm1out*.nc ref/dumps_pbl/*/cm1out*.dat
       - uses: actions/upload-artifact@v4
         with:
           name: cm1-ref
@@ -131,6 +153,7 @@ jobs:
           CM1X_REF_DIR_LONG: ${{ github.workspace }}/ref/kessler_periodic_long_r8
           CM1X_DUMP_DIR: ${{ github.workspace }}/ref/dumps/kessler_periodic
           CM1X_DUMP_DIR_SC: ${{ github.workspace }}/ref/dumps/supercell_kessler
+          CM1X_DUMP_DIR_PBL: ${{ github.workspace }}/ref/dumps_pbl
           CM1X_REF_DIR_SC: ${{ github.workspace }}/ref/supercell_kessler_r8
           CM1X_REF_DIR_SC_LONG: ${{ github.workspace }}/ref/supercell_kessler_long_r8
           CM1X_REF_DIR_NHMW: ${{ github.workspace }}/ref/nh_mountain_waves_r8
