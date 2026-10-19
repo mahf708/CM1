@@ -58,7 +58,6 @@ def consts(testcase: int) -> dict:
     )  # fmt: skip
 
 
-
 def param_eqtset(cfg) -> int:
     """eqtset after param.F: clamped to 1..2; 1 for psolver 4-7 and for
     ptype 4, 7, 50-53, 55."""
@@ -290,8 +289,10 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
             pi1 = one - grav * zc[1] / (cp * thbar)
             p1 = p00 * (pi1**cpdrd)
             qv1 = rslf(p1, tmp)
-            tmp = thec_mb * ((p1 / (one + qv1 / eps) / p00) ** (rd / cqt)) / xp.exp(
-                (lv1 - lv2 * tmp) * qv1 / (tmp * cqt)
+            tmp = (
+                thec_mb
+                * ((p1 / (one + qv1 / eps) / p00) ** (rd / cqt))
+                / xp.exp((lv1 - lv2 * tmp) * qv1 / (tmp * cqt))
             )
             tmp = tlast + S(0.3) * (tmp - tlast)
             tlast = tmp
@@ -313,8 +314,10 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
                 pi = pis[-1] - grav * dzk / (cp * thbar)
                 prs = p00 * (pi**cpdrd)
                 qv2 = rslf(prs, t2)
-                t2 = thec_mb * ((prs / (one + qv2 / eps) / p00) ** (rd / cqt)) / xp.exp(
-                    (lv1 - lv2 * t2) * qv2 / (t2 * cqt)
+                t2 = (
+                    thec_mb
+                    * ((prs / (one + qv2 / eps) / p00) ** (rd / cqt))
+                    / xp.exp((lv1 - lv2 * t2) * qv2 / (t2 * cqt))
                 )
                 th2 = t2 / pi
                 cont = (xp.abs(th2 - c["tlast"]) > S(0.0001)) & (n < S(100.0))
@@ -322,7 +325,9 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
                     act=cont,
                     stuck=(~cont) & (n >= S(100.0)),
                     n=n,
-                    tlast=xp.where(cont, c["tlast"] + S(0.3) * (th2 - c["tlast"]), c["tlast"]),
+                    tlast=xp.where(
+                        cont, c["tlast"] + S(0.3) * (th2 - c["tlast"]), c["tlast"]
+                    ),
                     pi=pi,
                     prs=prs,
                     qv2=qv2,
@@ -444,7 +449,8 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
         pisn = [pi_sfc]
         for m in range(1, nsnd):
             pisn.append(
-                pisn[-1] - grav * (zs[m] - zs[m - 1]) / (cp * half * (thvs[m] + thvs[m - 1]))
+                pisn[-1]
+                - grav * (zs[m] - zs[m - 1]) / (cp * half * (thvs[m] + thvs[m - 1]))
             )
         psn = [p00 * (pisn[m] ** (cp / rd)) for m in range(nsnd)]
         tsn = [ths[m] * pisn[m] for m in range(nsnd)]
@@ -467,11 +473,15 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
         zin = zc[1 : nk + 1]
         kup = kup_of(zin)
         if _any(bk, kup < 1):
-            raise RuntimeError("isnd=7/17: grid level at or below the sounding's surface")
+            raise RuntimeError(
+                "isnd=7/17: grid level at or below the sounding's surface"
+            )
         kdn = kup - 1
 
         def take(lst, idx):
-            return xp.take(xp.stack(lst), xp.reshape(idx, (-1,)), axis=0).reshape(idx.shape)
+            return xp.take(xp.stack(lst), xp.reshape(idx, (-1,)), axis=0).reshape(
+                idx.shape
+            )
 
         zdn, zup = take(zs, kdn), take(zs, kup)
 
@@ -497,13 +507,19 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
         pis = [pi_sfc - grav * zin[0] / (cp * half * (thv_sfc + thv_i[0]))]
         for k in range(1, nk):
             pis.append(
-                pis[-1] - grav * (zin[k] - zin[k - 1]) / (cp * half * (thv_i[k] + thv_i[k - 1]))
+                pis[-1]
+                - grav * (zin[k] - zin[k - 1]) / (cp * half * (thv_i[k] + thv_i[k - 1]))
             )
         pi_i = xp.stack(pis)
         p_i = p00 * (pi_i ** (cp / rd))
         if imoist == 1:
             rh_i = qv_i / rslf(p_i, th_i * pi_i)
-        pi0, prs0, th0, qv0 = col(list(pi_i)), col(list(p_i)), col(list(th_i)), col(list(qv_i))
+        pi0, prs0, th0, qv0 = (
+            col(list(pi_i)),
+            col(list(p_i)),
+            col(list(th_i)),
+            col(list(qv_i)),
+        )
         t0, rh0, thv0 = col(list(t_i)), col(list(rh_i)), col(list(thv_i))
         z1u = bk.zeros((1, sh2[0], sh2[1] + 1))
         u0 = xp.concat([u_i, bk.zeros(u_i.shape[:2] + (1,))], axis=2)  # u(ie+1) = 0
@@ -551,7 +567,11 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
             if abs(float(ns1)) < 1.0e-6:
                 return pi_s - grav * dz_a / (cp * th_s), th_s
             return (
-                pi_s + grav * grav / (cp * ns_a * th_s) * (xp.exp(-ns_a * dz_a / grav) - one),
+                pi_s
+                + grav
+                * grav
+                / (cp * ns_a * th_s)
+                * (xp.exp(-ns_a * dz_a / grav) - one),
                 th_s * xp.exp(ns_a * dz_a / grav),
             )
 
@@ -568,7 +588,8 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
             pik = xp.where(
                 small,
                 pi_s - grav * dzk / (cp * th_s),
-                pi_s + grav * grav / (cp * ns * th_s) * (xp.exp(-ns * dzk / grav) - one),
+                pi_s
+                + grav * grav / (cp * ns * th_s) * (xp.exp(-ns * dzk / grav) - one),
             )
             prs = p00 * (pik**cpdrd)
             if not klemp:
@@ -712,7 +733,9 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
             thl = xp.where(low, th_sfc, thl_hi)
             qt = xp.where(low, qv_sfc, qt_hi)
 
-            def body(c, thl=thl, qt=qt, z=z, thvlast=thvlast, pilast=pilast, zlast=zlast):
+            def body(
+                c, thl=thl, qt=qt, z=z, thvlast=thvlast, pilast=pilast, zlast=zlast
+            ):
                 thlast = c["th"]
                 thv = c["th"] * (one + reps * c["qv"]) / (one + c["qv"] + c["qc"])
                 pi = pilast - grav * (z - zlast) / (cp * half * (thvlast + thv))
@@ -771,7 +794,10 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
                 th = [296.6, 296.6, 298.1]
                 th += [th[2] + 0.003 * (z[3] - z[2]), th[2] + 0.003 * (z[4] - z[2])]
                 qv = [11.8e-3, 11.8e-3, 7.8e-3]
-                qv += [qv[2] - 0.004e-3 * (z[3] - z[2]), qv[2] - 0.004e-3 * (z[4] - z[2])]
+                qv += [
+                    qv[2] - 0.004e-3 * (z[3] - z[2]),
+                    qv[2] - 0.004e-3 * (z[4] - z[2]),
+                ]
                 prs_sfc = 100000.0
         elif isnd == 20:
             z = [0.0, 740.0, 3260.0, 4000.0]
@@ -784,6 +810,7 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
             qv = [0.0152, 0.01517, 0.01498, 0.0148, 0.0147, 0.0135, 0.003, 0.003]
             th.append(th[7] + (z[8] - z[7]) * (th[7] - th[6]) / (z[7] - z[6]))
             qv.append(qv[7] + (z[8] - z[7]) * (qv[7] - qv[6]) / (z[7] - z[6]))
+            prs_sfc = 97000.0
         # (python-float arithmetic above is IEEE double, as CM1's DP build)
         z, th, qv = ([S(x) for x in a] for a in (z, th, qv))
         prs_sfc = S(prs_sfc)
@@ -793,8 +820,16 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
         done = bk.zeros(zc.shape) > one
         for m in range(1, len(z)):
             sel = (~done) & (zc <= z[m])
-            th_a = xp.where(sel, th[m - 1] + (th[m] - th[m - 1]) * (zc - z[m - 1]) / (z[m] - z[m - 1]), th_a)
-            qv_a = xp.where(sel, qv[m - 1] + (qv[m] - qv[m - 1]) * (zc - z[m - 1]) / (z[m] - z[m - 1]), qv_a)
+            th_a = xp.where(
+                sel,
+                th[m - 1] + (th[m] - th[m - 1]) * (zc - z[m - 1]) / (z[m] - z[m - 1]),
+                th_a,
+            )
+            qv_a = xp.where(
+                sel,
+                qv[m - 1] + (qv[m] - qv[m - 1]) * (zc - z[m - 1]) / (z[m] - z[m - 1]),
+                qv_a,
+            )
             done = done | sel
         if clip:
             qv_a = xp.maximum(zero, qv_a / (one - qv_a))
@@ -804,7 +839,8 @@ def sounding(bk, cfg, *, zh, cg: dict, g) -> dict:
         pis = [pi_sfc - grav * zc[1] / (cp * half * (thv_sfc + thv_a[1]))]
         for k in range(2, nk + 1):
             pis.append(
-                pis[-1] - grav * (zc[k] - zc[k - 1]) / (cp * half * (thv_a[k] + thv_a[k - 1]))
+                pis[-1]
+                - grav * (zc[k] - zc[k - 1]) / (cp * half * (thv_a[k] + thv_a[k - 1]))
             )
         pi0 = _keep(bk, col(pis), K1, interior)
         prs0 = _keep(bk, p00 * (pi0 ** (cp / rd)), K1, interior)
@@ -903,12 +939,18 @@ def _isnd10(bk, cfg, zc, sh2, nk, ptype, rslf, rsif, k_):
         desdt = c17 / sq(tavg - S(29.65))
         drdt = c17 * qvavg / sq(tavg - S(29.65))
         if eqtset == 2:
-            gamma = grav * (one + qtavg) * (one + lhv * qvavg / rd / tavg) / (
-                cp + cpv * qvavg + cpl * qlavg + lhv * drdt
+            gamma = (
+                grav
+                * (one + qtavg)
+                * (one + lhv * qvavg / rd / tavg)
+                / (cp + cpv * qvavg + cpl * qlavg + lhv * drdt)
             )
         else:
-            gamma = grav * (one + qtavg) * (rd / (rd + rv * qvavg) + lhv * qvavg / rd / tavg) / (
-                cp + lhv * (one + qvavg * reps) * qvavg * desdt
+            gamma = (
+                grav
+                * (one + qtavg)
+                * (rd / (rd + rv * qvavg) + lhv * qvavg / rd / tavg)
+                / (cp + lhv * (one + qvavg * reps) * qvavg * desdt)
             )
         tp = t_sfc * xp.exp(
             z1 * (((S(0.0) / grav) + xp.log((one + qtp) / (one + qtm)) / z1)
@@ -993,18 +1035,30 @@ def _isnd10(bk, cfg, zc, sh2, nk, ptype, rslf, rsif, k_):
                     qvavg = fliq * qvl + fice * qvi
                     qlavg = half * (m["qlm"] + qc)
                     qtavg = half * (m["qtm"] + qtp)
-                    drdt = fliq * c17 * qvl / sq(tavg - S(29.65)) + fice * c21 * qvi / sq(
-                        tavg - S(7.66)
+                    drdt = fliq * c17 * qvl / sq(
+                        tavg - S(29.65)
+                    ) + fice * c21 * qvi / sq(tavg - S(7.66))
+                    drdt = xp.where(
+                        (tavg > t00k) & (tavg < t0k), drdt + (qvl - qvi) * rt0, drdt
                     )
-                    drdt = xp.where((tavg > t00k) & (tavg < t0k), drdt + (qvl - qvi) * rt0, drdt)
                     lhv = fliq * (lv1 - lv2 * tavg) + fice * (ls1 - ls2 * tavg)
-                    cpml = cp + cpv * qvavg + cpl * qlavg + cpi * (qtavg - qlavg - qvavg)
+                    cpml = (
+                        cp + cpv * qvavg + cpl * qlavg + cpi * (qtavg - qlavg - qvavg)
+                    )
                 if eqtset == 2:
-                    gamma = grav * (one + qtavg) * (one + lhv * qvavg / rd / tavg) / (cpml + lhv * drdt)
+                    gamma = (
+                        grav
+                        * (one + qtavg)
+                        * (one + lhv * qvavg / rd / tavg)
+                        / (cpml + lhv * drdt)
+                    )
                 else:
-                    gamma = grav * (one + qtavg) * (
-                        rd / (rd + rv * qvavg) + lhv * qvavg / rd / tavg
-                    ) / (cp + lhv * (one + qvavg * reps) * qvavg * desdt)
+                    gamma = (
+                        grav
+                        * (one + qtavg)
+                        * (rd / (rd + rv * qvavg) + lhv * qvavg / rd / tavg)
+                        / (cp + lhv * (one + qvavg * reps) * qvavg * desdt)
+                    )
                 tp = m["tm"] * xp.exp(
                     delz * (((ns / grav) + xp.log((one + qtp) / (one + m["qtm"])) / delz)
                             / (one + tavg * drdt / (eps + qvavg)) - gamma / tavg)
@@ -1080,8 +1134,10 @@ def _isnd11(bk, cfg, zc, sh2, nk, rslf, k_):
     tsk0 = S(float(cfg.get("tsk0", 299.28)))
 
     def thx_of(p, t, qv):  # ttype = 2
-        return t * ((p00 / p) ** (S(0.2854) * (one - S(0.28) * qv))) * xp.exp(
-            ((S(3376.0) / t) - S(2.54)) * qv * (one + S(0.81) * qv)
+        return (
+            t
+            * ((p00 / p) ** (S(0.2854) * (one - S(0.28) * qv)))
+            * xp.exp(((S(3376.0) / t) - S(2.54)) * qv * (one + S(0.81) * qv))
         )
 
     def revthe(the, p, t, act0):
@@ -1121,7 +1177,9 @@ def _isnd11(bk, cfg, zc, sh2, nk, rslf, k_):
 
         def body(c):
             tlast = c["t2"]
-            pi2 = s["pi1"] - grav * (z2 - s["z1"]) / (cp * half * (s["thv1"] + c["thv2"]))
+            pi2 = s["pi1"] - grav * (z2 - s["z1"]) / (
+                cp * half * (s["thv1"] + c["thv2"])
+            )
             p2 = p00 * (pi2 ** (cp / rd))
             t2, qv2, st = revthe(the_sfc + z0, p2, c["t2"], c["act"])
             th2 = t2 / pi2
@@ -1163,7 +1221,9 @@ def _isnd11(bk, cfg, zc, sh2, nk, rslf, k_):
         flag = flag | first
         # stratosphere (ns /= 0)
         thv2s = th_s * xp.exp(ns * (zk - zsfc) / grav)
-        pi2s = pi_s + grav * grav / (cp * ns * th_s) * (xp.exp(-ns * (zk - zsfc) / grav) - one)
+        pi2s = pi_s + grav * grav / (cp * ns * th_s) * (
+            xp.exp(-ns * (zk - zsfc) / grav) - one
+        )
         p2s = p00 * (pi2s**cpdrd)
         th2s = thv2s
         for _n in range(20):
@@ -1176,8 +1236,25 @@ def _isnd11(bk, cfg, zc, sh2, nk, rslf, k_):
         th2 = xp.where(strat, th2s, c["th2"])
         thv2 = xp.where(strat, thv2s, c["thv2"])
         qv2 = xp.where(strat, qv2s, c["qv2"])
-        s = dict(pi1=pi2, z1=zk, t1=t2, thv1=thv2, thv2=thv2, pi2=pi2, p2=p2, qv2=qv2, th2=th2)
-        for x, v in (("pi", pi2), ("prs", p2), ("t", t2), ("th", th2), ("thv", thv2), ("qv", qv2)):
+        s = dict(
+            pi1=pi2,
+            z1=zk,
+            t1=t2,
+            thv1=thv2,
+            thv2=thv2,
+            pi2=pi2,
+            p2=p2,
+            qv2=qv2,
+            th2=th2,
+        )
+        for x, v in (
+            ("pi", pi2),
+            ("prs", p2),
+            ("t", t2),
+            ("th", th2),
+            ("thv", thv2),
+            ("qv", qv2),
+        ):
             lev[x].append(v)
     if _any(bk, stuck):
         raise RuntimeError("isnd=11: revthe: n exceeded 50 (CM1 stops)")
@@ -1241,7 +1318,9 @@ def wind(bk, cfg, *, zh, g):
         d1, d2, c1, c2 = S(d1), S(d2), S(c1), S(c2)
         lo = (z <= d1) if le else (z < d1)
         return xp.where(
-            lo, c1, xp.where((z > d1) & (z < d2), (c2 - c1) * (z - d1) / (d2 - d1) + c1, c2)
+            lo,
+            c1,
+            xp.where((z > d1) & (z < d2), (c2 - c1) * (z - d1) / (d2 - d1) + c1, c2),
         )
 
     u0, v0 = bk.zeros(shu), bk.zeros(shv)
@@ -1256,7 +1335,11 @@ def wind(bk, cfg, *, zh, g):
         u = xp.where(
             zu <= udep1,
             umax1 - umax1 * xp.cos(angle),
-            xp.where(zu <= udep2, umax1 + (zu - udep1) * (umax2 - umax1) / (udep2 - udep1), umax2),
+            xp.where(
+                zu <= udep2,
+                umax1 + (zu - udep1) * (umax2 - umax1) / (udep2 - udep1),
+                umax2,
+            ),
         )
         anglev = S(90.0) * (zv / udep1) * pi180
         v = xp.where(zv <= udep1, umax1 * xp.sin(anglev), umax1)
@@ -1265,7 +1348,9 @@ def wind(bk, cfg, *, zh, g):
         udep1, udep2 = S(0.0), S(7500.0)
         umax1 = S(-40.0) / pi
         umax2 = S(40.0) / pi + S(40.0)
-        u = xp.where(zu <= udep2, umax1 + (zu - udep1) * (umax2 - umax1) / (udep2 - udep1), umax2)
+        u = xp.where(
+            zu <= udep2, umax1 + (zu - udep1) * (umax2 - umax1) / (udep2 - udep1), umax2
+        )
         u0, v0 = setu(u, mu), setu(S(40.0) / pi + bk.zeros(shv), mv)
     elif iwnd == 4:
         u0 = setu(S(35.0) * xp.tanh(zu / S(3000.0)), mu)
@@ -1276,8 +1361,12 @@ def wind(bk, cfg, *, zh, g):
         def alpha(z):
             return q * (S(1.0) + xp.cos(pi * (z - udep1) / (udep2 - udep1)))
 
-        u = xp.where(zu < udep1, umax, xp.where(zu < udep2, umax * xp.sin(alpha(zu)), zero))
-        v = xp.where(zv < udep1, zero, xp.where(zv < udep2, umax * xp.cos(alpha(zv)), umax))
+        u = xp.where(
+            zu < udep1, umax, xp.where(zu < udep2, umax * xp.sin(alpha(zu)), zero)
+        )
+        v = xp.where(
+            zv < udep1, zero, xp.where(zv < udep2, umax * xp.cos(alpha(zv)), umax)
+        )
         u0, v0 = setu(u, mu), setu(v, mv)
     elif iwnd == 6:
         uval, vval = {

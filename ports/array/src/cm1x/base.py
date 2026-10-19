@@ -471,10 +471,16 @@ def base(
     if float(psurf) < tsm:
         psurf = prs0s[3, 3]
     if float(tsurf) <= tsm:
-        tsurf = cg["cgs1"] * t0[1, 3, 3] + cg["cgs2"] * t0[2, 3, 3] + cg["cgs3"] * t0[3, 3, 3]
+        tsurf = (
+            cg["cgs1"] * t0[1, 3, 3]
+            + cg["cgs2"] * t0[2, 3, 3]
+            + cg["cgs3"] * t0[3, 3, 3]
+        )
     if float(qsurf) <= tsm:
         qsurf = (
-            cg["cgs1"] * qv0[1, 3, 3] + cg["cgs2"] * qv0[2, 3, 3] + cg["cgs3"] * qv0[3, 3, 3]
+            cg["cgs1"] * qv0[1, 3, 3]
+            + cg["cgs2"] * qv0[2, 3, 3]
+            + cg["cgs3"] * qv0[3, 3, 3]
         )
     thsurf = tsurf / ((psurf * rp00) ** rovcp)
 

@@ -50,7 +50,7 @@ def soundings(tmp_path_factory):
         shutil.copy(CONFIGS / cs / "input_sounding", out[cs])
     # winds varying with height, uneven levels, comma separators, d exponents
     lines = ["  1000.0 , 300.0, 14.0"]
-    for k in range(1, 61):
+    for k in range(1, 41):
         z = 37.0 * k + 3.1 * k * k + 0.4 * k * k * k
         th = 300.0 + 0.004 * z + 1.0e-7 * z * z
         qv = 14.0 * math.exp(-z / 2500.0)
@@ -69,12 +69,17 @@ def _grid(bk, cfg, grid):
     if grid != "deep":
         return pg
     nk = cfg.nk
-    dzs = [100.0 + 600.0 * (0.5 - 0.5 * math.cos(math.pi * min(k, 30) / 30)) for k in range(nk + 2)]
+    dzs = [
+        100.0 + 600.0 * (0.5 - 0.5 * math.cos(math.pi * min(k, 30) / 30))
+        for k in range(nk + 2)
+    ]
     zf1 = [-dzs[0], 0.0]
     for k in range(1, nk + 2):
         zf1.append(zf1[-1] + dzs[k])
     zh1 = [0.5 * (zf1[k] + zf1[k + 1]) for k in range(nk + 2)]
-    c2c = [0.0] + [(zf1[k] - zh1[k - 1]) / (zh1[k] - zh1[k - 1]) for k in range(1, nk + 2)]
+    c2c = [0.0] + [
+        (zf1[k] - zh1[k - 1]) / (zh1[k] - zh1[k - 1]) for k in range(1, nk + 2)
+    ]
     c1c = [0.0] + [1.0 - c for c in c2c[1:]]
     shp_s, shp_w = pg["zh"].shape, pg["zf"].shape
 
@@ -99,7 +104,12 @@ M1 = dict(imoist=1, ptype=1)
 RUNS = [
     # ---- soundings (zero wind unless noted)
     ("isnd1", "deep", dict(isnd=1), None),
-    ("isnd1 les_ib_windtunnel", "pbl", dict(isnd=1, iwnd=6, testcase=12, psolver=6), None),
+    (
+        "isnd1 les_ib_windtunnel",
+        "pbl",
+        dict(isnd=1, iwnd=6, testcase=12, psolver=6),
+        None,
+    ),
     ("isnd2", "deep", dict(isnd=2), None),
     ("isnd3", "deep", dict(isnd=3), None),
     ("isnd4 kessler", "deep", dict(M1, isnd=4), None),
@@ -109,12 +119,27 @@ RUNS = [
     ("isnd7 hurricane", "deep", dict(M1, isnd=7), "hurricane_axisymmetric"),
     ("isnd7 sea_breeze", "shallow", dict(M1, isnd=7, wbc=2, ebc=2), "sea_breeze"),
     ("isnd7 wind moist", "deep", dict(M1, isnd=7), "wind"),
-    ("isnd7 wind dry imove", "deep", dict(isnd=7, imove=1, umove=3.5, vmove=-1.25), "wind"),
-    ("isnd7 wind open bc", "deep", dict(M1, isnd=7, wbc=2, ebc=2, sbc=3, nbc=4), "wind"),
+    (
+        "isnd7 wind dry imove",
+        "deep",
+        dict(isnd=7, imove=1, umove=3.5, vmove=-1.25),
+        "wind",
+    ),
+    (
+        "isnd7 wind open bc",
+        "deep",
+        dict(M1, isnd=7, wbc=2, ebc=2, sbc=3, nbc=4),
+        "wind",
+    ),
     ("isnd17 + iwnd2", "deep", dict(M1, isnd=17, iwnd=2), "wind"),
     ("isnd17 dry + iwnd5", "deep", dict(isnd=17, iwnd=5), "hurricane_axisymmetric"),
     ("isnd8 dns_RayleighBenard", "pbl", dict(isnd=8), None),
-    ("isnd8 les_HurrBoundLayer", "pbl", dict(isnd=8, iwnd=8, testcase=6, lspgrad=3), None),
+    (
+        "isnd8 les_HurrBoundLayer",
+        "pbl",
+        dict(isnd=8, iwnd=8, testcase=6, lspgrad=3),
+        None,
+    ),
     (
         "isnd8 scm_HurrBoundLayer_tqnudge",
         "pbl",
@@ -124,15 +149,36 @@ RUNS = [
     (
         "isnd8 les_HurrCoast",
         "pbl",
-        dict(isnd=8, iwnd=8, testcase=15, imoist=1, ptype=0, eqtset=1, psolver=2,
-             hurr_rotate=-90.0, hurr_vg=35.0, lspgrad=3),
+        dict(
+            isnd=8,
+            iwnd=8,
+            testcase=15,
+            imoist=1,
+            ptype=0,
+            eqtset=1,
+            psolver=2,
+            hurr_rotate=-90.0,
+            hurr_vg=35.0,
+            lspgrad=3,
+        ),
         None,
     ),  # fmt: skip
     (
         "iwnd8 rotate lspgrad3 imove open",
         "pbl",
-        dict(isnd=8, iwnd=8, hurr_rotate=30.0, lspgrad=3, imove=1, umove=3.0, vmove=-1.5,
-             wbc=2, ebc=2, sbc=3, nbc=3),
+        dict(
+            isnd=8,
+            iwnd=8,
+            hurr_rotate=30.0,
+            lspgrad=3,
+            imove=1,
+            umove=3.0,
+            vmove=-1.5,
+            wbc=2,
+            ebc=2,
+            sbc=3,
+            nbc=3,
+        ),
         None,
     ),  # fmt: skip
     ("isnd9", "deep", dict(isnd=9, iwnd=6), None),
@@ -203,7 +249,9 @@ for _w in range(12):
         )
     )  # fmt: skip
 for _tc in (0, 1, 2, 4, 9, 11, 12, 14, 8):
-    RUNS.append((f"iwnd6 testcase {_tc}", "pbl", dict(isnd=1, iwnd=6, testcase=_tc), None))
+    RUNS.append(
+        (f"iwnd6 testcase {_tc}", "pbl", dict(isnd=1, iwnd=6, testcase=_tc), None)
+    )
 
 
 def _cfg(grid, over):
@@ -277,3 +325,15 @@ def test_base_testcase_forcing_raises(bk):
     kw = {k: pg[k] for k in ("zh", "mh", "rmh", "c1", "c2", "zf", "mf")}
     with pytest.raises(NotImplementedError, match="forcing"):
         base(bk, cfg, **kw, cg=pg)
+
+
+@pytest.mark.parametrize("isnd", [4, 10])
+def test_init3d_copies_base_cloud_water(bk, isnd):
+    """init3d.F: for the saturated soundings (ptype >= 1) qa(nqc) = qc0."""
+    from cm1x.state import initialize
+
+    cfg = _cfg("shallow", dict(M1, isnd=isnd, iinit=0))
+    _g, b, st = initialize(cfg, bk)
+    qc0 = np_(bk, b["qc0"])
+    assert np.abs(qc0).max() > 0
+    np.testing.assert_array_equal(np_(bk, st["qa"])[cfg.nqc - 1], qc0)
