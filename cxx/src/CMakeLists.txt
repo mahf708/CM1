@@ -7,6 +7,13 @@ list(FILTER CM1K_SOURCES EXCLUDE REGEX ".*/cm1k_main\\.cpp$")
 add_library(cm1k ${CM1K_SOURCES})
 target_include_directories(cm1k PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cm1k ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(cm1k PUBLIC ekat::KokkosUtils ekat::Pack ekat::Algorithm)
+# MPI domain decomposition (share/cm1k_comm.hpp). Device buffers are staged
+# through host mirrors, so CUDA-aware MPI is not required.
+if(CM1K_ENABLE_MPI)
+  find_package(MPI REQUIRED COMPONENTS CXX)
+  target_link_libraries(cm1k PUBLIC MPI::MPI_CXX)
+  target_compile_definitions(cm1k PUBLIC CM1K_HAVE_MPI)
+endif()
 # glibc's libmvec: gfortran vectorizes some table-building loops of the
 # Fortran reference through it (e.g. sfclayinit), so the host-side table
 # builders call the same entry points to stay bitwise identical.

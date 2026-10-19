@@ -1,13 +1,15 @@
 #ifndef CM1K_GRID_HPP
 #define CM1K_GRID_HPP
 
+#include "cm1k_comm.hpp"
 #include "cm1k_farray.hpp"
 #include "cm1k_namelist.hpp"
 
 namespace cm1k {
 
-// Index bounds, named exactly as in CM1's `input` module (serial run, so
-// ni=nx, nj=ny, nk=nz). Arrays are allocated as in cm1.F, e.g.
+// Index bounds, named exactly as in CM1's `input` module (serial run:
+// ni=nx, nj=ny; MPI: this rank's ni, nj from its Decomp; nk=nz). Arrays
+// are allocated as in cm1.F, e.g.
 //   ua(ib:ie+1,jb:je,kb:ke), wa(ib:ie,jb:je,kb:ke+1), qa(ibm:iem,...,numq),
 //   tkea(ibt:iet,jbt:jet,kbt:ket), kmh(ibc:iec,jbc:jec,kbc:kec).
 struct Bounds {
@@ -22,6 +24,8 @@ struct Bounds {
 
   // Same logic as cm1.F (ngxy/ngz) and param.F (ibm/ibt/ibc, numq).
   static Bounds from_namelist(const Namelist& nl);
+  // MPI: the local bounds of one rank (ni = d.ni, nj = d.nj).
+  static Bounds from_namelist(const Namelist& nl, const Decomp& d);
 };
 
 // Grid metrics (port of the grid parts of param.F). For now only the arrays

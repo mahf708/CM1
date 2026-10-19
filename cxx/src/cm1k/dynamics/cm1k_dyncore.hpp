@@ -90,6 +90,13 @@ public:
   Dyncore();
   ~Dyncore();
 
+  // MPI domain decomposition (share/cm1k_comm.hpp): the halo exchanges and
+  // reductions of comm.F at the Fortran call sites, bc.F's `#ifdef MPI`
+  // branches. Call before setup(); the Comm must outlive the Dyncore. A
+  // serial Comm (or none) keeps the serial code paths.
+  void set_comm(Comm* c) { m_comm = c; }
+  bool mpi() const { return m_comm && m_comm->mpi(); }
+
   // Sets up the work arrays and the derived quantities (tauh/taus/tauf,
   // dtu0/dtv0, nsound, rdx...) from the grid. Call after the grid and base
   // state are filled.
@@ -188,6 +195,9 @@ public:
   //     heating / TKE terms to solve1.
   // Public: it launches device lambdas.
   void pbl(double rtime);
+  // DynConfig::check for MPI runs: throws for every option whose MPI code
+  // path (exchanges, reductions) is not ported or not validated
+  void check_mpi() const;
   // solve3.F/init3d.F: rf from rho on 0..ni+1, 0..nj+1 (public: it launches
   // device lambdas, which nvcc does not allow in private member functions)
   void compute_rf();
@@ -261,6 +271,7 @@ private:
   State m_s;
   std::unique_ptr<Advection> m_adv;
 
+  Comm* m_comm = nullptr;
   bool m_setup = false;
   int m_nsound = 0;
   Real m_dt = 0;

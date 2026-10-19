@@ -20,18 +20,25 @@
 
 namespace cm1k {
 
-// The cm1k model: one CM1 domain on one device (no MPI yet).
+// The cm1k model: one CM1 domain on one device, or, with MPI, this rank's
+// subdomain of CM1's nodex x nodey decomposition (share/cm1k_comm.hpp).
 //
 // Typical use (C++ or Python):
 //   Model m(Namelist::from_file("namelist.input"));
 //   m.init_from_dump(DumpReader::step_dir(ref, 0));   // or m.init() (native)
 //   for (int n = 0; n < 10; ++n) m.step();
 //   m.write_dump(out_dir);
+// MPI (CM1K_ENABLE_MPI): Model m(nl, Decomp::make(MPI_COMM_WORLD, nx, ny)),
+// then init_from_dump from this rank's dump (rank_RRRR/step_NNNNNN, see
+// cases/README.md). Native init() is serial only.
 class Dyncore;
 
 class Model {
 public:
   explicit Model(const Namelist& nl);
+  // This rank's part of the decomposition d (Decomp::make). A serial Decomp
+  // (Decomp::serial) gives the same model as Model(nl).
+  Model(const Namelist& nl, const Decomp& d);
   ~Model();
   Model(Model&&) noexcept;
   Model& operator=(Model&&) noexcept;
@@ -104,6 +111,10 @@ public:
   // The dynamical core (set up on the first step()).
   Dyncore& dyncore();
 
+  // The decomposition and halo exchanges (serial: mpi() == false).
+  Comm& comm() { return *m_comm; }
+  bool mpi() const { return m_comm->mpi(); }
+
   int nstep() const { return m_nstep; }
   double mtime() const { return m_mtime; }
   Real dt() const { return m_dt; }
@@ -135,6 +146,7 @@ private:
   double m_mtime = 0;
   Real m_dt = 0;
 
+  std::unique_ptr<Comm> m_comm;     // serial unless built from an MPI Decomp
   std::unique_ptr<Dyncore> m_dyn;   // created/started lazily in step()
   bool m_dyn_started = false;
   std::shared_ptr<void> m_mp;       // microphysics work arrays

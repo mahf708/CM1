@@ -34,6 +34,8 @@ struct SoundArgs {
   // open boundaries: phase speeds, options and arrays of the open-bc block
   // at the start of each acoustic step (nullptr: no open boundary)
   const SoundOpenBc* obc = nullptr;
+  // MPI: sound.F's comm_1p exchange of ppd between acoustic steps
+  Comm* comm = nullptr;
 };
 
 void sound(const BcParams& bc, const SoundArgs& a);

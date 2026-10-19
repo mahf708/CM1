@@ -130,6 +130,7 @@ void sound(const BcParams& bc, const SoundArgs& a) {
     if (a.obc) sound_openbc(*a.obc, u3d, uten, v3d, vten, dts);
 
     //  integrate u,v forward in time (Cartesian grid without terrain)
+    if (a.comm && n != 1) a.comm->comm_1p_end(ppd, "ppd");   // comm_1p_end1 (+ end2)
     Kokkos::parallel_for("sound_uv", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       u3d(i, j, k) = u3d(i, j, k) + dtu(i, j) * (uten(i, j, k)
                      - tem1 * (ppd(i, j, k) - ppd(i - 1, j, k)) * uf(i)
@@ -209,6 +210,7 @@ void sound(const BcParams& bc, const SoundArgs& a) {
     });
 
     if (n < nloop) bcp(bc, ppd);
+    if (a.comm && n < nloop) a.comm->comm_1p_start(ppd, "ppd");
 
     //  time-averaged velocities
     if (n < nloop) {

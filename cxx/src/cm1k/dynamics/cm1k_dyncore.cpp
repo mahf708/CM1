@@ -32,6 +32,19 @@ double qp_sum(const std::vector<double>& v) {
   return (double)s;
 #endif
 }
+// q3d(:,:,:,n) as an FArray3
+FArray3 qslice(const FArray4& q, int n, const Bounds& B) {
+  return FArray3(Kokkos::subview(q.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm});
+}
+std::string qslot(int n) { return "q3d_" + std::to_string(n); }
+
+// MPI_IALLREDUCE / MPI_ALLREDUCE of per-level sums (host copies)
+std::vector<double> host_levels(const FArray1& d, int nk) {
+  auto h = d.to_host();
+  std::vector<double> v(nk);
+  for (int k = 1; k <= nk; ++k) v[k - 1] = h(k);
+  return v;
+}
 } // namespace
 
 //===========================================================================
@@ -206,6 +219,19 @@ void DynConfig::check() const {
 }
 
 //===========================================================================
+// MPI runs: what is ported and validated against the MPI Fortran
+void Dyncore::check_mpi() const {
+  auto fail = [](const std::string& what) {
+    throw std::runtime_error("cm1k dyncore: not ported with MPI (run serially): " + what);
+  };
+  const auto& c = m_cfg;
+  for (int v : {c.wbc, c.ebc, c.sbc, c.nbc})
+    if (v != 1) fail("non-periodic lateral boundaries (wbc/ebc/sbc/nbc != 1)");
+  if (c.pbl) fail("boundary-layer schemes (cm1setup=2, ipbl>=1)");
+  if (c.sfc_opt.has_layer()) fail("surface layers (sfcmodel>=1)");
+  if (c.diff2()) fail("2nd-order diffusion (idiff=1, difforder=2)");
+}
+
 Dyncore::Dyncore() = default;
 Dyncore::~Dyncore() = default;
 
@@ -216,6 +242,11 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
   m_bc = BcParams::make(grid.b, nl);
   m_obc = OpenBcParams::make(grid, nl);
   m_obc.check();
+  if (mpi()) {
+    check_mpi();
+    m_bc.set_mpi(m_comm->edges());
+    if (m_cfg.turb || m_cfg.pbl) m_cfg.turb_opt.set_mpi(*m_comm);
+  }
   const auto& B = grid.b;
   if (B.nk < 3) throw std::runtime_error("cm1k dyncore: nz must be >= 3");
 
@@ -282,6 +313,11 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
   for (int j = 1; j <= nj; ++j) min_dy = std::min(min_dy, yf(j + 1) - yf(j));
   for (int k = 1; k <= nk; ++k) for (int j = 1; j <= nj; ++j) for (int i = 1; i <= ni; ++i)
     min_dz = std::min(min_dz, zf(i, j, k + 1) - zf(i, j, k));
+  if (mpi()) {   // param.F: MPI_ALLREDUCE(..., MPI_MIN)
+    m_comm->allreduce_min(&min_dx, 1);
+    m_comm->allreduce_min(&min_dy, 1);
+    m_comm->allreduce_min(&min_dz, 1);
+  }
   m_nsound = sound_nsound(m_cfg.psolver, B.nx, B.ny, min_dx, min_dy, min_dz, m_cfg.csound, double(m_dt));
 
   // param.F: Rayleigh damping coefficients (cm1k_rdamp_cor.cpp)
@@ -334,6 +370,7 @@ void Dyncore::setup(const Namelist& nl, const Constants& c, Grid& grid, const Ba
 
   AdvOptions ao = AdvOptions::from_namelist(nl);
   ao.check();
+  if (mpi()) ao.set_mpi(*m_comm);
   m_adv = std::make_unique<Advection>(m_g, m_b, ao);
   m_setup = true;
 }
@@ -401,9 +438,8 @@ void Dyncore::start_from_state() {
         sum = sum + rho(i, j, k) * ruh(i) * rvh(j) * rmh(i, j, k);
       d(k) = sum;
     });
-    auto h = dumk3.to_host();
-    std::vector<double> v(nk);
-    for (int k = 1; k <= nk; ++k) v[k - 1] = h(k);
+    std::vector<double> v = host_levels(dumk3, nk);
+    if (mpi()) m_comm->allreduce_sum(v.data(), nk);   // init3d.F: MPI_ALLREDUCE of dumk1
     m_mass1 = qp_sum(v);
   }
 }
@@ -633,9 +669,16 @@ void Dyncore::pbl(double /*rtime*/) {
   default:
     unsupported("ipbl=" + std::to_string(m_cfg.pbl_opt.ipbl));
   }
-  // use_pbl: boundary conditions of the u/v tendencies
+  // use_pbl: boundary conditions of the u/v tendencies (turb.F: bcs and
+  // comm_1s start for both, then the ends)
   bcs(m_bc, m_pt.upten);
+  if (mpi()) m_comm->comm_1s_start(m_pt.upten, "upten");
   bcs(m_bc, m_pt.vpten);
+  if (mpi()) {
+    m_comm->comm_1s_start(m_pt.vpten, "vpten");
+    m_comm->comm_1s_end(m_pt.upten, "upten");
+    m_comm->comm_1s_end(m_pt.vpten, "vpten");
+  }
 }
 
 //===========================================================================
@@ -860,6 +903,7 @@ void Dyncore::solve2() {
       });
     }
     bcp(m_bc, t11);
+    if (mpi()) m_comm->comm_1s_start(t11, "t11");
 
     //  Set RK tendency arrays
     Kokkos::parallel_for("ten_rk", box3(1, ni + 1, 1, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
@@ -867,6 +911,11 @@ void Dyncore::solve2() {
       vten_(i, j, k) = vten1_(i, j, k);
       wten_(i, j, k) = wten1_(i, j, k);
     });
+    if (mpi() && nrk >= 2) {
+      m_comm->comm_3u_end(u3d, "u3d");
+      m_comm->comm_3v_end(v3d, "v3d");
+      m_comm->comm_3w_end(w3d, "w3d");
+    }
 
     //  Get rru,rrv,rrw,divx (without terrain)
     Kokkos::parallel_for("rru", box3(0, ni + 2, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
@@ -896,6 +945,12 @@ void Dyncore::solve2() {
     //  open boundaries: nudge inflow u/v (solve2.F: after Coriolis, before advection)
     openbc_nudge();
 
+    if (mpi() && nrk >= 2) {
+      m_comm->comm_1s_end(rho, "rho");
+      m_comm->getcorner(rho);
+      bcs2(m_bc, rho);
+    }
+
     //  advection of u, v, w
     m_adv->advu(nrk, dttmp, fl, u3d, uten);
     m_adv->advv(nrk, dttmp, fl, v3d, vten);
@@ -907,6 +962,7 @@ void Dyncore::solve2() {
     });
 
     //  Pressure equation
+    if (mpi() && nrk >= 2) m_comm->comm_1s_end(pp3d, "pp3d");
     Kokkos::parallel_for("sadv_pi", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
       const Real tem = pi0(1, 1, k);
       sadv_(i, j, k) = tem + pp3d_(i, j, k);
@@ -928,6 +984,10 @@ void Dyncore::solve2() {
       a.ppi = ppi; a.pp3d = pp3d; a.piadv = sadv; a.ppten = ppten; a.ppx = ppx;
       a.thv = t11; a.ppterm = t22;
       if (m_sobc.rad.radbcw.is_allocated()) a.obc = &m_sobc;
+      if (mpi()) {
+        m_comm->comm_1s_end(t11, "t11");
+        a.comm = m_comm;
+      }
       sound(m_bc, a);
     }
 
@@ -965,6 +1025,7 @@ void Dyncore::solve2() {
     });
 
     //  THETA-equation
+    if (mpi() && nrk >= 2) m_comm->comm_3s_end(th3d, "th3d");
     if (cfg.imoist == 1 && cfg.eqtset == 2) {
       Kokkos::parallel_for("thten_m", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         thten_(i, j, k) = thten1_(i, j, k) - t11_(i, j, k) * thterm_(i, j, k);
@@ -1003,6 +1064,7 @@ void Dyncore::solve2() {
         aa.hadvorder = cfg.hadvordrs; aa.vadvorder = cfg.vadvordrs;
         auto qan = FArray3(Kokkos::subview(qa.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm});
         auto q3n = FArray3(Kokkos::subview(q3d.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm});
+        if (mpi() && nrk >= 2) m_comm->comm_3s_end(q3n, qslot(n));
         m_adv->advs(nrk, aa, dttmp, fl, qan, q3n, sten);
         Kokkos::parallel_for("q3d", box3(1, ni, 1, nj, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
           q3n(i, j, k) = qan(i, j, k) + dttmp * sten_(i, j, k);
@@ -1013,6 +1075,8 @@ void Dyncore::solve2() {
 
     //  Get pressure, density
     bool dopf = false;
+    std::vector<double> pv3, pv4;   // apmasscon: per-level sums
+    int hp3 = -1, hp4 = -1;
     const Real p00 = phys::p00;
     if (cfg.imoist == 1) {
       const int nqv = cfg.nqv, nqc = cfg.nqc;
@@ -1054,20 +1118,36 @@ void Dyncore::solve2() {
         }
         dumk3_(k) = d3; dumk4_(k) = d4;
       });
+      pv3 = host_levels(dumk3, nk);
+      pv4 = host_levels(dumk4, nk);
+      if (mpi()) {   // solve2.F: MPI_IALLREDUCE of dumk3, dumk4 (waited for below)
+        hp3 = m_comm->iallreduce_sum(pv3.data(), nk);
+        hp4 = m_comm->iallreduce_sum(pv4.data(), nk);
+      }
       dopf = true;
     }
 
-    //  bcs
+    //  bcs (MPI: and start the exchanges, finished in the next RK stage
+    //  or in solve3)
+    Comm* cm = mpi() ? m_comm : nullptr;
     bcu(m_bc, u3d);
+    if (cm) cm->comm_3u_start(u3d, "u3d");
     bcv(m_bc, v3d);
+    if (cm) cm->comm_3v_start(v3d, "v3d");
     bcw(m_bc, w3d, 1);
+    if (cm) cm->comm_3w_start(w3d, "w3d");
     if (nrk < nrkmax) {
       bcp(m_bc, rho);
+      if (cm) cm->comm_1s_start(rho, "rho");
       bcp(m_bc, pp3d);
+      if (cm) cm->comm_1s_start(pp3d, "pp3d");
       bcs(m_bc, th3d);
+      if (cm) cm->comm_3s_start(th3d, "th3d");
       if (cfg.imoist == 1)
-        for (int n = 1; n <= cfg.numq; ++n)
-          bcs(m_bc, FArray3(Kokkos::subview(q3d.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm}));
+        for (int n = 1; n <= cfg.numq; ++n) {
+          bcs(m_bc, qslice(q3d, n, B));
+          if (cm) cm->comm_3s_start(qslice(q3d, n, B), qslot(n));
+        }
     }
 
     //  TKE (solve2.F ~1709): wten = tketen, advection of tke3d, step forward
@@ -1076,8 +1156,10 @@ void Dyncore::solve2() {
       Kokkos::parallel_for("wten_tke", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         wten_(i, j, k) = tketen_(i, j, k);
       });
+      if (cm && nrk >= 2) cm->comm_3t_end(tke3d, "tke3d");
       m_adv->advw(nrk, dttmp, fl, tke3d, wten, cfg.hadvordrs, cfg.vadvordrs, m_adv->options().advwenos);
-      turb::tke_rk_update(cfg.turb_opt, B, dttmp, s.tkea, wten, tke3d);
+      turb::tke_rk_update(cfg.turb_opt, B, dttmp, s.tkea, wten, tke3d);   // ends with bcw(tke3d,1)
+      if (cm) cm->comm_3t_start(tke3d, "tke3d");
     }
 
     //  qke advection for the MYNN PBL (solve2.F ~1806)
@@ -1085,11 +1167,12 @@ void Dyncore::solve2() {
 
     //  Finish pressure, density (apmasscon)
     if (dopf) {
-      auto h3 = dumk3.to_host(), h4 = dumk4.to_host();
-      std::vector<double> v3(nk), v4(nk);
-      for (int k = 1; k <= nk; ++k) { v3[k - 1] = h3(k); v4[k - 1] = h4(k); }
-      m_mass2 = qp_sum(v3);
-      const double p2 = qp_sum(v4);
+      if (cm) {
+        cm->iwait(hp3);
+        cm->iwait(hp4);
+      }
+      m_mass2 = qp_sum(pv3);
+      const double p2 = qp_sum(pv4);
       const Real tem = (std::pow(m_mass1 / m_mass2, c.rddcv) - 1.0) * p2 / double(long(B.nx) * long(B.ny) * long(B.nz));
       if (cfg.imoist == 1) {
         const int nqv = cfg.nqv;
@@ -1139,6 +1222,10 @@ void Dyncore::advect_qke(int nrk, Real dttmp) {
     });
   }
   bcs(m_bc, qke3d);
+  if (mpi()) {
+    m_comm->comm_3s_start(qke3d, "qke3d");
+    m_comm->comm_3s_end(qke3d, "qke3d");
+  }
   AdvsArgs aa;
   aa.wflag = 1; aa.pdef = 1; aa.pdefweno = 1; aa.weps = 10.0 * phys::epsilon;
   aa.diffit = (m_cfg.idiff == 1 && m_cfg.difforder == 6) ? 1 : 0;
@@ -1180,11 +1267,17 @@ void Dyncore::solve3() {
   const auto& cfg = m_cfg;
   auto& s = m_s;
 
+  // begin message passing (MPI: the ends are below, before each copy)
+  Comm* cm = mpi() ? m_comm : nullptr;
   bcp(m_bc, pp3d);
+  if (cm) cm->comm_1s_start(pp3d, "pp3d");
   bcs(m_bc, th3d);
+  if (cm) cm->comm_3s_start(th3d, "th3d");
   if (cfg.imoist == 1)
-    for (int n = 1; n <= cfg.numq; ++n)
-      bcs(m_bc, FArray3(Kokkos::subview(q3d.view(), Kokkos::ALL, Kokkos::ALL, Kokkos::ALL, n - 1), {B.ibm, B.jbm, B.kbm}));
+    for (int n = 1; n <= cfg.numq; ++n) {
+      bcs(m_bc, qslice(q3d, n, B));
+      if (cm) cm->comm_3s_start(qslice(q3d, n, B), qslot(n));
+    }
 
   auto pp3d_ = pp3d; auto ppx_ = ppx; auto th3d_ = th3d; auto q3d_ = q3d;
   auto u3d_ = u3d; auto v3d_ = v3d; auto w3d_ = w3d;
@@ -1192,7 +1285,9 @@ void Dyncore::solve3() {
     ppx_(i, j, k) = pp3d_(i, j, k) + ppx_(i, j, k);
   });
   bcp(m_bc, ppx);
+  if (cm) cm->comm_1p_start(ppx, "ppx");
   bcp(m_bc, s.rho);
+  if (cm) cm->comm_1s_start(s.rho, "rho");
 
   //  diabatic tendencies for next timestep
   if (cfg.imoist == 1 && cfg.eqtset == 2 && cfg.ptype >= 1) {
@@ -1208,25 +1303,44 @@ void Dyncore::solve3() {
   }
 
   //  Equate the two arrays
+  if (cm) {
+    cm->comm_3u_end(u3d, "u3d");
+    cm->comm_3v_end(v3d, "v3d");
+    cm->comm_3w_end(w3d, "w3d");
+  }
   auto ua = s.ua; auto va = s.va; auto wa = s.wa; auto ppi = s.ppi; auto tha = s.tha; auto qa = s.qa;
   Kokkos::parallel_for("equate_uvw", box3(0, ni + 2, 0, nj + 2, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     ua(i, j, k) = u3d_(i, j, k);
     va(i, j, k) = v3d_(i, j, k);
     wa(i, j, k) = w3d_(i, j, k);
   });
+  //  TKE (solve3.F ~563)
+  if (cfg.turb) {
+    if (cm) cm->comm_3t_end(tke3d, "tke3d");
+    turb::tke_copy(B, tke3d, s.tkea);
+  }
+  if (cm) {
+    cm->comm_1s_end(pp3d, "pp3d");
+    cm->comm_3s_end(th3d, "th3d");
+  }
   Kokkos::parallel_for("equate_s", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
     ppi(i, j, k) = pp3d_(i, j, k);
     tha(i, j, k) = th3d_(i, j, k);
   });
   if (cfg.imoist == 1) {
-    for (int n = 1; n <= cfg.numq; ++n)
+    for (int n = 1; n <= cfg.numq; ++n) {
+      if (cm) cm->comm_3s_end(qslice(q3d, n, B), qslot(n));
       Kokkos::parallel_for("equate_q", box3(0, ni + 1, 0, nj + 1, 1, nk), KOKKOS_LAMBDA(int i, int j, int k) {
         qa(i, j, k, n) = q3d_(i, j, k, n);
       });
+    }
   }
-
-  //  TKE (solve3.F ~563)
-  if (cfg.turb) turb::tke_copy(B, tke3d, s.tkea);
+  if (cm) {
+    cm->comm_1p_end(ppx, "ppx");
+    cm->comm_1s_end(s.rho, "rho");
+    cm->getcorner(s.rho);
+    bcs2(m_bc, s.rho);
+  }
 
   //  rr, rf
   auto rr_ = rr; auto rho = s.rho;

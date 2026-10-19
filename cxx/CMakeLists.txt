@@ -18,6 +18,7 @@ endif()
 option(CM1K_ENABLE_TESTS          "Build cm1k tests" ON)
 option(CM1K_ENABLE_FORTRAN_BRIDGE "Build the CM1 Fortran sources as a library for component tests" ON)
 option(CM1K_ENABLE_PYTHON         "Build the pybind11 Python module" OFF)
+option(CM1K_ENABLE_MPI            "MPI domain decomposition (CM1's nodex x nodey layout, halo exchanges)" OFF)
 set(CM1K_REF_DIR "" CACHE PATH "Directory with Fortran reference dumps (see cases/README.md)")
 
 # Value-safe floating point: we compare against the Fortran to round-off,
