@@ -533,7 +533,10 @@ TEST_CASE("pbl options: unsupported values throw", "[pbl]") {
     REQUIRE_NOTHROW(y.check());
   }
   bad([](pbl::Options& x) { x.ipbl = 1; x.sfcmodel = 0; });
-  bad([](pbl::Options& x) { x.terrain_flag = true; });
+  // terrain: YSU, the simple scheme and GFS-EDMF are ported; MYNN, MYJ throw
+  { pbl::Options y = o; y.terrain_flag = true; REQUIRE_NOTHROW(y.check()); }
+  bad([](pbl::Options& x) { x.terrain_flag = true; x.ipbl = 4; x.sfcmodel = 6; });
+  bad([](pbl::Options& x) { x.terrain_flag = true; x.ipbl = 6; x.sfcmodel = 7; });
   bad([](pbl::Options& x) { x.imoist = 1; x.ptype = 2; });
   // param.F: use_pbl for cm1setup=2,4 with ipbl>=1; l_inf=0 for ipbl/=2
   const auto n = pbl::Options::from_namelist(

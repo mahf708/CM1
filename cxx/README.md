@@ -103,14 +103,26 @@ and momentum advection (including WENO, `pdefx/y/z`, 6th-order diffusion),
 the acoustic solver (`psolver = 3`, with `bcwsfc`), open-radiative
 boundaries (`ssopenbc*`), Rayleigh damping (`irdamp`/`hrdamp = 1`),
 Coriolis and `lspgrad = 1`, the cm1r19 `termod1` pressure-gradient term,
-Kessler, and the LES TKE scheme (`sgsmodel = 1`, `doimpl = 0/1`, bbc = 1).
+Kessler, the LES TKE scheme (`sgsmodel = 1`, `doimpl = 0/1`, bbc = 1 or
+bbc = 3 with the surface layer `sfcmodel = 1`), the PBL schemes YSU
+(`ipbl = 1`), the simple scheme (`ipbl = 2`) and GFS-EDMF (`ipbl = 3`) with
+the surface layers `sfcmodel = 1, 2, 3` and SLAB, and RRTMG (`radopt = 2`).
+turb.F's terrain lines of the surface block are the only terrain-specific
+physics: `za = zh(k=1) - zs` for `getcecd`/`sfcdiags` and `hpbl = hpbl - zs`
+before every surface layer call (also for the PBL schemes' own `hpbl`, and
+for the LES, where `hpbl` keeps losing `zs` every step); `sfcstress`,
+`radiation_driver.F` and the PBL drivers have no terrain branch and read
+`zh`, `zf`, `dz*rmh` and the `cgs`/`cgt` pressures per column, as the ports
+do (GFS-EDMF gets `z = zf`, heights above sea level).
 Unported combinations throw: `difforder = 2` (diff2.F stops), `imove = 1`,
-`itern = 0` or 4, the surface layer (any `sfcmodel >= 1`, incl. MYNN, MYJ,
-GFDL), PBL schemes (`cm1setup = 2`, every `ipbl`), radiation (`radopt = 2`),
-and everything param.F already refuses with terrain.
+`itern = 0` or 4, the GFDL (`sfcmodel = 4`), MYNN (`sfcmodel = 6`,
+`ipbl = 4, 5`) and MYJ (`sfcmodel = 7`, `ipbl = 6`) schemes, and everything
+param.F already refuses with terrain.
 Tests: cases `nh_mountain_waves`, `nh_mountain_waves_long`,
-`kessler_terrain_tke` and `kessler_terrain_tke_openbc` (init, step from
-dump, step from `Model::init`), and the `[terrain]` component tests
+`kessler_terrain_tke`, `kessler_terrain_tke_openbc`,
+`kessler_terrain_tke_sfc`, `pbl2_terrain_kessler`, `ysu_terrain_dry`,
+`gfs_terrain_dry` and `rrtmg_ysu_terrain` (init, step from dump, step from
+`Model::init`), and the `[terrain]` component tests
 (adv.F, turb.F/turbtend.F with random metrics). Periodic halo copies wrap their source index (`pwrap` in
 `dynamics/cm1k_bc.hpp`), which also makes them correct for `nj < ngxy`
 (the 2D `ny = 1` case).

@@ -386,6 +386,58 @@ TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke_openbc (op
   run_case("kessler_terrain_tke_openbc", 0.0, true, true);
 }
 
+TEST_CASE("dyncore + terrain + LES TKE + surface layer + Kessler: kessler_terrain_tke_sfc vs Fortran",
+          "[dyn][step][kessler][turb][terrain][sfc]") {
+  // kessler_terrain_tke with surface drag (sfcmodel=1, bbc=3, isfcflx=0):
+  // turb.F's terrain lines of the surface block (za = zh-zs for getcecd and
+  // sfcdiags, hpbl = hpbl-zs every step)
+  run_case("kessler_terrain_tke_sfc", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + terrain + LES TKE + surface layer + Kessler: kessler_terrain_tke_sfc from Model::init (no dump)",
+          "[dyn][step][init][kessler][turb][terrain][sfc]") {
+  run_case("kessler_terrain_tke_sfc", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + terrain + YSU + revised MM5 surface layer + SLAB: ysu_terrain_dry vs Fortran",
+          "[dyn][step][pbl][sfc][ysu][terrain]") {
+  // ysu_dry over the itern=3 hill: hpbl-zs before the surface layer, the
+  // terrain branches of calcdef/turbtend under the PBL path, zh/zf/dz per column
+  run_case("ysu_terrain_dry", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + terrain + YSU + revised MM5 surface layer + SLAB: ysu_terrain_dry from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][ysu][terrain]") {
+  run_case("ysu_terrain_dry", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + terrain + RRTMG + YSU + MM5 surface layer + SLAB + Kessler: rrtmg_ysu_terrain vs Fortran",
+          "[dyn][step][pbl][sfc][ysu][rrtmg][terrain]") {
+  // rrtmg_ysu_kessler over the itern=3 hill (radiation_driver.F has no
+  // terrain branch: dz8w = dz*rmh and the cgs/cgt pressures per column)
+  run_case("rrtmg_ysu_terrain", 0.0, false, true);
+}
+
+TEST_CASE("dyncore + terrain + RRTMG + YSU + Kessler: rrtmg_ysu_terrain from Model::init (no dump)",
+          "[dyn][step][init][pbl][sfc][ysu][rrtmg][terrain]") {
+  run_case("rrtmg_ysu_terrain", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + terrain + simple PBL + surface layer + Kessler: pbl2_terrain_kessler vs Fortran",
+          "[dyn][step][pbl][sfc][terrain]") {
+  // pbl2_kessler over the itern=3 hill: gethpbl2 on zh, za = zh-zs and
+  // hpbl-zs, turbparam_horiz's tlh with zs, turbuz/turbvz terrain branches
+  run_case("pbl2_terrain_kessler", 0.0, false, true);
+  run_case("pbl2_terrain_kessler", 0.0, true, true);
+}
+
+TEST_CASE("dyncore + terrain + GFS-EDMF + revised MM5 surface layer + SLAB: gfs_terrain_dry vs Fortran",
+          "[dyn][step][pbl][sfc][terrain]") {
+  // gfs_dry over the itern=3 hill (BL_GFSEDMF gets z = zf, heights above sea level)
+  run_case("gfs_terrain_dry", 0.0, false, true);
+  run_case("gfs_terrain_dry", 0.0, true, true);
+}
+
 TEST_CASE("dyncore + RRTMG + YSU + MM5 surface layer + SLAB + Kessler: rrtmg_ysu_kessler vs Fortran",
           "[dyn][step][pbl][sfc][ysu][kessler][rrtmg]") {
   // radopt=2 (RRTMG LW + SW every dtrad = 36 s = 6 steps, daytime: 21 UTC
@@ -537,7 +589,8 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   REQUIRE_THROWS(DynConfig::from_namelist(nl).check());
   nl.set("psolver", "3");
   REQUIRE_NOTHROW(DynConfig::from_namelist(nl).check());
-  // terrain: ported on these paths; diff2, imove, the surface layer, PBL schemes and radiation throw
+  // terrain: ported on these paths; diff2, imove and the MYNN, MYJ and GFDL
+  // PBL/surface schemes throw
   nl.set("terrain_flag", ".true.");
   REQUIRE_NOTHROW(DynConfig::from_namelist(nl).check());
   for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{{"imove", "1"}, {"idiff", "1"}}) {
@@ -553,20 +606,28 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
     REQUIRE_NOTHROW(DynConfig::from_namelist(x).check());
     auto sf = Namelist::from_file(cm1k::testing::case_namelist("cbl_sfc"));
     sf.set("terrain_flag", ".true.");
-    REQUIRE_THROWS(DynConfig::from_namelist(sf).check());
-    // every PBL scheme (ipbl=1..6), surface layer (sfcmodel 1..7) and RRTMG throws with terrain
+    REQUIRE_NOTHROW(DynConfig::from_namelist(sf).check());
+    // with terrain: sfcmodel=1, 2, 3 with ipbl=1, 2, 3 and RRTMG are ported;
+    // MYNN (sfcmodel=6, ipbl=4, 5), MYJ (7, 6) and GFDL (4) throw
     for (const char* c : {"pbl2_kessler", "ysu_kessler", "mynn25_kessler", "myj_kessler", "gfs_kessler",
-                          "rrtmg_ysu_kessler", "rrtmg_gfs_kessler"}) {
+                          "gfs_dry", "gfs_sfclay_land", "rrtmg_ysu_kessler", "rrtmg_gfs_kessler"}) {
       auto t = Namelist::from_file(cm1k::testing::case_namelist(c));
       REQUIRE_NOTHROW(DynConfig::from_namelist(t).check());
       t.set("terrain_flag", ".true.");
       INFO(c << " with terrain");
-      REQUIRE_THROWS(DynConfig::from_namelist(t).check());
+      const int sm = t.geti("sfcmodel", 0);
+      if (sm == 4 || sm == 6 || sm == 7) REQUIRE_THROWS(DynConfig::from_namelist(t).check());
+      else                               REQUIRE_NOTHROW(DynConfig::from_namelist(t).check());
     }
+    // RRTMG with terrain needs what it needs without (param.F: a surface model)
     auto tr = Namelist::from_file(cm1k::testing::case_namelist("kessler_terrain_tke"));
     REQUIRE_NOTHROW(DynConfig::from_namelist(tr).check());
     tr.set("radopt", "2");
-    REQUIRE_THROWS(DynConfig::from_namelist(tr).check());
+    REQUIRE_THROWS(rrtmg::RadOptions::from_namelist(tr).check());
+    auto rt = Namelist::from_file(cm1k::testing::case_namelist("rrtmg_ysu_kessler"));
+    rt.set("terrain_flag", ".true.");
+    REQUIRE_NOTHROW(rrtmg::RadOptions::from_namelist(rt).check());
+    REQUIRE_NOTHROW(DynConfig::from_namelist(rt).check());
   }
   nl.set("terrain_flag", ".false.");
   // lateral boundaries: 1..4 are ported (2 with irbc = 1, 2, 4)
@@ -632,7 +693,7 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
          {"ipbl", "0"}, {"ipbl", "1"}, {"ipbl", "3"}, {"ipbl", "4"}, {"ipbl", "5"}, {"ipbl", "6"},
          {"cm1setup", "4"}, {"sfcmodel", "0"}, {"sfcmodel", "4"}, {"horizturb", "2"},
-         {"terrain_flag", ".true."}, {"imove", "1"}}) {
+         {"imove", "1"}}) {
     auto y = pb;
     y.set(k, v);
     INFO(k << " = " << v);
@@ -640,7 +701,7 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
   }
   for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
          {"horizturb", "0"}, {"idiss", "0"}, {"doimpl", "0"}, {"isfcflx", "0"}, {"bcturbs", "2"},
-         {"pertflx", "1"}, {"sfcmodel", "2"}, {"sfcmodel", "3"}}) {
+         {"pertflx", "1"}, {"sfcmodel", "2"}, {"sfcmodel", "3"}, {"terrain_flag", ".true."}}) {
     auto y = pb;
     y.set(k, v);
     INFO(k << " = " << v);
@@ -701,7 +762,7 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
            {"sfcmodel", "0"}, {"sfcmodel", "1"}, {"sfcmodel", "4"}, {"sfcmodel", "6"}, {"sfcmodel", "7"},
            {"cm1setup", "1"}, {"cm1setup", "4"}, {"ipbl", "4"}, {"ipbl", "5"},
            {"pertflx", "1"}, {"lu0", "0"}, {"lu0", "34"}, {"tmn0", "50.0"}, {"oceanmodel", "2"},
-           {"isftcflx", "3"}, {"iz0tlnd", "3"}, {"set_flx", "1"}, {"imove", "1"}, {"terrain_flag", ".true."}}) {
+           {"isftcflx", "3"}, {"iz0tlnd", "3"}, {"set_flx", "1"}, {"imove", "1"}}) {
       auto y = ys;
       y.set(k, v);
       INFO(k << " = " << v);
@@ -710,7 +771,7 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
     for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
            {"sfcmodel", "2"}, {"sfcmodel", "3"}, {"ipbl", "2"}, {"ipbl", "3"}, {"horizturb", "0"}, {"horizturb", "1"},
            {"idiss", "0"}, {"isftcflx", "1"}, {"iz0tlnd", "1"}, {"lu0", "16"}, {"lu0", "18"},
-           {"season", "2"}, {"set_znt", "1"}, {"isfcflx", "0"}}) {
+           {"season", "2"}, {"set_znt", "1"}, {"isfcflx", "0"}, {"terrain_flag", ".true."}}) {
       auto y = ys;
       y.set(k, v);
       INFO(k << " = " << v);
@@ -770,7 +831,7 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
     for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
            {"sfcmodel", "0"}, {"sfcmodel", "1"}, {"sfcmodel", "5"}, {"sfcmodel", "6"}, {"sfcmodel", "7"},
            {"cm1setup", "1"}, {"cm1setup", "4"}, {"ipbl", "6"}, {"pertflx", "1"}, {"lu0", "34"},
-           {"tmn0", "50.0"}, {"oceanmodel", "2"}, {"set_flx", "1"}, {"imove", "1"}, {"terrain_flag", ".true."}}) {
+           {"tmn0", "50.0"}, {"oceanmodel", "2"}, {"set_flx", "1"}, {"imove", "1"}}) {
       auto y = gf;
       y.set(k, v);
       INFO(k << " = " << v);
@@ -789,7 +850,7 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
       // schemes
       for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
              {"lu0", "3"}, {"lu0", "18"}, {"lu0", "0"}, {"ipbl", "1"}, {"ipbl", "2"}, {"ipbl", "4"},
-             {"ipbl", "5"}, {"set_ust", "1"}}) {
+             {"ipbl", "5"}, {"set_ust", "1"}, {"terrain_flag", ".true."}}) {
         auto y = gf;
         y.set(k, v);
         INFO(k << " = " << v);
@@ -797,7 +858,7 @@ TEST_CASE("dyncore: option checks", "[dyn]") {
       }
     } else {
       for (auto [k, v] : std::vector<std::pair<std::string, std::string>>{
-             {"ipbl", "1"}, {"ipbl", "2"}, {"lu0", "16"}, {"lu0", "18"}}) {
+             {"ipbl", "1"}, {"ipbl", "2"}, {"lu0", "16"}, {"lu0", "18"}, {"terrain_flag", ".true."}}) {
         auto y = gf;
         y.set(k, v);
         INFO(k << " = " << v);

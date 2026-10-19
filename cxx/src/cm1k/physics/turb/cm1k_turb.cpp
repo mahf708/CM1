@@ -140,9 +140,12 @@ void Options::check() const {
   if (tbc != 1) fail("tbc=" + std::to_string(tbc) + " is not ported (only free slip, tbc=1)");
   for (int v : {wbc, ebc, sbc, nbc})
     if (v < 1 || v > 4) fail("lateral boundary condition " + std::to_string(v) + " is not ported");
-  // terrain: the LES TKE scheme (sgsmodel=1) without a surface layer
-  if (terrain_flag && !les) fail("terrain with cm1setup=2 (PBL schemes) is not ported");
-  if (terrain_flag && sfcmodel >= 1) fail("terrain with a surface layer (sfcmodel>=1) is not ported");
+  // terrain: the LES TKE scheme (sgsmodel=1), with or without the surface
+  // layer sfcmodel=1, and the PBL schemes ipbl=1, 2, 3 with sfcmodel=1, 2, 3
+  if (terrain_flag && pbl2 && ipbl > 3)
+    fail("terrain with ipbl=" + std::to_string(ipbl) + " is not ported (only 1, 2, 3)");
+  if (terrain_flag && sfcmodel > 3)
+    fail("terrain with sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 0..3)");
   if (axisymm != 0) fail("axisymm=1 is not ported");
   if (do_ib) fail("immersed boundaries (do_ib) are not ported");
   if (les && (!dohturb || !dovturb)) fail("dohturb/dovturb must be true (LES)");

@@ -150,7 +150,7 @@ void Options::check() const {
     if (testcase != 0) fail("testcase=" + std::to_string(testcase) + " is not ported (only 0)");
     if (imove != 0) fail("imove=1 (ground-relative winds with a moving domain) is not ported");
     if (axisymm != 0) fail("axisymm=1 is not ported");
-    if (terrain_flag) fail("terrain is not ported");
+    if (terrain_flag) fail("terrain with sfcmodel=6 (MYNN) is not ported");
     if (!(cm1setup == 2 && (ipbl == 4 || ipbl == 5)))
       fail("sfcmodel=6 is only ported with cm1setup=2 and the MYNN PBL (ipbl=4, 5)");
     if (imoist == 1 && ptype != 0 && ptype != 1)
@@ -170,7 +170,11 @@ void Options::check() const {
   if (testcase != 0) fail("testcase=" + std::to_string(testcase) + " is not ported (only 0)");
   if (imove != 0) fail("imove=1 (ground-relative winds with a moving domain) is not ported");
   if (axisymm != 0) fail("axisymm=1 is not ported");
-  if (terrain_flag) fail("terrain is not ported");
+  // terrain: turb.F's terrain branch of the surface block (za = zh-zs,
+  // hpbl = hpbl-zs) is ported for sfcmodel=1, 2, 3; the GFDL (4) and MYJ (7)
+  // layers are not checked against the Fortran with terrain
+  if (terrain_flag && sfcmodel != 1 && sfcmodel != 2 && sfcmodel != 3)
+    fail("terrain with sfcmodel=" + std::to_string(sfcmodel) + " is not ported (only 1, 2, 3)");
   if (sfcmodel == 1) {
     // with the LES (cm1setup=1, ipbl=0) or with the simple PBL scheme
     // (cm1setup=2, ipbl=2: gethpbl2)
@@ -226,6 +230,7 @@ void SfcState::allocate(const Bounds& b) {
   psfc = mk("psfc"); u10 = mk("u10"); v10 = mk("v10"); s10 = mk("s10");
   hfx = mk("hfx"); qfx = mk("qfx"); qsfc = mk("qsfc"); wspd = mk("wspd");
   zntmp = mk("zntmp"); t1 = mk("t1"); hpbl = mk("hpbl"); dsxy = mk("dsxy");
+  za = mk("za");
   br = mk("br"); cda = mk("cda"); gz1oz0 = mk("gz1oz0"); th2 = mk("th2"); t2 = mk("t2"); q2 = mk("q2");
 }
 
@@ -581,6 +586,15 @@ void sfc_prelude(const Options& o, const Constants& c, const Grid& g, const Base
   });
   // bulk-Ri boundary-layer depth (testcase=0), before getcecd
   if (o.ipbl == 2) gethpbl2(o, c, b, g.zh, th0, tha, qa, ua, va, u0, v0, s);
+  if (o.terrain_flag) {
+    // turb.F: with terrain, hpbl = hpbl-zs, every step and for every surface
+    // layer (also when hpbl is the PBL scheme's own, or never set: with the
+    // LES it is 100 m less zs per step)
+    const auto hpbl = s.hpbl, zs = g.zs;
+    Kokkos::parallel_for("sfc_hpbl_zs", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+      hpbl(i, j, 1) = hpbl(i, j, 1) - zs(i, j, 1);
+    });
+  }
 }
 
 void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
@@ -592,9 +606,18 @@ void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseSt
   const auto& b = g.b;
   const auto th0 = base.th0;
   sfc_prelude(o, c, g, base, cgs1, cgs2, cgs3, ua, va, tha, qa, prs, s);
-  getcecd(o, b, g.zh, s);
+  // turb.F: ppten(k=1), the height of the lowest model level above the
+  // surface: zh(k=1), or zh(k=1)-zs with terrain
+  {
+    const auto za = s.za, zh = g.zh, zs = g.zs;
+    const bool terrain = o.terrain_flag;
+    Kokkos::parallel_for("sfc_za", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+      za(i, j, 1) = terrain ? zh(i, j, 1) - zs(i, j, 1) : zh(i, j, 1);
+    });
+  }
+  getcecd(o, b, s.za, s);
   if (o.isfcflx == 1) sfcflux(o, c, b, th0, tha, qa, s);
-  sfcdiags(o, c, b, g.zh, th0, tha, qa, rf, s);
+  sfcdiags(o, c, b, s.za, th0, tha, qa, rf, s);
 }
 
 void sfcstress(const Bounds& b, const FArray3& rf, const SfcState& s,

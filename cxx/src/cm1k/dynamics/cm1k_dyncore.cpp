@@ -199,9 +199,10 @@ void DynConfig::check() const {
   if (terrain_flag) {
     if (diff2()) unsupported("difforder=2 with terrain (diff2.F stops: cannot use diff2u with terrain)");
     if (imove != 0) unsupported("imove=1 with terrain (param.F)");
-    if (pbl) unsupported("PBL schemes (cm1setup=2) with terrain");
-    if (radopt != 0) unsupported("radiation (radopt=" + std::to_string(radopt) + ") with terrain");
-    if (sfc_opt.has_layer()) unsupported("the surface layer (sfcmodel>=1, bbc=3) with terrain");
+    // the surface layer (sfcmodel=1, 2, 3), the PBL schemes (ipbl=1, 2, 3)
+    // and RRTMG are ported with terrain: sfc_opt.check, pbl_opt.check and
+    // turb_opt.check throw for the other surface layers and PBL schemes
+    // (GFDL, MYNN, MYJ), which are not checked against the Fortran here
   }
   if (do_lsnudge) unsupported("do_lsnudge");
   if (do_recycle) unsupported("eddy recycling");
@@ -501,10 +502,12 @@ void Dyncore::sfc_and_turb(double rtime, int nstep) {
     if (so.gfdl()) sfc_gfdl::gfdl_bcs(to, B, m_gsfc, m_sfc.zntmp);   // bc2d(mznt), zntmp = mznt
     turb::calcnm(to, m_c, B, m_g.rdz, m_g.c1, m_g.c2, m_g.mf, m_b.pi0, m_b.th0, ts.nm, m_tw.d1, m_tw.d2, m_tw.d3,
                  m_tw.d6, s.prs, pp3d, th3d, q3d);
+    // (dum1, dum2: scratch of the terrain branch; turb.F rebuilds its dum1..
+    // for the PBL scheme afterwards, the WRF inputs here live in m_ww)
     turb::calcdef(to, m_g, s.rho, rf, u3d, v3d, w3d, ts.t11, ts.t12, ts.t13, ts.t22, ts.t23, ts.t33, ts.defv,
-                  ts.defh);
+                  ts.defh, m_tw.d1, m_tw.d2);
     if (m_cfg.pbl_opt.horizturb == 1)
-      pbl::turbparam_horiz(to, m_cfg.pbl_opt, B, ts.defh, s.kmh, s.khh, ts.dissten, m_sfc);
+      pbl::turbparam_horiz(to, m_cfg.pbl_opt, B, ts.defh, s.kmh, s.khh, ts.dissten, m_sfc, m_g.zs);
     if (m_cfg.pbl_opt.ipbl == 2)
       pbl::turbparam_vert(to, m_cfg.pbl_opt, m_g, ts.nm, ts.defv, s.kmv, s.khv, ts.dissten, m_sfc, m_tw.d4);
     // turb.F: gettau if (idoles .or. ipbl.eq.2 .or. horizturb.eq.1 .or. cm1setup.eq.3)
