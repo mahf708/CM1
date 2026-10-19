@@ -148,10 +148,13 @@ jobs:
         env:
           CM1_REF_DIR: ${{ github.workspace }}/refs/supercell_kessler
           CM1_REPORT: ${{ github.workspace }}/nb/report.md
+          # named explicitly, so a backend that fails to install fails the job
+          CM1_BACKENDS: fortran,cm1k,cm1x:numpy,cm1x:jax:jit,cm1x:torch
         run: |
           status=0
           python ports/driver/run_notebook.py ports/driver/supercell_backends.ipynb nb || status=$?
           if [ -f nb/report.md ]; then
+            cat nb/report.md
             cat nb/report.md >> "$GITHUB_STEP_SUMMARY"
           fi
           exit $status
