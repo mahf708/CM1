@@ -39,6 +39,10 @@ CASES = [
     "pbl2_sfclay_land",
     "cbl_sfc",
     "cbl_sfc_moist",
+    "mynn25_kessler",
+    "mynn3_dry",
+    "mynn25_land_dry",
+    "mynn3_land_kessler",
     # surface-layer variants (ports/reference/pbl)
     "sfc_rev_land",
     "sfc_rev_water_ft2",
@@ -55,7 +59,9 @@ CASES = [
 ]
 if os.environ.get("CM1X_PBL_CASES"):
     CASES = os.environ["CM1X_PBL_CASES"].split(",")
-PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "rain", "tkea", "qke")
+# qke3d (MYNN: qke advected by solve2) is prognostic; qke itself is set by
+# the PBL scheme in sfc_and_turb, so it is compared with the state after N-1
+PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "rain", "tkea", "qke3d")
 TOL = 1e-10  # max |cm1x - cm1| / max |cm1| per array and step
 # jax / torch: the PBL tendencies are (new - old)/dt differences of the
 # prognostic they tend, so a last-bit libm difference in that prognostic

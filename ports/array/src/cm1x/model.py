@@ -666,6 +666,8 @@ class Model:
             tkea=s.get("tkea"),
             tke3d=s.get("tke3d"),
             tketen=r1.get("tketen"),
+            qke=s.get("qke"),
+            qke3d=s.get("qke3d"),
             hooks=hooks,
             **tk,
         )
@@ -727,6 +729,8 @@ class Model:
             radbcs=r2["radbcs"],
             radbcn=r2["radbcn"],
         )
+        if r2.get("qke3d") is not None:
+            s["qke3d"] = r2["qke3d"]  # MYNN: qke advected (solve2)
         for k in (
             "pp3d",
             "th3d",
