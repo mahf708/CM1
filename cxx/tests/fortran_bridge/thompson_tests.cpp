@@ -597,7 +597,7 @@ TEST_CASE("thompson mp_driver matches mp_driver.F on random states", "[bridge][t
 // plus rho, prs, rain, w and the grid/base state.
 TEST_CASE("thompson mp_driver matches mp_driver.F on reference states", "[bridge][thompson][ref]") {
   struct C { const char* name; std::vector<int> steps; };
-  for (const C& cs : {C{"thompson_bubble", {0, 30, 60, 90, 120}}}) {
+  for (const C& cs : {C{"thompson_bubble", {0, 150, 240, 300}}, C{"thompson_saturated", {1, 15, 30}}}) {
     const auto ref = testing::case_ref(cs.name);
     if (ref.empty()) continue;
     const auto nl = Namelist::from_file(testing::case_namelist(cs.name));
