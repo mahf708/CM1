@@ -1,5 +1,6 @@
 #include "init/cm1k_init.hpp"
 
+#include "init/cm1k_base_snd.hpp"
 #include "init/cm1k_cm1libs.hpp"
 #include "dynamics/cm1k_adv_routines.hpp"
 
@@ -549,21 +550,29 @@ InitInfo init_grid(const Namelist& nl, Grid& g) {
 //---------------------------------------------------------------------------
 // base.F
 void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& info, BaseState& bs) {
+  // base.F's testcase section (wprof, ufrc/vfrc, thfrc/qvfrc, ug/vg, dvdr,
+  // ulspg/vlspg, and u0/v0 for testcase = 13) is not ported yet
+  const int testcase = nl.geti("testcase", 0);
+  for (int tc : {3, 4, 5, 6, 7, 10, 11, 12, 13, 15})
+    if (testcase == tc)
+      unsupported("testcase = " + std::to_string(testcase) + " (base.F large-scale forcing profiles are not ported)");
+  const int imoist = nl.geti("imoist", 0), ptype = nl.geti("ptype", 0);
+  if (imoist == 1 && ptype != 0 && ptype != 1) unsupported("ptype = " + std::to_string(ptype));
+  init_base_state(nl, c, g, info, bs);
+}
+
+void init_base_state(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& info, BaseState& bs) {
   using namespace phys;
   const auto& B = g.b;
   const auto& bc = info.bc;
   const auto& ex = info.ex;
   const int ni = B.ni, nj = B.nj, nk = B.nk;
   const int ib = B.ib, ie = B.ie, jb = B.jb, je = B.je, kb = B.kb, ke = B.ke;
-  const int isnd = nl.geti("isnd", 1), iwnd = nl.geti("iwnd", 0);
-  const int imoist = nl.geti("imoist", 0), ptype = nl.geti("ptype", 0);
+  const int imoist = nl.geti("imoist", 0);
   const int psolver = nl.geti("psolver", 3), imove = nl.geti("imove", 0);
-  if (nl.geti("testcase", 0) != 0) unsupported("testcase != 0");
   if (nl.getb("do_adapt_move", false)) unsupported("do_adapt_move = .true.");
-  if (imoist == 1 && ptype != 0 && ptype != 1) unsupported("ptype = " + std::to_string(ptype));
 
-  const Real g_ = c.g, cp = c.cp, rd = c.rd, cpdrd = c.cpdrd, reps = c.reps, eps = c.eps;
-  auto rslf = [&](Real p, Real t) { return cm1libs::rslf(ptype, eps, p, t); };
+  const Real rd = c.rd, cpdrd = c.cpdrd, reps = c.reps;
 
   auto zh = g.zh.to_host(), c1 = g.c1.to_host(), c2 = g.c2.to_host();
   auto pi0 = bs.pi0.to_host(), th0 = bs.th0.to_host(), prs0 = bs.prs0.to_host(), rho0 = bs.rho0.to_host();
@@ -573,165 +582,9 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
   HArray3 rh0(Kokkos::View<Real***, Kokkos::LayoutLeft, HostSpace>("rh0", ie - ib + 1, je - jb + 1, ke - kb + 1), {ib, jb, kb});
   HArray3 t0(Kokkos::View<Real***, Kokkos::LayoutLeft, HostSpace>("t0", ie - ib + 1, je - jb + 1, ke - kb + 1), {ib, jb, kb});
 
-  // ---- base-state sounding (isnd) ----
-  if (isnd == 1) {
-    // dry adiabatic
-    const Real th_sfc = 300.0, pi_sfc = 1.0;
-    for (int k = kb; k <= ke; ++k)
-      for (int j = jb; j <= je; ++j)
-        for (int i = ib; i <= ie; ++i) {
-          th0(i, j, k) = th_sfc;
-          pi0(i, j, k) = pi_sfc - g_ * zh(i, j, k) / (cp * th_sfc);
-          prs0(i, j, k) = p00 * std::pow(pi0(i, j, k), cpdrd);
-        }
-    for (int k = kb; k <= ke; ++k)
-      for (int j = jb; j <= je; ++j)
-        for (int i = ib; i <= ie; ++i) { qv0(i, j, k) = 0.0; rh0(i, j, k) = 0.0; }
-  } else if (isnd == 4) {
-    // saturated, neutrally-stable sounding (Bryan and Fritsch 2002)
-    const Real thec_mb = 320.0, qt_mb = 0.020, prs_sfc = 100000.0;
-    const Real cpl = c.cpl, lv1 = c.lv1, lv2 = c.lv2;
-    for (int j = jb; j <= je; ++j)
-      for (int i = ib; i <= ie; ++i) {
-        prs0(i, j, 1) = prs_sfc;
-        Real qv1 = qt_mb, tmp = thec_mb, tlast = tmp;
-        for (int n = 1; n <= 20; ++n) {
-          const Real thbar = (tmp * std::pow(p00 / prs0(i, j, 1), rd / cp)) * (1.0 + qv1 * reps) / (1.0 + qt_mb);
-          pi0(i, j, 1) = 1.0 - g_ * zh(i, j, 1) / (cp * thbar);
-          prs0(i, j, 1) = p00 * std::pow(pi0(i, j, 1), cpdrd);
-          qv1 = rslf(prs0(i, j, 1), tmp);
-          tmp = thec_mb * std::pow(prs0(i, j, 1) / (1.0 + qv1 / eps) / p00, rd / (cp + cpl * qt_mb))
-                / std::exp((lv1 - lv2 * tmp) * qv1 / (tmp * (cp + cpl * qt_mb)));
-          tmp = tlast + 0.3 * (tmp - tlast);
-          tlast = tmp;
-        }
-        t0(i, j, 1) = tmp;
-        th0(i, j, 1) = tmp / pi0(i, j, 1);
-        rh0(i, j, 1) = 1.0;
-        qv0(i, j, 1) = rslf(prs0(i, j, 1), tmp);
-        Real t1 = tmp, th1 = th0(i, j, 1);
-        qv1 = qv0(i, j, 1);
-        for (int k = 2; k <= nk; ++k) {
-          tlast = th1;
-          Real t2 = t1, qv2 = qv1, th2 = th1;
-          int n = 0;
-          pi0(i, j, k) = pi0(i, j, k - 1) - g_ * (zh(i, j, k) - zh(i, j, k - 1)) / (cp * th2);
-          while (true) {
-            n = n + 1;
-            th2 = tlast;
-            t2 = th2 * pi0(i, j, k);
-            const Real thbar = 0.5 * (th1 * (1.0 + qv1 * reps) / (1.0 + qt_mb) + th2 * (1.0 + qv2 * reps) / (1.0 + qt_mb));
-            pi0(i, j, k) = pi0(i, j, k - 1) - g_ * (zh(i, j, k) - zh(i, j, k - 1)) / (cp * thbar);
-            prs0(i, j, k) = p00 * std::pow(pi0(i, j, k), cpdrd);
-            qv2 = rslf(prs0(i, j, k), t2);
-            t2 = thec_mb * std::pow(prs0(i, j, k) / (1.0 + qv2 / eps) / p00, rd / (cp + cpl * qt_mb))
-                 / std::exp((lv1 - lv2 * t2) * qv2 / (t2 * (cp + cpl * qt_mb)));
-            th2 = t2 / pi0(i, j, k);
-            if (std::abs(th2 - tlast) > 0.0001 && n < 100) {
-              tlast = tlast + 0.3 * (th2 - tlast);
-              continue;
-            } else if (n >= 100) {
-              throw std::runtime_error("cm1k init: isnd=4 iteration stuck in loop");
-            }
-            break;
-          }
-          t0(i, j, k) = t2;
-          th0(i, j, k) = th2;
-          qv0(i, j, k) = rslf(prs0(i, j, k), th0(i, j, k) * pi0(i, j, k));
-          rh0(i, j, k) = 1.0;
-          th1 = th2; qv1 = qv2; t1 = t2;
-        }
-        for (int k = 1; k <= nk; ++k) qc0(i, j, k) = qt_mb - qv0(i, j, k);
-      }
-  } else if (isnd == 5) {
-    // Weisman-Klemp analytic sounding
-    const Real z_trop = 12000.0, th_trop = 343.0, t_trop = 213.0, th_sfc = 300.0;
-    const Real prs_sfc = 100000.0, qv_pbl = 0.014;
-    const Real pi_sfc = std::pow(prs_sfc / p00, rd / cp);
-    const Real qv_sfc = rslf(prs_sfc, th_sfc * pi_sfc);
-    const Real thv_sfc = th_sfc * (1.0 + qv_sfc * reps) / (1.0 + qv_sfc);
-    for (int j = jb; j <= je; ++j)
-      for (int i = ib; i <= ie; ++i) {
-        for (int k = kb; k <= ke; ++k) rh0(i, j, k) = 0.0;
-        for (int k = 1; k <= nk; ++k) {
-          if (zh(i, j, k) < z_trop) {
-            th0(i, j, k) = th_sfc + (th_trop - th_sfc) * std::pow(zh(i, j, k) / z_trop, 1.25);
-            if (imoist == 1) rh0(i, j, k) = 1.0 - 0.75 * std::pow(zh(i, j, k) / z_trop, 1.25);
-          } else {
-            th0(i, j, k) = th_trop * std::exp((g_ / (t_trop * cp)) * (zh(i, j, k) - z_trop));
-            if (imoist == 1) rh0(i, j, k) = 0.25;
-          }
-        }
-        th0(i, j, 0) = th0(i, j, 1);
-        th0(i, j, nk + 1) = th0(i, j, nk);
-        for (int k = kb; k <= ke; ++k) qv0(i, j, k) = 0.0;
-        for (int n = 1; n <= 20; ++n) {
-          for (int k = kb; k <= ke; ++k)
-            thv0(i, j, k) = th0(i, j, k) * (1.0 + reps * qv0(i, j, k)) / (1.0 + qv0(i, j, k));
-          pi0(i, j, 1) = pi_sfc - g_ * zh(i, j, 1) / (cp * 0.5 * (thv_sfc + thv0(i, j, 1)));
-          for (int k = 2; k <= nk; ++k)
-            pi0(i, j, k) = pi0(i, j, k - 1) - g_ * (zh(i, j, k) - zh(i, j, k - 1)) / (cp * 0.5 * (thv0(i, j, k) + thv0(i, j, k - 1)));
-          for (int k = 1; k <= nk; ++k) prs0(i, j, k) = p00 * std::pow(pi0(i, j, k), cp / rd);
-          for (int k = 1; k <= nk; ++k) {
-            qv0(i, j, k) = rh0(i, j, k) * rslf(prs0(i, j, k), th0(i, j, k) * pi0(i, j, k));
-            if (qv0(i, j, k) > qv_pbl) qv0(i, j, k) = qv_pbl;
-          }
-        }
-        for (int k = 1; k <= nk; ++k)
-          rh0(i, j, k) = qv0(i, j, k) / (rslf(prs0(i, j, k), th0(i, j, k) * pi0(i, j, k)));
-      }
-  } else if (isnd == 9) {
-    // constant Brunt-Vaisala frequency
-    const Real ns1 = 0.0001, ns2 = 0.0000, zl1 = 40000.0;
-    for (int j = jb; j <= je; ++j)
-      for (int i = ib; i <= ie; ++i) {
-        Real th_sfc = 288.00, pi_sfc = 1.0, zsfc, ns;
-        if (zh(i, j, 1) < zl1) {
-          zsfc = 0.0;
-          ns = ns1;
-        } else {
-          if (std::abs(ns1) < 1.0e-6) {
-            pi_sfc = pi_sfc - g_ * zl1 / (cp * th_sfc);
-          } else {
-            pi_sfc = pi_sfc + g_ * g_ / (cp * ns1 * th_sfc) * (std::exp(-ns1 * zl1 / g_) - 1.0);
-            th_sfc = th_sfc * std::exp(ns1 * zl1 / g_);
-          }
-          zsfc = zl1;
-          ns = ns2;
-        }
-        for (int k = 1; k <= nk; ++k) {
-          qv0(i, j, k) = 0.0;
-          qc0(i, j, k) = 0.0;
-          rh0(i, j, k) = 0.0;
-          if (std::abs(ns) < 1.0e-6) {
-            thv0(i, j, k) = th_sfc;
-            pi0(i, j, k) = pi_sfc - g_ * (zh(i, j, k) - zsfc) / (cp * th_sfc);
-          } else {
-            thv0(i, j, k) = th_sfc * std::exp(ns * (zh(i, j, k) - zsfc) / g_);
-            pi0(i, j, k) = pi_sfc + g_ * g_ / (cp * ns * th_sfc) * (std::exp(-ns * (zh(i, j, k) - zsfc) / g_) - 1.0);
-          }
-          prs0(i, j, k) = p00 * std::pow(pi0(i, j, k), cpdrd);
-          th0(i, j, k) = thv0(i, j, k);
-          for (int n = 1; n <= 20; ++n) {
-            t0(i, j, k) = th0(i, j, k) * pi0(i, j, k);
-            qv0(i, j, k) = rh0(i, j, k) * rslf(prs0(i, j, k), t0(i, j, k));
-            th0(i, j, k) = thv0(i, j, k) * (1.0 + qv0(i, j, k) + qc0(i, j, k)) / (1.0 + reps * qv0(i, j, k));
-          }
-          if (zh(i, j, k + 1) > zl1 && zsfc < 1.0) {
-            if (std::abs(ns1) < 1.0e-6) {
-              pi_sfc = pi_sfc - g_ * zl1 / (cp * th_sfc);
-            } else {
-              pi_sfc = pi_sfc + g_ * g_ / (cp * ns1 * th_sfc) * (std::exp(-ns1 * zl1 / g_) - 1.0);
-              th_sfc = th_sfc * std::exp(ns1 * zl1 / g_);
-            }
-            zsfc = zl1;
-            ns = ns2;
-          }
-        }
-      }
-  } else {
-    unsupported("isnd = " + std::to_string(isnd));
-  }
+  // ---- base-state sounding (isnd): cm1k_base_snd.cpp ----
+  BaseArrays ba{zh, pi0, prs0, th0, thv0, qv0, qc0, qi0, rh0, t0, rho0, u0, v0};
+  base_sounding(nl, c, g, info, ba);
 
   // ---- fill in ghost cells ----
   for (auto* a : {&pi0, &prs0, &th0, &qv0, &qc0, &qi0, &rh0}) bcs(bc, *a);
@@ -787,70 +640,8 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
     for (int j = jb; j <= je; ++j)
       for (int i = ib; i <= ie; ++i) rrf0(i, j, k) = 1.0 / rf0(i, j, k);
 
-  // ---- base-state wind (iwnd) ----
-  for (int k = 1; k <= nk; ++k)
-    for (int j = 1; j <= nj; ++j)
-      for (int i = 1; i <= ni + 1; ++i) u0(i, j, k) = 0.0;
-  for (int k = 1; k <= nk; ++k)
-    for (int j = 1; j <= nj + 1; ++j)
-      for (int i = 1; i <= ni; ++i) v0(i, j, k) = 0.0;
-
-  if (iwnd == 0) {
-    // zero wind
-  } else if (iwnd == 1) {
-    // RKW-type wind profile
-    const Real udep1 = 0.0, udep2 = 2500.0, uconst1 = 0.0, uconst2 = 10.0;
-    for (int k = 1; k <= nk; ++k)
-      for (int j = 0; j <= nj + 1; ++j)
-        for (int i = 0; i <= ni + 2; ++i) {
-          const Real zu = 0.5 * (zh(i - 1, j, k) + zh(i, j, k));
-          if (zu < udep1) u0(i, j, k) = uconst1;
-          else if (zu > udep1 && zu < udep2) u0(i, j, k) = (uconst2 - uconst1) * (zu - udep1) / (udep2 - udep1) + uconst1;
-          else u0(i, j, k) = uconst2;
-        }
-    for (int k = 1; k <= nk; ++k)
-      for (int j = 0; j <= nj + 2; ++j)
-        for (int i = 0; i <= ni + 1; ++i) v0(i, j, k) = 0.0;
-  } else if (iwnd == 2) {
-    // Weisman-Klemp type supercell profile
-    const Real udep1 = 2000.0, udep2 = 6000.0, umax1 = 7.0, umax2 = 31.0;
-    for (int k = 1; k <= nk; ++k)
-      for (int j = 1; j <= nj; ++j)
-        for (int i = 1; i <= ni + 1; ++i) {
-          const Real zu = 0.5 * (zh(i - 1, j, k) + zh(i, j, k));
-          if (zu <= udep1) {
-            const Real angle = 90.0 * (zu / udep1) * (pi / 180.0);
-            u0(i, j, k) = umax1 - umax1 * std::cos(angle);
-          } else if (zu > udep1 && zu <= udep2) {
-            u0(i, j, k) = umax1 + (zu - udep1) * (umax2 - umax1) / (udep2 - udep1);
-          } else {
-            u0(i, j, k) = umax2;
-          }
-        }
-    const Real vmax1 = umax1;
-    for (int k = 1; k <= nk; ++k)
-      for (int j = 1; j <= nj + 1; ++j)
-        for (int i = 1; i <= ni; ++i) {
-          const Real zv = 0.5 * (zh(i, j - 1, k) + zh(i, j, k));
-          if (zv <= udep1) {
-            const Real angle = 90.0 * (zv / udep1) * (pi / 180.0);
-            v0(i, j, k) = vmax1 * std::sin(angle);
-          } else {
-            v0(i, j, k) = vmax1;
-          }
-        }
-  } else if (iwnd == 6) {
-    // constant wind (testcase = 0: the default uval, vval)
-    const Real uval = 10.0, vval = 0.0;
-    for (int k = kb; k <= ke; ++k)
-      for (int j = jb; j <= je; ++j)
-        for (int i = ib; i <= ie + 1; ++i) u0(i, j, k) = uval;
-    for (int k = kb; k <= ke; ++k)
-      for (int j = jb; j <= je + 1; ++j)
-        for (int i = ib; i <= ie; ++i) v0(i, j, k) = vval;
-  } else {
-    unsupported("iwnd = " + std::to_string(iwnd));
-  }
+  // ---- base-state wind (iwnd): cm1k_base_snd.cpp ----
+  base_wind(nl, c, g, info, ba);
 
   // subtract off umove and vmove
   if (imove == 1) {
@@ -947,6 +738,9 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
   const bool idoles = (cm1setup == 1 || cm1setup == 4);
   const bool idopbl = (cm1setup == 2 || cm1setup == 4);
   const int irandp = nl.geti("irandp", 0);
+  // init3d.F's testcase initial conditions (TKE profiles, perturbations) are not ported
+  if (nl.geti("testcase", 0) != 0)
+    unsupported("testcase = " + std::to_string(nl.geti("testcase", 0)) + " (init3d.F testcase initial conditions)");
   if (irandp != 0 && irandp != 1) unsupported("irandp = " + std::to_string(irandp));
   if (irandp == 1 && nl.getb("use_truly_random_pert", false)) unsupported("use_truly_random_pert = .true.");
   if (nl.geti("iptra", 0) != 0) unsupported("iptra = 1");
