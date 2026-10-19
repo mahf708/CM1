@@ -144,6 +144,7 @@ def solve2(
     gyv=None,
     zt=None,
     cg=None,
+    wprof=None,
     **unused,
 ):
     """solve2.F ``solve2`` (active path).  ``qa``, ``q3d``, ``qten`` are
@@ -164,6 +165,9 @@ def solve2(
 
     ``hooks`` (optional callable ``hooks(stage_name, nrk, locals_dict)``)
     lets tests inspect intermediate results.
+
+    ``wprof`` (dolsw, testcase 3..7): the large-scale w profile of base.F
+    for the subsidence terms of advu, advv, advs.
     """
     _check(cfg)
     xp = bk.xp
@@ -195,6 +199,7 @@ def solve2(
     advu_ = bk.kernel(advu, traced=("dt",))
     advv_ = bk.kernel(advv, traced=("dt",))
     advw_ = bk.kernel(advw, traced=("dt",))
+    lsw = {"wprof": wprof, "rf0": rf0} if wprof is not None else {}
 
     ibw, ibe, ibs, ibn = _bc.ib_flags(cfg)
     irbc = int(_opt(cfg, "irbc", 4))
@@ -423,6 +428,7 @@ def solve2(
             c2=c2,
             dt=dttmp,
             cfg=cfg,
+            **lsw,
             rho0=rho0,
             gzu=gzu,
             rdsf=rdsf,
@@ -445,6 +451,7 @@ def solve2(
             c2=c2,
             dt=dttmp,
             cfg=cfg,
+            **lsw,
             rho0=rho0,
             gzv=gzv,
             rdsf=rdsf,
@@ -718,6 +725,7 @@ def solve2(
             weps=10.0 * c.epsilon,
             pdefweno=0,
             cfg=cfg,
+            **lsw,
             gz=gz,
             rgz=rgz,
             rdsf=rdsf,
@@ -757,6 +765,7 @@ def solve2(
                 weps=qmag[m] * c.epsilon,
                 pdefweno=(0 if m == nqv else 1),
                 cfg=cfg,
+                **lsw,
                 gz=gz,
                 rgz=rgz,
                 rdsf=rdsf,

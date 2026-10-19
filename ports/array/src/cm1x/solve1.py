@@ -45,13 +45,13 @@ def _check(cfg):
     for name, ok in (
         ("irdamp", (0, 1)),
         ("hrdamp", (0,)),
-        ("lspgrad", (0, 1)),
+        ("lspgrad", (0, 1, 2, 3, 4)),
         ("idiff", (0,)),
         ("sgsmodel", (0, 1)),
         ("ipbl", (0,)),
         ("radopt", (0, 2)),
         ("cuparam", (0,)),
-        ("testcase", (0,)),
+        ("testcase", tuple(range(16))),
         ("rterm", (0,)),
         ("eqtset", (2,)),
         ("psolver", (3,)),
@@ -76,7 +76,7 @@ def _check(cfg):
         1,
     ):
         bad.append(f"sgsmodel=1 with cm1setup={_opt(cfg, 'cm1setup', 1)}")
-    if int(_opt(cfg, "lspgrad", 0)) == 1 and int(_opt(cfg, "imove", 0)) != 0:
+    if int(_opt(cfg, "lspgrad", 0)) >= 1 and int(_opt(cfg, "imove", 0)) != 0:
         bad.append("lspgrad=1 with imove=1")
     if bad:
         raise NotImplementedError("solve1: options not ported: " + ", ".join(bad))
@@ -114,6 +114,7 @@ def solve1(
     qten=None,
     turb=None,
     thraten=None,
+    tc=None,
     **unused,
 ):
     """solve1.F ``solve1`` (active path only).
@@ -134,6 +135,13 @@ def solve1(
 
     ``thraten`` (radopt=2): the potential-temperature tendency of the last
     radiation call (cm1x.radiation_driver), added to thten1.
+
+    ``tc`` (testcase >= 1 or lspgrad >= 2, cm1x.testcase): a dict with the
+    forcing profiles of base.F (wprof .. vlspg), ``mtime`` (model time at the
+    start of the step) and the base/grid arrays rho0, qv0, zh, zf, mh, ruh,
+    ruf, rvh, rvf, xf, yf.  Adds lspgrad = 2, 3, 4, the testcase 10 nudging
+    and testcase_simple_phys; the updated profiles (and frad, thraten, zir
+    of testcase 4, 5) are returned under ``"tc"``.
     """
     _check(cfg)
     xp = bk.xp
@@ -252,6 +260,14 @@ def solve1(
         uten1 = bk.set(uten1, R, uten1[R] - fcor * (vs + vmove))
         vten1 = bk.set(vten1, R, vten1[R] + fcor * (us + umove))
 
+    # ---- large-scale pressure gradient (lspgrad=2, 3, 4) ----------------------
+    tcout = {}
+    if int(_opt(cfg, "lspgrad", 0)) >= 2:
+        from .testcase import lspgrad_tend
+
+        uten1, vten1, ul, vl = lspgrad_tend(bk, g, cfg, tc, uten1, vten1)
+        tcout.update(ulspg=ul, vlspg=vl)
+
     # ---- dissipative heating (sgsmodel=1, idiss=1) ---------------------------
     if (les or sfc) and int(_opt(cfg, "idiss", 1)) == 1:
         thten1 = dissheat(
@@ -317,7 +333,8 @@ def solve1(
             tt["wten1"],
             tt["thten1"],
         )
-        qten = list(tt["qten"])
+        if tt["qten"] is not None:  # dry: no moisture tendencies
+            qten = list(tt["qten"])
     elif sfc:
         sd = sfc_drag_tendencies(
             bk,
@@ -341,6 +358,75 @@ def solve1(
             t23=T["t23"],
         )
         uten1, vten1 = sd["uten1"], sd["vten1"]
+
+    # ---- test cases: theta/qv nudging (testcase 10), testcase_simple_phys ----
+    tcase = int(_opt(cfg, "testcase", 0))
+    if tcase == 10:
+        from .testcase import get_avg, tqnudge
+
+        avg = get_avg(
+            bk,
+            g,
+            cfg,
+            th0=th0,
+            ua=ua,
+            va=va,
+            tha=tha,
+            qa=qa if int(_opt(cfg, "imoist", 1)) == 1 else None,
+            **{k: tc[k] for k in ("ruh", "ruf", "rvh", "rvf", "xf", "yf")},
+        )
+        thten1, qten = tqnudge(
+            bk,
+            g,
+            cfg,
+            mtime=tc["mtime"],
+            avg=avg,
+            th0=th0,
+            qv0=tc["qv0"],
+            thten1=thten1,
+            qten=qten,
+        )
+    if tcase >= 1:
+        from .testcase import simple_phys
+
+        sp = simple_phys(
+            bk,
+            g,
+            cfg,
+            prof=tc,
+            th0=th0,
+            ua=ua,
+            va=va,
+            tha=tha,
+            qa=qa,
+            uten1=uten1,
+            vten1=vten1,
+            thten1=thten1,
+            qten=qten,
+            **{
+                k: tc[k]
+                for k in (
+                    "mtime",
+                    "rho0",
+                    "zh",
+                    "zf",
+                    "mh",
+                    "ruh",
+                    "ruf",
+                    "rvh",
+                    "rvf",
+                    "xf",
+                    "yf",
+                )
+            },
+        )
+        uten1, vten1, thten1, qten = (
+            sp.pop("uten1"),
+            sp.pop("vten1"),
+            sp.pop("thten1"),
+            sp.pop("qten"),
+        )
+        tcout.update(sp)
 
     # ---- pressure tendency for mass conservation (eqtset=2) ---------------
     rdt = 1.0 / dt
@@ -378,4 +464,6 @@ def solve1(
     }
     if les:
         out["tketen"] = tketen
+    if tcout:
+        out["tc"] = tcout
     return out

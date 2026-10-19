@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from .adv_routines import (
     col,
+    upstrpd,
     hadv_flx5,
     hadv_weno5,
     ibflags,
@@ -113,8 +114,54 @@ def _check_common(cfg, who):
             )
     if _opt(cfg, "do_ib"):
         raise NotImplementedError(f"{who}: immersed boundaries not ported")
-    if _opt(cfg, "dolsw"):
-        raise NotImplementedError(f"{who}: large-scale subsidence (dolsw) not ported")
+    if _opt(cfg, "dolsw") and _terrain(cfg):
+        raise NotImplementedError(f"{who}: dolsw with terrain (param.F stops)")
+
+
+def _need_wprof(cfg, who, wprof, rf0):
+    """dolsw (testcase 3..7): advs/advu/advv need the large-scale w profile."""
+    if not _opt(cfg, "dolsw"):
+        return False
+    if wprof is None or rf0 is None:
+        raise ValueError(f"{who}: dolsw (testcase 3-7) needs wprof and rf0")
+    return True
+
+
+def wsub(bk, g, ix, jy, a, *, wprof, c1, c2, mh, rr0, rf0, weps):
+    """adv_routines.F ``wsub``: vertical advection by the specified
+    large-scale w profile ``wprof`` (1-D, Python k = Fortran k).  Returns
+    ``subs`` on Fortran i = 1..ix, j = 1..jy, k = 1..nk ([nk, jy, ix])."""
+    xp = bk.xp
+    nk = g.nk
+    J, I = (1, jy), (1, ix)
+    rdz = g.rdz
+    Km = (2, nk - 1)
+
+    def A(dk):
+        return sub3(a, Km, J, I, dk=dk)
+
+    wk = wprof[fk(2) : fk(nk - 1) + 1][:, None, None]
+    rw = col(rf0, Km) * wk
+    up_neg = upstrpd(xp, A(1), A(0), A(-1), weps)
+    up_pos = upstrpd(xp, A(-2), A(-1), A(0), weps)
+    lin = sub3(c1, Km, J, I) * A(-1) + sub3(c2, Km, J, I) * A(0)
+    k2 = (xp.arange(2, nk) == 2)[:, None, None]
+    val = xp.where(wk <= 0.0, up_neg, xp.where(k2, lin, up_pos))
+    mid = rw * val
+    Kn = (nk, nk)
+    dnk = (col(rf0, Kn) * wprof[fk(nk) : fk(nk) + 1][:, None, None]) * (
+        sub3(c1, Kn, J, I) * sub3(a, Kn, J, I, dk=-1)
+        + sub3(c2, Kn, J, I) * sub3(a, Kn, J, I)
+    )
+    z = xp.zeros_like(dnk)
+    dumz = xp.concat([z, mid, dnk, z], axis=0)  # k = 1..nk+1
+    K = (1, nk)
+    wcol = wprof[fk(1) : fk(nk) + 1][:, None, None]
+    wcolp = wprof[fk(2) : fk(nk + 1) + 1][:, None, None]
+    div = (col(rf0, K, dk=1) * wcolp - col(rf0, K) * wcol) * rdz * col(mh, K)
+    return (-(dumz[1:] - dumz[:-1]) * rdz * col(mh, K) + sub3(a, K, J, I) * div) * col(
+        rr0, K
+    )
 
 
 def _check_order(who, hadvorder, vadvorder, doweno, cfg=None, weno_ok=False):
@@ -487,6 +534,8 @@ def advs(
     gz=None,
     rgz=None,
     rdsf=None,
+    wprof=None,
+    rf0=None,
 ):
     """Port of ``advs``: adds the advective tendency of scalar ``s`` to ``sten``.
     With ``terrain_flag`` the metrics ``gz``, ``rgz`` (2-D) and ``rdsf`` are
@@ -501,8 +550,12 @@ def advs(
     Returns {'sten'}; with ``bflag=1``, stat_qsrc=1 and an open boundary it
     also returns 'bsq' (``bsq`` plus the lateral boundary flux of this
     stage; needs ``ruh``, ``rvh``, ``rmh``).
+
+    dolsw (testcase 3..7): the large-scale subsidence (wsub with ``wprof``,
+    ``rf0``) is added to advz before the pdef correction.
     """
     _check_common(cfg, "advs")
+    lsw = _need_wprof(cfg, "advs", wprof, rf0)
     nrkmax = _opt(cfg, "nrkmax")
     advwenos = _opt(cfg, "advwenos")
     doweno = wflag == 1 and (advwenos == 1 or (advwenos == 2 and nrk == nrkmax))
@@ -679,6 +732,23 @@ def advs(
         I,
         _vflux_to_tend(bk, g, dumz, K, J, I, mh, rdsf if terr else None),
     )
+    if lsw:
+        # adv.F: subsidence tendency added to advz (so that pdefz sees it)
+        subs = wsub(
+            bk,
+            g,
+            ni,
+            nj,
+            s,
+            wprof=wprof,
+            c1=c1,
+            c2=c2,
+            mh=mh,
+            rr0=rr0,
+            rf0=rf0,
+            weps=weps,
+        )
+        advz = put3(bk, advz, K, J, I, sub3(advz, K, J, I) + subs * col(rho0, K))
 
     if dopd:
         advz = pdefz(
@@ -761,6 +831,8 @@ def advu(
     rho0=None,
     gzu=None,
     rdsf=None,
+    wprof=None,
+    rf0=None,
     **unused,
 ):
     """Port of ``advu`` (Cartesian; periodic or open). Returns {'uten'}.
@@ -833,6 +905,24 @@ def advu(
     else:
         tend = tend * col(rr0, K)
     uten = put3(bk, bk.copy(uten), K, J, I, sub3(uten, K, J, I) + tend)
+    if _need_wprof(cfg, "advu", wprof, rf0):
+        # adv.F: + subs on i = 1..ni+1, j = 1..nj (weps = 100*epsilon)
+        Is = (1, g.ni + 1)
+        subs = wsub(
+            bk,
+            g,
+            g.ni + 1,
+            nj,
+            u3d,
+            wprof=wprof,
+            c1=c1,
+            c2=c2,
+            mh=mh,
+            rr0=rr0,
+            rf0=rf0,
+            weps=100.0 * 1.0e-18,
+        )
+        uten = put3(bk, uten, K, J, Is, sub3(uten, K, J, Is) + subs)
     return {"uten": uten}
 
 
@@ -859,6 +949,8 @@ def advv(
     rho0=None,
     gzv=None,
     rdsf=None,
+    wprof=None,
+    rf0=None,
     **unused,
 ):
     """Port of ``advv`` (Cartesian; periodic or open). Returns {'vten'}.
@@ -927,6 +1019,24 @@ def advv(
     else:
         tend = tend * col(rr0, K)
     vten = put3(bk, bk.copy(vten), K, J, I, sub3(vten, K, J, I) + tend)
+    if _need_wprof(cfg, "advv", wprof, rf0):
+        # adv.F: + subs on i = 1..ni, j = 1..nj+1 (weps = 100*epsilon)
+        Js, Is = (1, g.nj + 1), (1, g.ni)
+        subs = wsub(
+            bk,
+            g,
+            g.ni,
+            g.nj + 1,
+            v3d,
+            wprof=wprof,
+            c1=c1,
+            c2=c2,
+            mh=mh,
+            rr0=rr0,
+            rf0=rf0,
+            weps=100.0 * 1.0e-18,
+        )
+        vten = put3(bk, vten, K, Js, Is, sub3(vten, K, Js, Is) + subs)
     return {"vten": vten}
 
 

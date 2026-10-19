@@ -1,6 +1,7 @@
 """Initial conditions (port of src/init3d.F: ``init3d`` and ``getset``).
 
-Scope: ``iinit = 0`` (no perturbation) or ``1`` (warm bubble), ``irandp = 0``,
+Scope: ``iinit = 0`` (no perturbation) or ``1`` (warm bubble), ``irandp = 0`` or
+``1`` (the random perturbations of each test case, cm1x.testcase),
 ``ibalance = 0`` or ``1``, ``psolver <= 3``, with or without terrain, any lateral boundary
 type of cm1x.bc (periodic / open / walls), Kessler moisture (qv, qc, qr) or
 dry, and the prognostic TKE of sgsmodel=1 (cm1setup=1; zero initial TKE).
@@ -21,7 +22,10 @@ from .misc import level_sums, qp_sum
 __all__ = ["init3d", "getset"]
 
 
-def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, centery):
+def init3d(
+    bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, centery,
+    qc0=None, qi0=None,
+):  # fmt: skip
     """Port of ``init3d`` for the options listed in the module docstring.
 
     Returns: ua, u3d, va, v3d, wa, w3d (=0), tha (theta perturbation), qa,
@@ -36,9 +40,6 @@ def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, c
     K, J, I = slice(1, nk + 1), slice(ng, ng + nj), slice(ng, ng + ni)
     shp_w = (shp_s[0] + 1, shp_s[1], shp_s[2])
 
-    if cfg.irandp == 1:
-        raise NotImplementedError("irandp=1 (random perturbations) not ported")
-
     ua = bk.copy(u0)
     va = bk.copy(v0)
     wa = bk.zeros(shp_w)
@@ -48,6 +49,18 @@ def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, c
     if numq:
         qa = bk.zeros((numq,) + shp_s)
         qa = bk.set(qa, cfg.nqv - 1, qv0)
+        # "ensure that certain idealized cases work": the saturated soundings
+        # carry their base-state cloud water (and cloud ice) into qa
+        isnd = int(cfg.get("isnd", 0) or 0)
+        if int(cfg.get("ptype", 0) or 0) >= 1:
+            if isnd in (4, 9, 10, 11, 15) and qc0 is not None:
+                qa = bk.set(qa, cfg.nqc - 1, qc0)
+            if isnd in (4, 9, 10) and int(cfg.get("iice", 0) or 0) == 1:
+                if qi0 is None or not cfg.get("nqi", 0):
+                    raise NotImplementedError(
+                        "init3d: qi0 -> qa(nqi) needs an ice scheme"
+                    )
+                qa = bk.set(qa, cfg.nqi - 1, qi0)
     else:
         qa = bk.zeros((0,) + shp_s)
 
@@ -70,6 +83,30 @@ def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, c
         tha = bk.set(tha, (K, J, I), pert)
     elif cfg.iinit not in (0, None):
         raise NotImplementedError(f"iinit={cfg.iinit} not ported")
+
+    # ---------------- random perturbations (irandp=1), by test case
+    if cfg.irandp == 1:
+        import numpy as np
+
+        from .testcase import random_perturbations
+
+        npy = bk.to_numpy
+        qn = npy(qa) if numq else np.zeros((0,) + tuple(shp_s))
+        ua_n, va_n, tha_n, qa_n = random_perturbations(
+            cfg,
+            zh=npy(zh),
+            u0=npy(u0),
+            v0=npy(v0),
+            ua=npy(ua),
+            va=npy(va),
+            tha=npy(tha),
+            qa=qn,
+        )
+        ua, va, tha = S(ua_n), S(va_n), S(tha_n)
+        if numq:
+            qa = S(qa_n)
+    elif cfg.irandp not in (0, None):
+        raise NotImplementedError(f"irandp={cfg.irandp} not ported")
 
     # ---------------- 3-D pressure
     ppi = bk.zeros(shp_s)
@@ -140,6 +177,8 @@ def getset(
     gz=None,
     dzdx=None,
     dzdy=None,
+    zh=None,
+    zf=None,
 ) -> dict:
     """Port of the non-restart path of ``getset`` (psolver <= 3, no terrain/LES).
 
@@ -164,8 +203,6 @@ def getset(
         g = Grid(ni, nj, nk, float(cfg.dx), float(cfg.dy), float(cfg.dz))
     if cfg.psolver > 3:
         raise NotImplementedError("getset: only psolver <= 3 ported")
-    if int(cfg.get("testcase", 0)) in (3, 4, 5, 9, 11):
-        raise NotImplementedError("getset: TKE initial profiles of testcases")
 
     cp, rd, rv, p00 = S(C.cp), S(C.rd), S(C.rv), S(C.p00)
     cpdrd = cp / rd
@@ -184,8 +221,23 @@ def getset(
         wa = bk.set(wa, (1,), _bc.bc2d(bk, g, wa[1], cfg))
     tke = None
     if int(cfg.get("cm1setup", 0)) in (1, 4) and int(cfg.get("sgsmodel", 0)) == 1:
-        # tkea = 0 (init3d.F); bcw(tkea,1); tkea(k=1)=tkea(k=2); bc2d(tkea(k=1))
-        tke = _bc.bcw(bk, g, bk.zeros(g.w_shape), 1, cfg)
+        # tkea = 0 (init3d.F; the initial TKE of testcase 3, 4, 5, 9, 11:
+        # cm1x.testcase.initial_tke, with bcw); bcw(tkea,1);
+        # tkea(k=1)=tkea(k=2); bc2d(tkea(k=1))
+        from .testcase import initial_tke
+
+        tke0 = None
+        if zh is not None and zf is not None:
+            tke0 = initial_tke(
+                cfg, zh=bk.to_numpy(zh), zf=bk.to_numpy(zf), shape=tuple(g.w_shape)
+            )
+        elif int(cfg.get("testcase", 0)) in (3, 4, 5, 9, 11):
+            raise ValueError("getset: the testcase initial TKE needs zh and zf")
+        if tke0 is None:
+            tke = bk.zeros(g.w_shape)
+        else:
+            tke = _bc.bcw(bk, g, S(tke0), 1, cfg)  # init3d.F bcw(tkea,1)
+        tke = _bc.bcw(bk, g, tke, 1, cfg)
         tke = bk.set(tke, (1, J, I), tke[2, J, I])
         tke = bk.set(tke, (1,), _bc.bc2d(bk, g, tke[1], cfg))
     rth0 = S(1.0) / th0

@@ -1,6 +1,10 @@
-! Harness driver for base (src/base.F): no terrain, periodic, single node.
+! Harness driver for base (src/base.F): no terrain, single node.
 ! params = [ni, nj, nk, dx, dy, dz, isnd, iwnd, imoist, ptype, psolver, imove,
-!           umove, vmove, cgs1, cgs2, cgs3, cgt1, cgt2, cgt3, tsmall]
+!           umove, vmove, cgs1, cgs2, cgs3, cgt1, cgt2, cgt3, tsmall,
+!           testcase, eqtset, iice, tsk0, hurr_vg, hurr_rotate, lspgrad,
+!           wbc, ebc, sbc, nbc]
+! (eqtset and iice as param.F leaves them; input_sounding is read from the
+! working directory for isnd = 7, 17)
 ! inputs : zh, mh, rmh, c1, c2 (scalar pts), zf, mf (w pts)
 ! outputs: pi0 prs0 rho0 thv0 th0 rth0 qv0 qc0 qi0 rr0 rf0 rrf0 t0 rh0 u0 v0
 !          rho0s pi0s prs0s rth0s
@@ -9,8 +13,9 @@ program drv_base
   use input
   use constants, only : set_constants
   use base_module
+  use goddard_module, only : T0K, T00K, RT0
   implicit none
-  real :: params(21)
+  real :: params(32)
   real, allocatable, dimension(:,:,:) :: zh,mh,rmh,c1,c2,zf,mf
   real, allocatable, dimension(:,:) :: rho0s,pi0s,prs0s,rth0s
   real, allocatable, dimension(:) :: wprof,ufrc,vfrc,thfrc,qvfrc,ug,vg,dvdr,uavg,vavg,thavg,pavg,ulspg,vlspg
@@ -19,8 +24,9 @@ program drv_base
   integer, allocatable :: reqs(:)
   real, allocatable :: b1(:), b3(:,:,:)
 
-  call set_constants(0)
-  call rd('params', params, 21)
+  call rd('params', params, 32)
+  testcase = nint(params(22))
+  call set_constants(testcase)
   ni = nint(params(1)); nj = nint(params(2)); nk = nint(params(3))
   dx = params(4); dy = params(5); dz = params(6)
   isnd = nint(params(7)); iwnd = nint(params(8)); imoist = nint(params(9))
@@ -29,6 +35,18 @@ program drv_base
   cgs1 = params(15); cgs2 = params(16); cgs3 = params(17)
   cgt1 = params(18); cgt2 = params(19); cgt3 = params(20)
   tsmall = params(21)
+  eqtset = nint(params(23)); iice = nint(params(24)); tsk0 = params(25)
+  hurr_vg = params(26); hurr_rotate = params(27); lspgrad = nint(params(28))
+  wbc = nint(params(29)); ebc = nint(params(30)); sbc = nint(params(31)); nbc = nint(params(32))
+  ! param.F: hurr_angle for lspgrad = 3 only; goddard's consat (ptype = 2)
+  pi_dp = 4.0_dp*atan(1.0_dp)   ! as param.F (kind dp: quad precision)
+  hurr_angle = 0.0
+  if (lspgrad == 3) hurr_angle = dble(hurr_rotate) * ( pi_dp / 180.0d0 )
+  if (ptype == 2) then
+    T0K = 273.15; T00K = 233.15; RT0 = 1./(T0K-T00K)
+  else
+    T0K = 0.0; T00K = 0.0; RT0 = 0.0
+  endif
   nx = ni; ny = nj; nz = nk
   rdx = 1.0/dx; rdy = 1.0/dy; rdz = 1.0/dz
   ngxy = 3; ngz = 1
@@ -36,8 +54,12 @@ program drv_base
   ibb2 = 1; ibe2 = 1; jbb2 = 1; jbe2 = 1; kbb2 = 1; kbe2 = 1
   imp = 1; jmp = 1; kmp = 1; kmt = 1; rmp = 1; cmp = 1
   numq = 3; nqv = 1
-  terrain_flag = .false.; testcase = 0; lspgrad = 0; axisymm = 0
-  wbc = 1; ebc = 1; sbc = 1; nbc = 1; ibw = 0; ibe = 0; ibs = 0; ibn = 0
+  terrain_flag = .false.; axisymm = 0
+  ibw = 0; ibe = 0; ibs = 0; ibn = 0
+  if (wbc /= 1) ibw = 1
+  if (ebc /= 1) ibe = 1
+  if (sbc /= 1) ibs = 1
+  if (nbc /= 1) ibn = 1
   dowr = .false.; myid = 0; outfile = 6
 
   allocate(zh(ib:ie,jb:je,kb:ke),mh(ib:ie,jb:je,kb:ke),rmh(ib:ie,jb:je,kb:ke))

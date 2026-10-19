@@ -18,6 +18,7 @@ import math
 
 from . import bc as _bc
 from . import constants as C
+from .backend import is_array
 
 nrkmax = 3  # constants.F: integer, parameter :: nrkmax = 3
 
@@ -72,10 +73,12 @@ def small_steps(dt, nrk, nsound):
     """Number of acoustic steps ``nloop`` and their length ``dts`` (sound.F)."""
     if nrk == 1:
         nloop = int(math.floor(float(nsound) / 3.0 + 0.5))  # nint, positive arg
-        dts = dt / (nloop * 3.0)
-        if dts > (dt / nsound):
+        # sound.F: if dt/(nloop*3) > dt/nsound, one more loop.  For dt > 0 that
+        # is 3*nloop < nsound (the two quotients differ by >= 1/192 relative,
+        # far above rounding), so dt may be a traced array (adapt_dt under jit)
+        if 3 * nloop < nsound:
             nloop = nloop + 1
-            dts = dt / (nloop * 3.0)
+        dts = dt / (nloop * 3.0)
     elif nrk == 2:
         nloop = int(0.5 * nsound)
         dts = dt / nsound
@@ -647,7 +650,7 @@ def sound(
 
     beta = 1.0 - alph
     asq = alph * alph
-    nloop, dts = small_steps(float(dt), int(nrk), nsound)
+    nloop, dts = small_steps(dt if is_array(dt) else float(dt), int(nrk), nsound)
 
     # python slices of Fortran ranges
     Ii = slice(3, ni + 3)  # i = 1..ni

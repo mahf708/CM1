@@ -15,6 +15,8 @@ names and laid out ``[k, j, i]`` (``[n, k, j, i]`` for qa/q3d) with CM1's halos.
 
 from __future__ import annotations
 
+from . import constants as _constants
+from . import testcase as _tc
 from .base import base as _base
 from .base import param_grid
 from .grid import Grid
@@ -37,6 +39,8 @@ def initialize(cfg, bk):
       rho, prs, rr, rf, mass1, convenience views qv3d/qc3d/qr3d (= q3d[n]) and,
       with prognostic TKE (cm1setup=1, sgsmodel=1), tkea and tke3d.
     """
+    _tc.check(cfg)
+    _constants.set_constants(_tc.testcase(cfg))  # constants.F (testcase 4, 5)
     g = Grid(cfg.ni, cfg.nj, cfg.nk, float(cfg.dx), float(cfg.dy), float(cfg.dz))
     pg = param_grid(cfg, bk, g)
     bs = _base(
@@ -54,6 +58,10 @@ def initialize(cfg, bk):
     )
     b = dict(pg)
     b.update(bs)
+    if _tc.active(cfg):
+        # base.F: testcase 13 base-state wind, the forcing profiles
+        b["u0"], b["v0"] = _tc.base_wind(cfg, b["u0"], b["v0"], bk)
+        b.update(_tc.profiles(cfg, bk, zh=b["zh"], zf=b["zf"], u0=b["u0"], v0=b["v0"]))
     st = init3d(
         bk,
         cfg,
@@ -65,6 +73,8 @@ def initialize(cfg, bk):
         th0=b["th0"],
         thv0=b["thv0"],
         qv0=b["qv0"],
+        qc0=b["qc0"],
+        qi0=b["qi0"],
         u0=b["u0"],
         v0=b["v0"],
         centerx=b["centerx"],
@@ -94,6 +104,8 @@ def initialize(cfg, bk):
         gz=b.get("gz"),
         dzdx=b.get("dzdx"),
         dzdy=b.get("dzdy"),
+        zh=b["zh"],
+        zf=b["zf"],
     )
     b["rth0"] = gs.pop("rth0")
     state = dict(st)
