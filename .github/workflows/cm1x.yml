@@ -61,7 +61,16 @@ jobs:
           sed -e 's/^ *timax *=.*/ timax  =  60.0,/' -e 's/^ *tapfrq *=.*/ tapfrq =  60.0,/' \
             ports/reference/supercell_kessler/namelist.input > "$sc/namelist.input"
           echo 5 > "$sc/every"
-          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler
+          # Morrison (ptype=5): morrison_bubble 300 steps dumped every 30,
+          # morrison_efall (eqtset=1, efall=1) 200 steps dumped every 50
+          for c in morrison_bubble:30 morrison_efall:50; do
+            mc=../kokkos-ref/cxx/cases/${c%%:*}
+            mkdir -p "$mc"
+            cp ports/reference/${c%%:*}/namelist.input "$mc/namelist.input"
+            echo ${c##*:} > "$mc/every"
+          done
+          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler \
+            morrison_bubble morrison_efall
           rm -f ref/dumps/*/cm1out*.nc
       - uses: actions/upload-artifact@v4
         with:
@@ -116,6 +125,7 @@ jobs:
           CM1X_REF_DIR_LONG: ${{ github.workspace }}/ref/kessler_periodic_long_r8
           CM1X_DUMP_DIR: ${{ github.workspace }}/ref/dumps/kessler_periodic
           CM1X_DUMP_DIR_SC: ${{ github.workspace }}/ref/dumps/supercell_kessler
+          CM1X_DUMP_DIR_MORRISON: ${{ github.workspace }}/ref/dumps
           CM1X_REF_DIR_SC: ${{ github.workspace }}/ref/supercell_kessler_r8
           CM1X_REF_DIR_SC_LONG: ${{ github.workspace }}/ref/supercell_kessler_long_r8
         run: python -m pytest ports/array -v -rs --durations=15

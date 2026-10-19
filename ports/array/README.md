@@ -10,6 +10,31 @@ implicit acoustic steps, 5th-order flux-form advection) and Kessler warm-rain
 microphysics, on a uniform periodic grid without terrain. Reference case:
 `ports/reference/kessler_periodic/namelist.input`.
 
+Ice microphysics: Morrison two-moment (`ptype=5`, `cm1x/morrison.py`) runs
+through the same `mp_driver`; the generic ice-scheme wiring (param.F moisture
+tables for ptype=3/5, `iice=1` paths in solve2/turb/pdef/getcvm/init3d) is in
+`cm1x/namelist.py` and the dynamics modules. Morrison notes:
+
+* All columns and levels are computed at once; the Fortran's per-level GOTOs
+  become masks, sedimentation sub-steps run as masked iterations
+  (`bk.fori_loop`; `nfall_max` gives a static trip count for reverse-mode AD
+  under jit), the fall-speed fill below the precipitation edge is a `bk.scan`.
+* Switches as CM1 hard-wires them (IACT=2, IBASE=1, ISUB=1, ILIQ=0, INUC=0,
+  IGRAUP=0, IRAIN=0); `ihail`, `ndcnst`, `eqtset`, `efall`, `testcase=5` from
+  the namelist. `inum=0` (predicted droplet number, 11 moisture arrays) is a
+  cm1x option that CM1 cannot select without editing GRAUPEL_INIT.
+  Not ported: reflectivity (`getdbz`), effective radii (`dorad`), the
+  dotbud/doqbud budget diagnostics.
+* Harness: the scheme's routines are private to `module_mp_GRAUPEL`;
+  `tests/fortran.py` can link a module's *public variant*
+  (`build_driver(..., public=("morrison",))`, `public_module`) so
+  `drv_morrison.F90` calls GRAUPEL_INIT, GAMMA, DERF1, satadj2 and MP_GRAUPEL
+  directly; `drv_morrison_mp.F90` runs CM1's mp_driver. numpy reproduces them
+  bit for bit (with numpy's AVX-512 libm disabled, `NPY_DISABLE_CPU_FEATURES`),
+  jax to ~1e-14. Whole-model cases: `ports/reference/morrison_bubble`,
+  `morrison_efall` (`tests/test_model_dumps_morrison.py`,
+  `CM1X_DUMP_DIR_MORRISON`).
+
 ```bash
 pip install -e ports/array[test]     # plus jax and/or torch if wanted
 pytest ports/array                    # every test runs on each installed backend
