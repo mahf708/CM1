@@ -386,6 +386,16 @@ TEST_CASE("dyncore + terrain + LES TKE + Kessler: kessler_terrain_tke_openbc (op
   run_case("kessler_terrain_tke_openbc", 0.0, true, true);
 }
 
+// The from-Model::init runs of the terrain + physics cases repeat what the
+// dump runs check; skip them when the step tests are capped (CM1K_MAX_STEP,
+// the bounds-checked debug build) to keep that job inside its timeout. The
+// pbl2/GFS terrain cases are skipped there entirely.
+static bool skip_capped_init(const char* name) {
+  if (cm1k::testing::max_step() >= 150) return false;
+  WARN(name << " from Model::init skipped (CM1K_MAX_STEP < 150)");
+  return true;
+}
+
 TEST_CASE("dyncore + terrain + LES TKE + surface layer + Kessler: kessler_terrain_tke_sfc vs Fortran",
           "[dyn][step][kessler][turb][terrain][sfc]") {
   // kessler_terrain_tke with surface drag (sfcmodel=1, bbc=3, isfcflx=0):
@@ -396,6 +406,7 @@ TEST_CASE("dyncore + terrain + LES TKE + surface layer + Kessler: kessler_terrai
 
 TEST_CASE("dyncore + terrain + LES TKE + surface layer + Kessler: kessler_terrain_tke_sfc from Model::init (no dump)",
           "[dyn][step][init][kessler][turb][terrain][sfc]") {
+  if (skip_capped_init("kessler_terrain_tke_sfc")) return;
   run_case("kessler_terrain_tke_sfc", 0.0, true, true);
 }
 
@@ -408,6 +419,7 @@ TEST_CASE("dyncore + terrain + YSU + revised MM5 surface layer + SLAB: ysu_terra
 
 TEST_CASE("dyncore + terrain + YSU + revised MM5 surface layer + SLAB: ysu_terrain_dry from Model::init (no dump)",
           "[dyn][step][init][pbl][sfc][ysu][terrain]") {
+  if (skip_capped_init("ysu_terrain_dry")) return;
   run_case("ysu_terrain_dry", 0.0, true, true);
 }
 
@@ -420,6 +432,7 @@ TEST_CASE("dyncore + terrain + RRTMG + YSU + MM5 surface layer + SLAB + Kessler:
 
 TEST_CASE("dyncore + terrain + RRTMG + YSU + Kessler: rrtmg_ysu_terrain from Model::init (no dump)",
           "[dyn][step][init][pbl][sfc][ysu][rrtmg][terrain]") {
+  if (skip_capped_init("rrtmg_ysu_terrain")) return;
   run_case("rrtmg_ysu_terrain", 0.0, true, true);
 }
 
@@ -427,6 +440,10 @@ TEST_CASE("dyncore + terrain + simple PBL + surface layer + Kessler: pbl2_terrai
           "[dyn][step][pbl][sfc][terrain]") {
   // pbl2_kessler over the itern=3 hill: gethpbl2 on zh, za = zh-zs and
   // hpbl-zs, turbparam_horiz's tlh with zs, turbuz/turbvz terrain branches
+  if (cm1k::testing::max_step() < 150) {
+    WARN("pbl2_terrain_kessler skipped (CM1K_MAX_STEP < 150)");
+    return;
+  }
   run_case("pbl2_terrain_kessler", 0.0, false, true);
   run_case("pbl2_terrain_kessler", 0.0, true, true);
 }
@@ -434,6 +451,10 @@ TEST_CASE("dyncore + terrain + simple PBL + surface layer + Kessler: pbl2_terrai
 TEST_CASE("dyncore + terrain + GFS-EDMF + revised MM5 surface layer + SLAB: gfs_terrain_dry vs Fortran",
           "[dyn][step][pbl][sfc][terrain]") {
   // gfs_dry over the itern=3 hill (BL_GFSEDMF gets z = zf, heights above sea level)
+  if (cm1k::testing::max_step() < 150) {
+    WARN("gfs_terrain_dry skipped (CM1K_MAX_STEP < 150)");
+    return;
+  }
   run_case("gfs_terrain_dry", 0.0, false, true);
   run_case("gfs_terrain_dry", 0.0, true, true);
 }
