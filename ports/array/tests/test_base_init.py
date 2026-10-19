@@ -186,6 +186,18 @@ def test_base_vs_fortran(bk, cfg, variant):
         cfg.vmove,
         *(pg[k] for k in ("cgs1", "cgs2", "cgs3", "cgt1", "cgt2", "cgt3")),
         cfg.tsmall,
+        # testcase, eqtset, iice, tsk0, hurr_vg, hurr_rotate, lspgrad, wbc..nbc
+        0,
+        2,
+        0,
+        299.28,
+        40.0,
+        0.0,
+        0,
+        1,
+        1,
+        1,
+        1,
     ]
     ins = {k: np_(bk, pg[k]) for k in ("zh", "mh", "rmh", "c1", "c2", "zf", "mf")}
     ins["params"] = np.array(params, dtype=np.float64)

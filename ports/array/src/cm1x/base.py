@@ -1,14 +1,14 @@
 """Base state (port of src/base.F) and the grid-metric parts of src/param.F.
 
-Scope: no terrain, no grid stretching, uniform dx/dy/dz;
-``isnd = 5`` (Weisman-Klemp analytic sounding) and ``iwnd = 0/1/2``; dry
-(``imoist = 0``) or moist (``imoist = 1``); ``imove = 0/1``.
+Scope: uniform dx/dy/dz (terrain via init_terrain); every sounding
+(``isnd`` 1-5, 7-15, 17-23) and wind profile (``iwnd`` 0-11) of base.F (see
+:mod:`cm1x.base_snd`); dry (``imoist = 0``) or moist (``imoist = 1``);
+``imove = 0/1``. The testcase large-scale forcing profiles raise.
 
-The base state is horizontally homogeneous, so each routine computes one
-vertical column (Python index == Fortran ``k`` because ``ngz = 1``) with the
-same operation order as CM1, then broadcasts it to the 3-D halo'd arrays CM1
-uses, ``a[k, j, i]``. Lateral ``bcs``/``bcu``/``bcv`` calls are therefore exact
-no-ops; ``extrapbcs`` (k = 0 and nk+1) is applied to the column.
+Every column is computed with the same operation order as CM1 on the 3-D
+halo'd arrays CM1 uses, ``a[k, j, i]`` (Python index == Fortran ``k`` because
+``ngz = 1``); then the lateral ``bcs``/``bcu``/``bcv`` and ``extrapbcs``
+(k = 0 and nk+1) fill the ghost cells as in CM1.
 
 All literal constants are turned into ``bk.dtype`` scalars before arithmetic so
 that a float32 backend reproduces CM1's single-precision build closely.
@@ -523,15 +523,17 @@ def _terrain_metrics(cfg, bk, g: Grid, pg: dict) -> dict:
 # helpers
 
 
-def rslf(bk, p, t, ptype: int = 1):
-    """Liquid saturation mixing ratio (cm1libs.F RSLF)."""
+def rslf(bk, p, t, ptype: int = 1, eps=None):
+    """Liquid saturation mixing ratio (cm1libs.F RSLF); ``eps`` = rd/rv
+    (default: the testcase = 0 constants)."""
     xp = bk.xp
     S = bk.asarray
     if ptype == 4:
         return S(380.00) * xp.exp(S(17.2693882) - S(4097.8531) / (t - S(35.86))) / p
     esl = S(611.2) * xp.exp(S(17.67) * (t - S(273.15)) / (t - S(29.65)))
     esl = xp.minimum(esl, p * S(0.5))
-    eps = S(C.rd) / S(C.rv)
+    if eps is None:
+        eps = S(C.rd) / S(C.rv)
     return eps * esl / (p - esl)
 
 
@@ -548,8 +550,25 @@ def extrapbcs(bk, s, cg, nk):
 # base.F
 
 
+# testcases for which base.F also sets large-scale forcing profiles (wprof,
+# ufrc/vfrc, ug/vg, thfrc/qvfrc, ulspg/vlspg, dvdr, nudging): not ported
+FORCING_TESTCASES = (3, 4, 5, 6, 7, 10, 11, 12, 13, 15)
+
+
 def base(
-    bk, cfg, *, zh, mh, rmh, c1, c2, zf, mf, cg: dict, g: Grid | None = None
+    bk,
+    cfg,
+    *,
+    zh,
+    mh,
+    rmh,
+    c1,
+    c2,
+    zf,
+    mf,
+    cg: dict,
+    g: Grid | None = None,
+    profiles_only: bool = False,
 ) -> dict:
     """Port of ``base`` (src/base.F): sounding, hydrostatic base state, winds.
 
@@ -557,7 +576,13 @@ def base(
     ``input`` scalars in CM1; e.g. the dict returned by ``param_grid``).
     Every column is computed (vectorised over ``[j, i]``, same per-column
     operation order as CM1), so with terrain (``zh`` varying in x/y) the base
-    state is 3-D exactly like CM1's.
+    state is 3-D exactly like CM1's. The soundings (isnd) and wind profiles
+    (iwnd) are in :mod:`cm1x.base_snd`.
+
+    base.F also sets large-scale forcing profiles for some testcases
+    (``FORCING_TESTCASES``); those are not ported and raise
+    NotImplementedError, unless ``profiles_only`` (the harness tests of the
+    testcase-dependent soundings/winds), which returns the base state alone.
 
     Returns arrays keyed by Fortran name: pi0, prs0, rho0, thv0, th0, rth0, qv0,
     qc0, qi0, rr0, rf0, rrf0, t0, rh0 (scalar points), u0, v0 (staggered),
@@ -565,22 +590,26 @@ def base(
     qsurf, thsurf and the 0-d array pmin.
     """
     from . import bc as _bc
+    from . import base_snd
 
     xp = bk.xp
     S = bk.asarray
     nk = zh.shape[0] - 2
     shp_s = zh.shape
     sh2 = shp_s[1:]
-    shp_u = (shp_s[0], shp_s[1], shp_s[2] + 1)
-    shp_v = (shp_s[0], shp_s[1] + 1, shp_s[2])
     if g is None:
         g = Grid(cfg.ni, cfg.nj, cfg.nk, float(cfg.dx), float(cfg.dy), float(cfg.dz))
     imoist = cfg.imoist
-    ptype = cfg.ptype
     terrain = bool(cfg.get("terrain_flag", False))
+    testcase = int(cfg.get("testcase", 0) or 0)
+    if testcase in FORCING_TESTCASES and not profiles_only:
+        raise NotImplementedError(
+            f"testcase={testcase}: base.F large-scale forcing profiles are not ported"
+        )
     cg = {k: S(cg[k]) for k in ("cgs1", "cgs2", "cgs3", "cgt1", "cgt2", "cgt3")}
 
-    grav, cp, rd, rv, p00 = S(C.g), S(C.cp), S(C.rd), S(C.rv), S(C.p00)
+    K = base_snd.consts(testcase)
+    grav, cp, rd, rv, p00 = S(K["g"]), S(K["cp"]), S(K["rd"]), S(K["rv"]), S(C.p00)
     reps = rv / rd
     cpdrd = cp / rd
     rovcp = rd / cp
@@ -592,90 +621,11 @@ def base(
         return bk.zeros((n,) + sh2)
 
     zc = zh  # [k, j, i], Python index == Fortran k
-    z1 = Z(1)
-    qc0 = Z(nk + 2)
-    qi0 = Z(nk + 2)
 
-    if cfg.isnd == 5:
-        # ---------------- isnd = 5: Weisman-Klemp analytic sounding
-        z_trop, th_trop, t_trop = S(12000.0), S(343.0), S(213.0)
-        th_sfc, prs_sfc, qv_pbl = S(300.0), S(100000.0), S(0.014)
-
-        pi_sfc = (prs_sfc / p00) ** (rd / cp)
-        qv_sfc = rslf(bk, prs_sfc, th_sfc * pi_sfc, ptype)
-        thv_sfc = th_sfc * (one + qv_sfc * reps) / (one + qv_sfc)
-
-        zi = zc[1 : nk + 1]
-        ratio = (zi / z_trop) ** S(1.25)
-        below = zi < z_trop
-        th_in = xp.where(
-            below,
-            th_sfc + (th_trop - th_sfc) * ratio,
-            th_trop * xp.exp((grav / (t_trop * cp)) * (zi - z_trop)),
-        )
-        if imoist == 1:
-            rh_in = xp.where(below, one - S(0.75) * ratio, S(0.25))
-        else:
-            rh_in = Z(nk)
-        th0 = xp.concat([th_in[:1], th_in, th_in[-1:]])
-        rh0 = xp.concat([z1, rh_in, z1])
-        qv0 = Z(nk + 2)
-        pi0 = Z(nk + 2)
-        prs0 = Z(nk + 2)
-
-        for _n in range(20):
-            thv0 = th0 * (one + reps * qv0) / (one + qv0)
-            pis = [pi_sfc - grav * zc[1] / (cp * half * (thv_sfc + thv0[1]))]
-            for k in range(2, nk + 1):
-                pis.append(
-                    pis[-1]
-                    - grav * (zc[k] - zc[k - 1]) / (cp * half * (thv0[k] + thv0[k - 1]))
-                )
-            pi_in = xp.stack(pis)
-            pi0 = xp.concat([pi0[:1], pi_in, pi0[-1:]])
-            prs_in = p00 * (pi_in ** (cp / rd))
-            prs0 = xp.concat([prs0[:1], prs_in, prs0[-1:]])
-            qv_in = rh_in * rslf(bk, prs_in, th_in * pi_in, ptype)
-            qv_in = xp.where(qv_in > qv_pbl, qv_pbl, qv_in)
-            qv0 = xp.concat([qv0[:1], qv_in, qv0[-1:]])
-
-        rh_in = qv0[1 : nk + 1] / rslf(
-            bk, prs0[1 : nk + 1], th0[1 : nk + 1] * pi0[1 : nk + 1], ptype
-        )
-        rh0 = xp.concat([rh0[:1], rh_in, rh0[-1:]])
-
-        psurf = prs_sfc
-        tsurf = th_sfc * ((psurf * rp00) ** rovcp)
-        if imoist == 1:
-            q1 = cg["cgs1"] * qv0[1, 0, 0] + cg["cgs2"] * qv0[2, 0, 0]
-            q1 = q1 + cg["cgs3"] * qv0[3, 0, 0]
-            qsurf = xp.where(qv0[1, 0, 0] < qv_pbl, q1, qv_pbl)
-        else:
-            qsurf = zero
-    elif cfg.isnd == 9:
-        # ---------------- isnd = 9: dry, constant Brunt-Vaisala frequency
-        ns1 = S(0.0001)
-        zl1 = 40000.0
-        if float(xp.max(zc[1 : nk + 2])) > zl1 or float(xp.min(zc[1])) >= zl1:
-            raise NotImplementedError("isnd=9 above zl1 = 40 km not ported")
-        th_sfc, pi_sfc = S(288.0), S(1.0)
-        psurf = p00 * (pi_sfc ** (cp / rd))
-        tsurf = th_sfc * pi_sfc
-        zi = zc[1 : nk + 1]
-        thv_in = th_sfc * xp.exp(ns1 * zi / grav)
-        pi_in = pi_sfc + grav * grav / (cp * ns1 * th_sfc) * (
-            xp.exp(-ns1 * zi / grav) - one
-        )
-        prs_in = p00 * (pi_in**cpdrd)
-        # rh0 = 0 => qv0 = 0 and th0 = thv0*(1+0+0)/(1+0) = thv0 exactly
-        th0 = xp.concat([z1, thv_in, z1])
-        pi0 = xp.concat([z1, pi_in, z1])
-        prs0 = xp.concat([z1, prs_in, z1])
-        qv0 = Z(nk + 2)
-        rh0 = Z(nk + 2)
-        qsurf = zero
-    else:
-        raise NotImplementedError(f"isnd={cfg.isnd} not ported (only isnd=5, 9)")
+    snd = base_snd.sounding(bk, cfg, zh=zh, cg=cg, g=g)
+    pi0, prs0, th0, qv0 = snd["pi0"], snd["prs0"], snd["th0"], snd["qv0"]
+    qc0, qi0, rh0 = snd["qc0"], snd["qi0"], snd["rh0"]
+    psurf, tsurf, qsurf = snd["psurf"], snd["tsurf"], snd["qsurf"]
 
     # ---------------- ghost cells
     def bcx(a):
@@ -741,99 +691,38 @@ def base(
         # module scalars keep the last column's values (i = ie, j = je)
         thsurf = ths[-1, -1]
         qsurf = qs[-1, -1]
-        if float(psurf) < tsm:
-            psurf = prs0s[3, 3]
-        if float(tsurf) <= tsm:
-            tsurf = (
-                cg["cgs1"] * t0[1, 3, 3]
-                + cg["cgs2"] * t0[2, 3, 3]
-                + cg["cgs3"] * t0[3, 3, 3]
-            )
-        if float(qsurf) <= tsm:
-            qsurf = (
-                cg["cgs1"] * qv0[1, 3, 3]
-                + cg["cgs2"] * qv0[2, 3, 3]
-                + cg["cgs3"] * qv0[3, 3, 3]
-            )
-        thsurf = tsurf / ((psurf * rp00) ** rovcp)
+    # (Fortran i = j = 1 is Python index 3)
+    if float(psurf) < tsm:
+        psurf = prs0s[3, 3]
+    if float(tsurf) <= tsm:
+        tsurf = (
+            cg["cgs1"] * t0[1, 3, 3]
+            + cg["cgs2"] * t0[2, 3, 3]
+            + cg["cgs3"] * t0[3, 3, 3]
+        )
+    if float(qsurf) <= tsm:
+        qsurf = (
+            cg["cgs1"] * qv0[1, 3, 3]
+            + cg["cgs2"] * qv0[2, 3, 3]
+            + cg["cgs3"] * qv0[3, 3, 3]
+        )
+    thsurf = tsurf / ((psurf * rp00) ** rovcp)
 
-    # ---------------- base-state wind (iwnd)
-    # computed on every column, then cut to the (i, j) range CM1 sets for
-    # this iwnd (zero elsewhere, as CM1's initial u0/v0), then bcu/bcv and
-    # the k = 0, nk+1 extrapolation (with mixed open/periodic boundaries
-    # the halo corners keep those zeros, as in CM1).
-    zfull = xp.concat([zc[:, :, :1], zc, zc[:, :, -1:]], axis=2)
-    zu = half * (zfull[:, :, :-1] + zfull[:, :, 1:])  # u points
-    zfull = xp.concat([zc[:, :1, :], zc, zc[:, -1:, :]], axis=1)
-    zv = half * (zfull[:, :-1, :] + zfull[:, 1:, :])  # v points
-    zu, zv = zu[1 : nk + 1], zv[1 : nk + 1]
-    if cfg.iwnd in (0, None):
-        u_in = bk.zeros(zu.shape)
-        v_in = bk.zeros(zv.shape)
-    elif cfg.iwnd == 1:
-        udep1, udep2, uc1, uc2 = S(0.0), S(2500.0), S(0.0), S(10.0)
-        z = zu
-        u_in = xp.where(
-            z < udep1,
-            uc1,
-            xp.where(
-                (z > udep1) & (z < udep2),
-                (uc2 - uc1) * (z - udep1) / (udep2 - udep1) + uc1,
-                uc2,
-            ),
-        )
-        v_in = bk.zeros(zv.shape)
-    elif cfg.iwnd == 2:
-        udep1, udep2, umax1, umax2 = S(2000.0), S(6000.0), S(7.0), S(31.0)
-        pi180 = S(C.pi) / S(180.0)
-        z = zu
-        angle = S(90.0) * (z / udep1) * pi180
-        u_in = xp.where(
-            z <= udep1,
-            umax1 - umax1 * xp.cos(angle),
-            xp.where(
-                z <= udep2,
-                umax1 + (z - udep1) * (umax2 - umax1) / (udep2 - udep1),
-                umax2,
-            ),
-        )
-        vmax1 = umax1
-        anglev = S(90.0) * (zv / udep1) * pi180
-        v_in = xp.where(zv <= udep1, vmax1 * xp.sin(anglev), vmax1)
-    elif cfg.iwnd == 6:
-        tc = int(cfg.get("testcase", 0))
-        uval, vval = {1: (1.0, 0.0), 2: (15.0, 0.0), 4: (7.0, -5.5), 9: (8.0, 0.0)}.get(
-            tc, {11: (2.0, 0.0), 12: (20.0, 0.0)}.get(tc, (10.0, 0.0))
-        )
-        u_in = S(uval) + bk.zeros(zu.shape)
-        v_in = S(vval) + bk.zeros(zv.shape)
+    # ---------------- base-state wind (iwnd; isnd = 7: from input_sounding)
+    if int(cfg.isnd) == 7:
+        u0, v0 = snd["u0"], snd["v0"]
     else:
-        raise NotImplementedError(f"iwnd={cfg.iwnd} not ported")
-
+        u0, v0 = base_snd.wind(bk, cfg, zh=zh, g=g)
     if cfg.imove == 1:
+        # k = 1..nk, j = 1..nj+1, i = 1..ni+1 (Python index = Fortran + 2)
         if terrain:
             raise NotImplementedError("imove=1 with terrain")
-        u_in = u_in - S(float(cfg.umove))
-        v_in = v_in - S(float(cfg.vmove))
-
-    # Fortran (j, i) ranges set by each iwnd option; Python index = Fortran + 2
-    rng = {
-        1: (((0, g.nj + 1), (0, g.ni + 2)), ((0, g.nj + 2), (0, g.ni + 1))),
-        2: (((1, g.nj), (1, g.ni + 1)), ((1, g.nj + 1), (1, g.ni))),
-    }.get(int(cfg.iwnd or 0))
-    if rng is not None:
-
-        def _cut(a, jr, ir):
-            m = bk.zeros(a.shape[1:])
-            m = bk.set(
-                m, (slice(jr[0] + 2, jr[1] + 3), slice(ir[0] + 2, ir[1] + 3)), 1.0
-            )
-            return a * m[None]
-
-        u_in, v_in = _cut(u_in, *rng[0]), _cut(v_in, *rng[1])
-
-    u0 = xp.concat([bk.zeros((1,) + shp_u[1:]), u_in, bk.zeros((1,) + shp_u[1:])])
-    v0 = xp.concat([bk.zeros((1,) + shp_v[1:]), v_in, bk.zeros((1,) + shp_v[1:])])
+        kk = xp.arange(nk + 2)[:, None, None]
+        mk = (kk >= 1) & (kk <= nk)
+        mu = mk & base_snd._ji_mask(bk, u0.shape[1:], 1, g.nj + 1, 1, g.ni + 1)[None]
+        mv = mk & base_snd._ji_mask(bk, v0.shape[1:], 1, g.nj + 1, 1, g.ni + 1)[None]
+        u0 = xp.where(mu, u0 - S(float(cfg.umove)), u0)
+        v0 = xp.where(mv, v0 - S(float(cfg.vmove)), v0)
     u0 = extrapbcs(bk, _bc.bcu(bk, g, u0, cfg), cg, nk)
     v0 = extrapbcs(bk, _bc.bcv(bk, g, v0, cfg), cg, nk)
 

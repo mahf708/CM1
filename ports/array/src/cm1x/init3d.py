@@ -21,7 +21,10 @@ from .misc import level_sums, qp_sum
 __all__ = ["init3d", "getset"]
 
 
-def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, centery):
+def init3d(
+    bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, centery,
+    qc0=None, qi0=None,
+):  # fmt: skip
     """Port of ``init3d`` for the options listed in the module docstring.
 
     Returns: ua, u3d, va, v3d, wa, w3d (=0), tha (theta perturbation), qa,
@@ -48,6 +51,18 @@ def init3d(bk, cfg, *, xh, yh, zh, pi0, prs0, th0, thv0, qv0, u0, v0, centerx, c
     if numq:
         qa = bk.zeros((numq,) + shp_s)
         qa = bk.set(qa, cfg.nqv - 1, qv0)
+        # "ensure that certain idealized cases work": the saturated soundings
+        # carry their base-state cloud water (and cloud ice) into qa
+        isnd = int(cfg.get("isnd", 0) or 0)
+        if int(cfg.get("ptype", 0) or 0) >= 1:
+            if isnd in (4, 9, 10, 11, 15) and qc0 is not None:
+                qa = bk.set(qa, cfg.nqc - 1, qc0)
+            if isnd in (4, 9, 10) and int(cfg.get("iice", 0) or 0) == 1:
+                if qi0 is None or not cfg.get("nqi", 0):
+                    raise NotImplementedError(
+                        "init3d: qi0 -> qa(nqi) needs an ice scheme"
+                    )
+                qa = bk.set(qa, cfg.nqi - 1, qi0)
     else:
         qa = bk.zeros((0,) + shp_s)
 
