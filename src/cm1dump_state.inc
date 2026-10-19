@@ -257,4 +257,29 @@
           call dump3('xkzh',xkzh,ibb,ieb,jbb,jeb,kbb,keb)
           call dump3('xkzm',xkzm,ibb,ieb,jbb,jeb,kbb,keb)
         endif
+        if( testcase.ge.1 .or. lspgrad.ge.2 )then
+          ! testcase forcing (base.F): large-scale w, prescribed
+          ! tendencies, geostrophic/gradient wind and large-scale pressure
+          ! gradient profiles (ulspg/vlspg: the last solve1's, lspgrad=2,3)
+          call dump1('wprof',wprof,kb,ke)
+          call dump1('ufrc',ufrc,kb,ke)
+          call dump1('vfrc',vfrc,kb,ke)
+          call dump1('thfrc',thfrc,kb,ke)
+          call dump1('qvfrc',qvfrc,kb,ke)
+          call dump1('ug',ug,kb,ke)
+          call dump1('vg',vg,kb,ke)
+          call dump1('dvdr',dvdr,kb,ke)
+          call dump1('ulspg',ulspg,kb,ke)
+          call dump1('vlspg',vlspg,kb,ke)
+        endif
+        if( testcase.eq.4 .or. testcase.eq.5 )then
+          ! simple radiation (testcase_simple_phys.F): o30 holds frad
+          call dump3('frad',o30,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('thraten',thraten,ibr,ier,jbr,jer,kbr,ker)
+          call dump3('zir',zir,ibr,ier,jbr,jer,1,1)
+        endif
+        if( testcase.ge.1 .and. testcase.le.7 .and. bbc.eq.3 .and. ( .not. use_pbl ) )then
+          ! max-gradient boundary-layer depth (turb.F, testcase 1-7)
+          call dump3('hpbl',hpbl,ibl,iel,jbl,jel,1,1)
+        endif
         call dump_end()

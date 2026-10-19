@@ -434,7 +434,8 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
   const int isnd = nl.geti("isnd", 1), iwnd = nl.geti("iwnd", 0);
   const int imoist = nl.geti("imoist", 0), ptype = nl.geti("ptype", 0);
   const int psolver = nl.geti("psolver", 3), imove = nl.geti("imove", 0);
-  if (nl.geti("testcase", 0) != 0) unsupported("testcase != 0");
+  const int testcase = nl.geti("testcase", 0);
+  if (testcase < 0 || testcase > 15) unsupported("testcase = " + std::to_string(testcase));
   if (nl.getb("do_adapt_move", false)) unsupported("do_adapt_move = .true.");
   if (imoist == 1 && ptype != 0 && ptype != 1) unsupported("ptype = " + std::to_string(ptype));
 
@@ -716,8 +717,15 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
           }
         }
   } else if (iwnd == 6) {
-    // constant wind (testcase = 0: the default uval, vval)
-    const Real uval = 10.0, vval = 0.0;
+    // constant wind (uval, vval depend on the test case)
+    Real uval = 10.0, vval = 0.0;
+    if (testcase == 1) { uval = 1.0; vval = 0.0; }          // Sullivan and Patton (2011)
+    else if (testcase == 2) { uval = 15.0; vval = 0.0; }    // Moeng and Sullivan (1994)
+    else if (testcase == 4) { uval = 7.0; vval = -5.5; }    // Stevens et al (2005)
+    else if (testcase == 9) { uval = 8.0; vval = 0.0; }     // Beare et al (2006)
+    else if (testcase == 11) { uval = 2.0; vval = 0.0; }    // SAS
+    else if (testcase == 12) { uval = 20.0; vval = 0.0; }   // Martinuzzi and Tropea (1993)
+    else if (testcase == 14) { uval = 10.0; vval = 0.0; }   // Brown et al (2002)
     for (int k = kb; k <= ke; ++k)
       for (int j = jb; j <= je; ++j)
         for (int i = ib; i <= ie + 1; ++i) u0(i, j, k) = uval;
@@ -755,6 +763,13 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
       v0(i, j, 0) = ex.cgs1 * v0(i, j, 1) + ex.cgs2 * v0(i, j, 2) + ex.cgs3 * v0(i, j, 3);
       v0(i, j, nk + 1) = ex.cgt1 * v0(i, j, nk) + ex.cgt2 * v0(i, j, nk - 1) + ex.cgt3 * v0(i, j, nk - 2);
     }
+
+  // testcase 13 (UF Boundary Layer Wind Tunnel): base.F sets the whole
+  // u0, v0 arrays after the ghost cells (forcing profiles: physics/testcase)
+  if (testcase == 13 && isnd != 7) {
+    Kokkos::deep_copy(u0.view(), 18.0);
+    Kokkos::deep_copy(v0.view(), 0.0);
+  }
 
   for (int k = kb; k <= ke; ++k)
     for (int j = jb; j <= je; ++j)
@@ -872,6 +887,33 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
     for (int j = jb; j <= je + 1; ++j)
       for (int i = ib; i <= ie; ++i) va(i, j, k) = v0(i, j, k);
 
+  // initial TKE of some test cases (init3d.F)
+  const int testcase = nl.geti("testcase", 0);
+  auto zf = g.zf.to_host();
+  if (idoles && iusetke && (testcase == 3 || testcase == 4 || testcase == 5 || testcase == 9 || testcase == 11)) {
+    if (testcase == 3) {
+      // shallow Cu case (Siebesma at al, 2003, JAS)
+      for (int k = 1; k <= nk + 1; ++k)
+        for (int j = B.jbt; j <= B.jet; ++j)
+          for (int i = B.ibt; i <= B.iet; ++i) tkea(i, j, k) = std::max(0.0, 1.0 - zf(i, j, k) / 3000.0);
+    } else if (testcase == 9 || testcase == 11) {
+      // stable boundary layer (Beare et al. 2006, BLM)
+      for (int k = 1; k <= nk + 1; ++k)
+        for (int j = B.jbt; j <= B.jet; ++j)
+          for (int i = B.ibt; i <= B.iet; ++i) {
+            if (zh(i, j, k) < 255.0) {
+              const Real r = 1.0 - zf(i, j, k) / 255.0;
+              tkea(i, j, k) = 0.4 * ((r * r) * r);   // r**3
+            } else {
+              tkea(i, j, k) = 0.0;
+            }
+          }
+    } else {
+      Kokkos::deep_copy(tkea.view(), 1.0);
+    }
+    bcw(bc, tkea, 1);
+  }
+
   if (imoist == 1) {
     auto qv = q3(nqv);
     for (int k = B.kbm; k <= B.kem; ++k)
@@ -908,21 +950,121 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
   }
   // (maintain_rh is .false. for iinit = 0, 1)
 
-  // random perturbations (testcase = 0): +-0.25 K on theta, two draws per
-  // point of (0:nx+2, 0:ny+2, 1:nk), i fastest (serial: i = ii, j = jj).
-  // init3d.F seeds the generator and draws one number ("rand-1") first.
+  // random perturbations (init3d.F), by test case. Draws are made over the
+  // whole domain, i fastest (serial: i = ii, j = jj); init3d.F seeds the
+  // generator and draws one number ("rand-1") first.
   if (irandp == 1) {
     GfortranRandom rng;
     (void)rng.next();   // rand-1
-    const Real amplitude = 0.25;
-    for (int k = 1; k <= nk; ++k)
-      for (int jj = 0; jj <= B.ny + 2; ++jj)
-        for (int ii = 0; ii <= B.nx + 2; ++ii) {
-          const Real rand = rng.next();
-          (void)rng.next();   // rand2
-          const int i = ii, j = jj;
-          if (i >= ib && i <= ie && j >= jb && j <= je) tha(i, j, k) = tha(i, j, k) + amplitude * (2.0 * rand - 1.0);
-        }
+    auto inside = [&](int i, int j) { return i >= ib && i <= ie && j >= jb && j <= je; };
+    if (testcase == 0) {
+      // +-0.25 K on theta, two draws per point of (0:nx+2, 0:ny+2, 1:nk)
+      const Real amplitude = 0.25;
+      for (int k = 1; k <= nk; ++k)
+        for (int jj = 0; jj <= B.ny + 2; ++jj)
+          for (int ii = 0; ii <= B.nx + 2; ++ii) {
+            const Real rand = rng.next();
+            (void)rng.next();   // rand2
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+    } else if (testcase == 1 || testcase == 2 || testcase == 6 || testcase == 10 || testcase == 11 || testcase == 15) {
+      // boundary layers: +-0.1 K below 100 m, two draws per point
+      const Real amplitude = 0.10;
+      for (int k = 1; k <= nk; ++k) {
+        if (!(zh(1, 1, k) <= 100.0)) continue;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            (void)rng.next();   // rand2
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+      }
+    } else if (testcase == 3) {
+      // shallow Cu (Siebesma et al, 2003): theta and qv below 1600 m
+      if (imoist != 1) unsupported("testcase = 3 needs imoist = 1");
+      auto qv = q3(nqv);
+      for (int k = 1; k <= nk; ++k) {
+        if (!(zh(1, 1, k) <= 1600.0)) continue;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            const Real rand2 = rng.next();
+            if (inside(ii, jj)) {
+              tha(ii, jj, k) = tha(ii, jj, k) + 0.1 * (2.0 * rand - 1.0);
+              qv(ii, jj, k) = qv(ii, jj, k) + 0.001 * 0.025 * (2.0 * rand2 - 1.0);
+            }
+          }
+      }
+    } else if (testcase == 4 || testcase == 5 || testcase == 7) {
+      // +-0.1 K below 1000 m, one draw per point
+      const Real amplitude = 0.10;
+      for (int k = 1; k <= nk; ++k) {
+        if (!(zh(1, 1, k) <= 1000.0)) continue;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+      }
+    } else if (testcase == 8) {
+      // RCEMIP: the lowest five levels, amplitude 0.10 .. 0.02
+      for (int k = 1; k <= 5; ++k) {
+        const Real amplitude = 0.10 - (k - 1) * 0.02;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+      }
+    } else if (testcase == 9) {
+      // stable boundary layer (Beare et al. 2006): below 50 m
+      const Real amplitude = 0.10;
+      for (int k = 1; k <= nk; ++k) {
+        if (!(zh(1, 1, k) < 50.0)) continue;
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+      }
+    } else if (testcase == 12 || testcase == 13) {
+      // velocity perturbations (+-0.5 m/s) on the base-state wind at scalar
+      // points (dum1, dum2), then interpolated to the u, v points
+      const Real amplitude = 0.5;
+      std::vector<Real> d1v(size_t(ie - ib + 1) * (je - jb + 1)), d2v(d1v.size());
+      auto d1 = [&](int i, int j) -> Real& { return d1v[size_t(i - ib) + size_t(ie - ib + 1) * (j - jb)]; };
+      auto d2 = [&](int i, int j) -> Real& { return d2v[size_t(i - ib) + size_t(ie - ib + 1) * (j - jb)]; };
+      for (int k = 1; k <= nk; ++k) {
+        for (int j = 0; j <= nj + 1; ++j)
+          for (int i = 0; i <= ni + 1; ++i) {
+            d1(i, j) = u0(1, 1, k);
+            d2(i, j) = v0(1, 1, k);
+          }
+        for (int jj = 0; jj <= B.ny + 2; ++jj)
+          for (int ii = 0 + 5; ii <= B.nx + 1 - 5; ++ii) {
+            const Real rand = rng.next();
+            const Real rand2 = rng.next();
+            if (inside(ii, jj)) {
+              d1(ii, jj) = d1(ii, jj) + amplitude * (2.0 * rand - 1.0);
+              d2(ii, jj) = d2(ii, jj) + amplitude * (2.0 * rand2 - 1.0);
+            }
+          }
+        for (int j = 1; j <= nj + 1; ++j)
+          for (int i = 1; i <= ni + 1; ++i) {
+            ua(i, j, k) = 0.5 * (d1(i - 1, j) + d1(i, j));
+            va(i, j, k) = 0.5 * (d2(i, j - 1) + d2(i, j));
+          }
+      }
+    } else {
+      // other test cases (e.g. 14): +-0.1 K everywhere, one draw per point
+      const Real amplitude = 0.10;
+      for (int k = 1; k <= nk; ++k)
+        for (int jj = 0; jj <= B.ny + 1; ++jj)
+          for (int ii = 0; ii <= B.nx + 1; ++ii) {
+            const Real rand = rng.next();
+            if (inside(ii, jj)) tha(ii, jj, k) = tha(ii, jj, k) + amplitude * (2.0 * rand - 1.0);
+          }
+    }
   }
 
   // ---- 3d pressure (setppi) ----

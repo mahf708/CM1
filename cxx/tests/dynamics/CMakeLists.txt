@@ -1,2 +1,3 @@
 cm1k_add_test(dynamics_tests SOURCES dyncore_step_tests.cpp)
 cm1k_add_test(dynamics_options_tests SOURCES dyn_options_step_tests.cpp)
+cm1k_add_test(testcase_tests SOURCES testcase_step_tests.cpp)
