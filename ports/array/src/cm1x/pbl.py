@@ -190,7 +190,7 @@ def wrf_inputs(ctx):
     zs = bk.zeros(S)
 
     def put(v):
-        return bk.set(zs, (K, J, I), v)
+        return bk.set(bk.zeros(S), (K, J, I), v)
 
     th = b["th0"][K, J, I] + ctx.th3d[K, J, I]
     pi = b["pi0"][K, J, I] + ctx.pp3d[K, J, I]
