@@ -1152,11 +1152,14 @@ def pbl(ctx):
     )
     out = {}
     names = [("upten", "rublten"), ("vpten", "rvblten"), ("thpten", "rthblten")]
-    if imoist:
-        names += [("qvpten", "rqvblten"), ("qcpten", "rqcblten")]
-        if qi:
-            names.append(("qipten", "rqiblten"))
+    # turb.F stores RQVBLTEN/RQCBLTEN in qvpten/qcpten even with imoist=0
+    # (CM1 allocates them; nothing reads them then)
+    names += [("qvpten", "rqvblten"), ("qcpten", "rqcblten")]
+    if qi:
+        names.append(("qipten", "rqiblten"))
     for name, key in names:
+        if name not in s:
+            continue
         out[name] = bk.set(bk.copy(s[name]), (K, J, I), r[key])
     K2 = slice(z + 1, z + nk)  # k = 2..nk
     out["xkzm"] = bk.set(bk.copy(s["xkzm"]), (K2, J, I), r["dku3d"])
