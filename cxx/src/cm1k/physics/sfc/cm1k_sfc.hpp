@@ -43,7 +43,10 @@
 //     ipbl = 2 (the simple PBL scheme, physics/pbl), which adds gethpbl2
 //     (bulk-Ri boundary-layer depth hpbl, before getcecd)
 //   * testcase = 0 (so use_avg_sfc = .false.; without ipbl=2, hpbl stays at
-//     its initial 100 m), imove = 0, no terrain, axisymm = 0
+//     its initial 100 m), imove = 0, axisymm = 0
+//   * terrain (terrain_flag) with sfcmodel = 1, 2, 3: turb.F's terrain
+//     lines of the surface block, za = zh(k=1)-zs for getcecd/sfcdiags and
+//     hpbl = hpbl-zs before the surface layer (sfc_prelude)
 //   * imoist = 0, or imoist = 1 with qv = qa(:,:,:,1)
 //
 // Not ported (diagnostics that never feed back): the qv budget in sfcflux
@@ -106,7 +109,8 @@ struct SfcState {
           u10, v10, s10, hfx, qfx, qsfc, wspd;
   // not in the dumps: zntmp (znt with halos, for tkebc and the surface
   // dissipation), t1, hpbl, dsxy, and sfcdiags' other outputs
-  FArray3 zntmp, t1, hpbl, dsxy, br, cda, gz1oz0, th2, t2, q2;
+  // za: turb.F's ppten(k=1), the height of the lowest level above ground
+  FArray3 zntmp, t1, hpbl, dsxy, za, br, cda, gz1oz0, th2, t2, q2;
   void allocate(const Bounds& b);
   // (name, array) of every dumped array, in src/cm1dump_state.inc order
   std::vector<std::pair<std::string, FArray3>> dumped() const;
@@ -154,7 +158,7 @@ void gethpbl2(const Options& o, const Constants& c, const Bounds& b, const FArra
               const FArray3& va, const FArray3& u0, const FArray3& v0, const SfcState& s);
 
 // sfcphys.F getcecd (use_avg_sfc = .false.). za: height of the lowest
-// model level above the surface, here zh(i,j,1).
+// model level above the surface, za(i,j,1) (zh(k=1), less zs with terrain).
 void getcecd(const Options& o, const Bounds& b, const FArray3& zh, const SfcState& s);
 
 // sfcphys.F sfcflux (testcase = 0). qv: qa(:,:,:,nqv), or unused when imoist=0.

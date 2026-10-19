@@ -19,6 +19,9 @@
 // WRF surface layer's / SLAB's arrays; albd from LANDUSE.TBL), testcase = 0,
 // no MYNN (icloud_bl coupling) or MYJ (sfcmodel = 7), PBL ipbl = 0..3 (YSU and
 // GFS-EDMF get rthraten = thraten), eqtset = 1 or 2. Anything else throws.
+// With or without terrain: radiation_driver.F's radopt = 2 body has no
+// terrain branch (dz8w = dz*rmh, p8w/t8w from c1/c2 and cgs/cgt per column;
+// zf is only read by the radopt = 1 path).
 //
 // The RRTMG tables are read from RRTMG_LW_DATA / RRTMG_SW_DATA located by
 // rrtmg::find_data_file ($CM1K_RRTMG_DATA_DIR, the working directory, then

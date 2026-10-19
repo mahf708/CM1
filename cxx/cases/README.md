@@ -12,7 +12,7 @@ diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lat
 except the `*_openbc*` cases),
 free-slip top and bottom, a warm bubble (`iinit = 1`) with no random
 perturbations (`irandp = 0`), and the time-split compressible solver
-(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*`, `pbl2_*`, `ysu_*`, `mynn*`, `myj_*`, `gfs_*` and `nh_mountain_waves*` cases (see the table).
+(`psolver = 3`), `dtl = 6 s`, except the `cbl_sfc*`, `kessler_terrain_tke_sfc`, `pbl2_*`, `ysu_*`, `mynn*`, `myj_*`, `gfs_*` and `nh_mountain_waves*` cases (see the table).
 
 | Case | Grid (nx×ny×nz, dx, dz) | Length | Dumps | What it exercises |
 |---|---|---|---|---|
@@ -45,6 +45,11 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `nh_mountain_waves_long` | 100×1×100, 200 m, 200 m | 900 steps (1800 s, `dtl = 2 s`) | every 150 steps | `nh_mountain_waves` run for 30 min, for long-run drift checks |
 | `kessler_terrain_tke` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | `kessler_tke` over a 3D hill (`terrain_flag = .true.`, `itern = 3`: 500 m, half width 20 km): terrain branches of the TKE scheme (implicit vertical diffusion, `idiss = 1`), Kessler, advection, sound and the warm bubble on sigma levels |
 | `kessler_terrain_tke_openbc` | 32×32×20, 2 km, 500 m | 50 steps (300 s) | every 10 steps | `kessler_terrain_tke` with open-radiative E/W boundaries and free-slip/no-slip walls S/N (`wbc = ebc = 2`, `sbc = 3`, `nbc = 4`, as `kessler_tke_openbc`): `ssopenbc*` and the open-boundary pieces of the terrain turbulence branches |
+| `kessler_terrain_tke_sfc` | 32×32×20, 2 km, 500 m | 150 steps (900 s) | every 10 steps | `kessler_terrain_tke` with surface drag over water (`sfcmodel = 1`, `bbc = 3`, `oceanmodel = 1`, `isfcflx = 0`, `lu0 = 16`, `cecd = 3`): turb.F's terrain lines of the surface block (`za = zh - zs` for `getcecd`/`sfcdiags`, `hpbl = hpbl - zs` every step), the semi-slip stress under the terrain branches of the TKE scheme; dumps the surface arrays. (With `isfcflx = 1` the Fortran's `hpbl`, never reset by the LES, goes negative and `sfcdiags` takes a fractional power of it, so the case has no surface fluxes) |
+| `pbl2_terrain_kessler` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | `pbl2_kessler` over the `itern = 3` hill (500 m, half width 20 km): `gethpbl2` on the terrain-following `zh`, `hpbl - zs`, `za = zh - zs`, `turbparam_horiz`'s `tlh` with `zs`, and the terrain branches of `turbuz`/`turbvz` under the simple PBL scheme |
+| `ysu_terrain_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | `ysu_dry` over the `itern = 3` hill: YSU and the revised MM5 surface layer (`dz8w = dz*rmh` per column), SLAB, `hpbl - zs` before the surface layer, the terrain branch of `calcdef` on the PBL path |
+| `gfs_terrain_dry` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | `gfs_dry` over the `itern = 3` hill: GFS-EDMF with `z = zf` (heights above sea level) and the revised MM5 surface layer, SLAB |
+| `rrtmg_ysu_terrain` | 24×24×25, 2 km, 200 m | 150 steps (900 s) | every 10 steps | `rrtmg_ysu_kessler` over the `itern = 3` hill: RRTMG (radiation_driver.F has no terrain branch; `dz8w = dz*rmh` and the `cgs`/`cgt` pressures per column) with YSU, the MM5 surface layer and SLAB |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 

@@ -19,10 +19,9 @@ constexpr Real prandtl = 1.0;
 constexpr Real prinv = 1.0 / prandtl;
 constexpr Real dmin = 1.0e-10;
 
-// turbparam_horiz's tlh: over water (sea level only; zs = 0 without
-// terrain) a function of surface pressure, else l_h
-KOKKOS_INLINE_FUNCTION Real tlh_of(Real xland, Real psfc, Real l_h, Real lhref1, Real lhref2) {
-  const Real zs = 0.0;
+// turbparam_horiz's tlh: over water (sea level only: zs < 1 m; zs = 0
+// without terrain) a function of surface pressure, else l_h
+KOKKOS_INLINE_FUNCTION Real tlh_of(Real xland, Real psfc, Real l_h, Real lhref1, Real lhref2, Real zs) {
   if ((xland > 1.5) && (zs < 1.0)) return lhref2 + (lhref1 - lhref2) * (psfc - 90000.0) / (101500.0 - 90000.0);
   return l_h;
 }
@@ -90,7 +89,11 @@ void Options::check() const {
   if (ipbl == 6 && sfcmodel != 7) fail("ipbl=6 requires sfcmodel=7 (param.F stops)");
   if (idiss != 0 && idiss != 1) fail("idiss must be 0 or 1");
   if (imoist == 1 && ptype != 1) fail("imoist=1 with ptype=" + std::to_string(ptype) + " is not ported (only 1)");
-  if (terrain_flag) fail("terrain is not ported");
+  // terrain: turb.F's PBL path reads zh/zf/dz per column, as the ports do;
+  // the schemes checked against the Fortran with terrain are YSU (ipbl=1),
+  // the simple scheme (ipbl=2) and GFS-EDMF (ipbl=3) with sfcmodel=1, 2, 3
+  if (terrain_flag && ipbl != 1 && ipbl != 2 && ipbl != 3)
+    fail("terrain with ipbl=" + std::to_string(ipbl) + " is not ported (only 1, 2, 3)");
   if (axisymm != 0) fail("axisymm=1 is not ported");
 }
 
@@ -115,14 +118,16 @@ std::vector<std::pair<std::string, FArray3>> Tendencies::dumped() const {
 
 void turbparam_horiz(const turb::Options& to, const Options& o, const Bounds& b, const FArray3& defh,
                      const FArray3& kmh, const FArray3& khh, const FArray3& dissten,
-                     const sfc::SfcState& s) {
+                     const sfc::SfcState& s, const FArray3& zs_in) {
   if (!(o.l_h > 1.0e-12 || o.lhref1 > 1.0e-12 || o.lhref2 > 1.0e-12)) return;
   const int ni = b.ni, nj = b.nj, nk = b.nk;
   const Real l_h = o.l_h, lhref1 = o.lhref1, lhref2 = o.lhref2;
   const auto xland = s.xland, psfc = s.psfc;
+  const bool has_zs = zs_in.is_allocated();
+  const auto zs = has_zs ? zs_in : s.xland;   // (any (i,j,1) array; read only with has_zs)
   if (nk >= 2)
     Kokkos::parallel_for("pbl_kmh", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      const Real t = tlh_of(xland(i, j, 1), psfc(i, j, 1), l_h, lhref1, lhref2);
+      const Real t = tlh_of(xland(i, j, 1), psfc(i, j, 1), l_h, lhref1, lhref2, has_zs ? zs(i, j, 1) : 0.0);
       kmh(i, j, k) = (t * t) * Kokkos::sqrt(fmax2(defh(i, j, k), dmin));
     });
   turb::bcw(to, b, kmh, 1);
@@ -135,7 +140,7 @@ void turbparam_horiz(const turb::Options& to, const Options& o, const Bounds& b,
   });
   if (o.idiss == 1 && nk >= 2)
     Kokkos::parallel_for("pbl_dissh", box3(1, ni, 1, nj, 2, nk), KOKKOS_LAMBDA(int i, int j, int k) {
-      const Real t = tlh_of(xland(i, j, 1), psfc(i, j, 1), l_h, lhref1, lhref2);
+      const Real t = tlh_of(xland(i, j, 1), psfc(i, j, 1), l_h, lhref1, lhref2, has_zs ? zs(i, j, 1) : 0.0);
       const Real km = kmh(i, j, k);
       dissten(i, j, k) = dissten(i, j, k) + ((km * km) * km) / ((t * t) * (t * t));
     });
@@ -202,8 +207,10 @@ void br09(const turb::Options& to, const Options& o, const Grid& g, const BaseSt
     turb::turbsz(to, g, 0, dt, rho, rr, rf, slice(qa, o.nqc), khv, thten, thten1, pt.qcpten, w.d1, w.d2, w.d3);
   if (o.imoist == 1 && o.nqi >= 1)
     turb::turbsz(to, g, 0, dt, rho, rr, rf, slice(qa, o.nqi), khv, thten, thten1, pt.qipten, w.d1, w.d2, w.d3);
-  turb::turbuz(to, g, dt, rho, rf, ua, wa, t13, kmv, pt.upten, w.d1, w.d2, w.d3, thten);
-  turb::turbvz(to, g, dt, rho, rf, va, wa, t23, kmv, pt.vpten, w.d1, w.d2, w.d3, thten);
+  // (turb.F passes thten, thten1 as turbuz/turbvz's dum7, dum9: with terrain
+  // dum9 holds w at scalar points)
+  turb::turbuz(to, g, dt, rho, rf, ua, wa, t13, kmv, pt.upten, w.d1, w.d2, w.d3, thten, thten1);
+  turb::turbvz(to, g, dt, rho, rf, va, wa, t23, kmv, pt.vpten, w.d1, w.d2, w.d3, thten, thten1);
 }
 
 //------------------------------------------------------------------------------

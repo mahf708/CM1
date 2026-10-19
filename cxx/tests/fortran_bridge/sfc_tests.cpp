@@ -507,7 +507,11 @@ TEST_CASE("sfc options: unsupported values throw", "[sfc]") {
   bad([](S::Options& x) { x.testcase = 1; });
   bad([](S::Options& x) { x.imove = 1; });
   bad([](S::Options& x) { x.axisymm = 1; });
-  bad([](S::Options& x) { x.terrain_flag = true; });
+  // terrain: sfcmodel=1, 2, 3 are ported; the GFDL, MYNN, MYJ layers throw
+  { S::Options x = o0; x.terrain_flag = true; REQUIRE_NOTHROW(x.check()); }
+  bad([](S::Options& x) { x.terrain_flag = true; x.sfcmodel = 4; x.cm1setup = 2; x.ipbl = 3; x.lu0 = 16; });
+  bad([](S::Options& x) { x.terrain_flag = true; x.sfcmodel = 6; x.cm1setup = 2; x.ipbl = 4; });
+  bad([](S::Options& x) { x.terrain_flag = true; x.sfcmodel = 7; x.cm1setup = 2; x.ipbl = 6; });
   bad([](S::Options& x) { x.ipbl = 2; });
   bad([](S::Options& x) { x.season = 3; });
   bad([](S::Options& x) { x.lu0 = 34; });

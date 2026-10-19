@@ -83,6 +83,8 @@ TEST_CASE("init: nh_mountain_waves", "[init][ref][terrain]") { check_case("nh_mo
 TEST_CASE("init: kessler_terrain_tke", "[init][ref][terrain]") { check_case("kessler_terrain_tke"); }
 TEST_CASE("init: nh_mountain_waves_long", "[init][ref][terrain]") { check_case("nh_mountain_waves_long"); }
 TEST_CASE("init: kessler_terrain_tke_openbc", "[init][ref][terrain]") { check_case("kessler_terrain_tke_openbc"); }
+// terrain with the surface layer (sfcmodel=1 over water: init_surface.F)
+TEST_CASE("init: kessler_terrain_tke_sfc", "[init][ref][terrain][sfc]") { check_case("kessler_terrain_tke_sfc"); }
 
 TEST_CASE("init: unsupported options throw", "[init]") {
   const auto nl0 = Namelist::from_file(testing::case_namelist("dry_bubble"));

@@ -843,10 +843,18 @@ TEST_CASE("turb options: unsupported values throw", "[turb]") {
   bad([](T::Options& x) { x.sfcmodel = 2; x.bbc = 3; });
   bad([](T::Options& x) { x.tbc = 2; });
   bad([](T::Options& x) { x.dosfcflx = true; });           // without sfcmodel=1
-  // terrain: ported for the LES scheme without a surface layer
+  // terrain: ported for the LES scheme (with or without the surface layer
+  // sfcmodel=1) and the PBL schemes ipbl=1, 2, 3 (sfcmodel=1, 2, 3); MYNN,
+  // MYJ and the GFDL, MYNN, MYJ surface layers throw
   { T::Options x; x.terrain_flag = true; REQUIRE_NOTHROW(x.check()); }
-  bad([](T::Options& x) { x.terrain_flag = true; x.sfcmodel = 1; x.bbc = 3; });
-  bad([](T::Options& x) { x.terrain_flag = true; x.cm1setup = 2; x.ipbl = 2; x.sgsmodel = 0; x.dovturb = false; x.dohturb = false; });
+  { T::Options x; x.terrain_flag = true; x.sfcmodel = 1; x.bbc = 3; REQUIRE_NOTHROW(x.check()); }
+  {
+    T::Options x; x.terrain_flag = true; x.cm1setup = 2; x.ipbl = 2; x.sgsmodel = 0; x.dovturb = false;
+    x.dohturb = false; x.sfcmodel = 1; x.bbc = 3;
+    REQUIRE_NOTHROW(x.check());
+  }
+  bad([](T::Options& x) { x.terrain_flag = true; x.cm1setup = 2; x.ipbl = 4; x.sgsmodel = 0; x.dovturb = false; x.dohturb = false; x.sfcmodel = 6; x.bbc = 3; });
+  bad([](T::Options& x) { x.terrain_flag = true; x.cm1setup = 2; x.ipbl = 6; x.sgsmodel = 0; x.dovturb = false; x.dohturb = false; x.sfcmodel = 7; x.bbc = 3; });
   bad([](T::Options& x) { x.axisymm = 1; });
   bad([](T::Options& x) { x.wbc = 5; });
   REQUIRE_THROWS(T::Options::from_namelist(Namelist::from_string("&param2\n sgsmodel = 2 /\n")).check());

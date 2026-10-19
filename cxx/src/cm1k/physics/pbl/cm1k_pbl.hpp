@@ -35,7 +35,9 @@
 //   * ipbl = 6 (MYJ, physics/myj) with the MYJ surface layer sfcmodel = 7;
 //     the glue is physics/myj/cm1k_myj_coupling.hpp
 //   * imoist = 0, or 1 with ptype = 1 (Kessler: qv, qc; no qi)
-//   * no terrain (zs = 0), axisymm = 0
+//   * axisymm = 0; terrain with ipbl = 1, 2, 3 (the schemes read zh, zf
+//     and dz*rmh per column, as turb.F passes them; turbparam_horiz's tlh
+//     reads zs; MYNN and MYJ throw with terrain)
 //
 // Where each piece runs (Dyncore, cm1.F:3748 sfc_and_turb at the start of
 // every Model::step, then solve1):
@@ -103,10 +105,11 @@ struct Tendencies {
 
 // turb.F turbparam_horiz (cm1setup=2, horizturb=1): kmh (k=2..nk, bcw,
 // k=1 extrapolated), khh = kmh/Pr, dissten += kmh^3/tlh^4 (idiss=1).
-// Needs xland and psfc from the surface layer (tlh over water).
+// Needs xland and psfc from the surface layer (tlh over water), and with
+// terrain zs (tlh over water only where zs < 1 m; zs = 0 when not given).
 void turbparam_horiz(const turb::Options& to, const Options& o, const Bounds& b, const FArray3& defh,
                      const FArray3& kmh, const FArray3& khh, const FArray3& dissten,
-                     const sfc::SfcState& s);
+                     const sfc::SfcState& s, const FArray3& zs = FArray3());
 
 // turb.F turbparam_vert (ipbl=2): kmv (k=2..nk, bcw), khv = kmv/Pr,
 // dissten += kmv^3/lvz^4 (idiss=1), and kmv = khv = karman*z0*u* at k=1
