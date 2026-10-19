@@ -29,6 +29,7 @@ def _exact(bk):
         "NPY_DISABLE_CPU_FEATURES", ""
     )
 
+
 NI, NJ, NSTEP = 10, 6, 5
 STATE = [
     "ust",

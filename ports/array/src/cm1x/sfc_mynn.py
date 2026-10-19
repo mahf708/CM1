@@ -44,7 +44,6 @@ def _pow(xp, x, p):
     return x ** (xp.zeros_like(x) + p)
 
 
-
 def _fmax(xp, a, b):
     return xp.where(a > b, a, b)
 
