@@ -210,6 +210,13 @@ class Model:
         s["prate"] = bk.zeros(g.s_shape[1:])
         s["qbudget"] = bk.zeros((10,))
         s["asq"] = bk.zeros((numq,))
+        # test cases (cm1x.testcase): model time at the start of the step
+        # (testcase_simple_phys and the testcase 10 nudging read it)
+        from . import testcase as _tc
+
+        self.tcase = _tc.active(cfg)
+        if self.tcase:
+            s["tc_mtime"] = bk.scalar(0.0)
         self.state = s
         if self.sfc:
             s.update(self._sfclayer(s, self.base))
@@ -487,9 +494,34 @@ class Model:
         the step with cos(zenith) ``coszen`` and solar constant ``solcon``).  On numpy/torch arrays of ``s`` may be
         updated in place, as before."""
         bk, g, cfg = self.bk, self.grid, self.cfg
+        from . import constants as _constants
+
+        _constants.set_constants(int(cfg.get("testcase", 0) or 0))  # constants.F
         s = dict(s)
         dt = self.dt
         tk = {}
+        tc = None
+        if self.tcase:
+            from .testcase import PROFILES
+
+            tc = {k: b[k] for k in PROFILES}
+            tc.update(
+                {
+                    k: b[k]
+                    for k in (
+                        "rho0",
+                        "qv0",
+                        "zh",
+                        "zf",
+                        "mh",
+                        "ruh",
+                        "ruf",
+                        "rvh",
+                        "rvf",
+                    )
+                }
+            )
+            tc.update(xf=b["xf"], yf=b["yf"], mtime=s["tc_mtime"])
         if self.terrain:
             tk = {k: b[k] for k in TERRAIN_KEYS}
             tk["cg"] = {k: b[k] for k in CG_KEYS}
@@ -519,6 +551,7 @@ class Model:
             qcten=s["qcten"],
             turb=self._turb_inputs(s, b) if self.les else self._sfc_inputs(s, b),
             thraten=s.get("thraten"),
+            tc=tc,
         )
 
         r2 = solve2(
@@ -588,6 +621,7 @@ class Model:
             tke3d=s.get("tke3d"),
             tketen=r1.get("tketen"),
             hooks=hooks,
+            wprof=b["wprof"] if cfg.get("dolsw", False) else None,
             **tk,
         )
         if hooks is not None:
@@ -668,6 +702,8 @@ class Model:
             "qa",
         ):
             s[k] = r3[k]
+        if self.tcase:
+            s["tc_mtime"] = mtime * 1.0 if not is_array(mtime) else mtime
         if dorad:
             s.update(self._radiation(s, b, coszen=coszen, solcon=solcon))
             if hooks is not None:

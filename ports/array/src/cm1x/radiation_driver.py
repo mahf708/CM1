@@ -4,7 +4,7 @@ cm1x.init_surface.
 
 Only the path CM1 takes for warm-rain (ptype=1, Kessler) microphysics is
 ported: qv, qc, qr (no ice species), cal_cldfra1 cloud fraction, no PBL
-subgrid clouds (ipbl=0), testcase /= 8, uniform latitude/longitude
+subgrid clouds (ipbl=0), testcase = 0 or 8 (fixed solcon, coszen), uniform latitude/longitude
 (xlat = ctrlat, xlong = ctrlon everywhere, as radiation_driver sets them).
 
 The time-dependent scalars (julian day, declination, solar constant,
@@ -35,7 +35,7 @@ def _check(cfg):
     for name, ok in (
         ("radopt", (2,)),
         ("ptype", (1,)),
-        ("testcase", (0,)),
+        ("testcase", (0, 8)),
         ("ipbl", (0,)),
         ("eqtset", (1, 2)),
     ):
@@ -131,6 +131,10 @@ def solar(cfg, mtime, dtrad):
         xlon=float(cfg.ctrlon),
         xlat=float(cfg.ctrlat),
     )
+    if int(_opt(cfg, "testcase", 0) or 0) == 8:
+        # Bretherton et al 2005 (fixed values)
+        rc = dict(rc, solcon=650.83)
+        cz = dict(cz, coszen=math.cos(50.5 * c.pi / 180.0))
     return {"julian": julian, "xtime": xtime, **rc, **cz}
 
 

@@ -90,6 +90,14 @@ def _derive(v: dict):
     if v.get("imove", 0) == 0:
         v["umove"] = 0.0
         v["vmove"] = 0.0
+    # param.F: the test cases force imoist (1, 2: dry; 3, 4, 5, 7, 8, 11:
+    # moist) and switch on the large-scale vertical velocity (3..7)
+    tc = v.get("testcase", 0) or 0
+    if tc in (1, 2):
+        v["imoist"] = 0
+    elif tc in (3, 4, 5, 7, 8, 11):
+        v["imoist"] = 1
+    v["dolsw"] = 3 <= tc <= 7
     # moisture indices (param.F, ptype = 1: Kessler, qv/qc/qr)
     if v.get("imoist", 0) == 1 and v.get("ptype", 0) == 1:
         v.update(numq=3, nqv=1, nqc=2, nqr=3, nql1=2, nql2=3, iice=0)
