@@ -39,6 +39,14 @@ CASES = [
     "pbl2_sfclay_land",
     "cbl_sfc",
     "cbl_sfc_moist",
+    # surface-layer variants (ports/reference/pbl)
+    "sfc_rev_land",
+    "sfc_rev_water_ft2",
+    "sfc_rev_land_z0t2",
+    "sfc_sfclay_water_ft1",
+    "sfc_sfclay_land_z0t1",
+    "myj_dry",
+    "myj_kessler",
     "gfs_kessler",
     "gfs_dry",
     "gfs_sfclay_land",
@@ -47,6 +55,26 @@ if os.environ.get("CM1X_PBL_CASES"):
     CASES = os.environ["CM1X_PBL_CASES"].split(",")
 PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "rain", "tkea", "qke")
 TOL = 1e-10  # max |cm1x - cm1| / max |cm1| per array and step
+# jax / torch: the PBL tendencies are (new - old)/dt differences, whose
+# cancellation amplifies last-bit libm differences (numpy keeps TOL)
+PBL_TENDENCIES = ("thpten", "qvpten", "qcpten", "qipten", "upten", "vpten")
+TOL_TENDENCY_OTHER_BACKENDS = 1e-9
+
+
+def _tol(name, backend):
+    if backend != "numpy" and name in PBL_TENDENCIES:
+        return TOL_TENDENCY_OTHER_BACKENDS
+    return TOL
+
+
+# Non-numpy backends: the last step where last-bit differences stay at
+# round-off.  myj_kessler: one column (j=17, i=16-17, k=13-16) amplifies
+# them as cloud forms there; a one-ulp perturbation of tha at t=0 in the
+# numpy run grows identically (1e-12 at step 130, ~1e-6 at step 150, same
+# column), so this is sensitivity, not a porting difference.
+OTHER_MAX_STEP = {"myj_kessler": 130}
+
+
 NPY_DISABLE = (
     "AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4"
 )
@@ -128,6 +156,8 @@ for step in steps:
         ai, bi = inner(a), inner(b)
         sc = float(np.abs(bi).max())
         e = float(np.abs(ai - bi).max()) / (sc if sc > 0 else 1.0)
+        if not np.isfinite(e):
+            e = float("inf")  # max(0.0, nan) would hide a NaN
         res["compared"][k] = max(res["compared"].get(k, 0.0), e)
 print("RESULT" + json.dumps(res))
 """
@@ -136,8 +166,9 @@ print("RESULT" + json.dumps(res))
 def _case_files(case):
     d = Path(DUMP_DIR) / case
     nml = d / "namelist.input"
-    if not nml.exists():
-        nml = REF_DIR / case / "namelist.input"
+    for alt in (REF_DIR / case, REF_DIR / "pbl" / case):
+        if not nml.exists():
+            nml = alt / "namelist.input"
     lu = d / "LANDUSE.TBL"
     if not lu.exists():
         lu = REF_DIR / case / "LANDUSE.TBL"
@@ -160,6 +191,8 @@ def test_pbl_case_vs_cm1_dumps(case, bk, tmp_path):
     if lu.exists():
         env["CM1X_LANDUSE_TBL"] = str(lu)
     max_step = os.environ.get("CM1X_PBL_MAX_STEP", "1000000000")
+    if bk.name != "numpy" and case in OTHER_MAX_STEP:
+        max_step = str(min(int(max_step), OTHER_MAX_STEP[case]))
     p = subprocess.run(
         [
             sys.executable,
@@ -180,7 +213,7 @@ def test_pbl_case_vs_cm1_dumps(case, bk, tmp_path):
     assert p.returncode == 0 and lines, p.stderr[-4000:]
     res = json.loads(lines[-1][len("RESULT") :])
     assert res["steps"], f"no steps compared for {case}"
-    bad = {k: e for k, e in res["compared"].items() if not e <= TOL}
+    bad = {k: e for k, e in res["compared"].items() if not e <= _tol(k, bk.name)}
     assert not res["errors"], res["errors"]
     assert not bad, f"{case}: max relative error over steps {res['steps'][-1]}: {bad}"
     assert any(k in res["compared"] for k in ("ua", "tha")), res
