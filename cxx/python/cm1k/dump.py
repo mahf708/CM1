@@ -98,6 +98,8 @@ def read_index(path) -> Tuple[int, float, Dict[str, DumpEntry]]:
                     float(tok[2].replace("D", "E").replace("d", "e")),
                 )
                 continue
+            if tok[0].startswith("#"):  # e.g. "#adapt_dt" (src/cm1dump.F dump_adapt)
+                continue
             name, kind, nd = tok[0], int(tok[1]), int(tok[2])
             b = [int(x) for x in tok[3 : 3 + 2 * nd]]
             if len(b) != 2 * nd:

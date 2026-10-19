@@ -67,7 +67,10 @@ namespace cm1k::testcase {
 // it for lspgrad = 3 (it stays 0 otherwise).
 inline double param_hurr_angle(int lspgrad, double hurr_rotate) {
   if (lspgrad != 3) return 0.0;
-  const __float128 pi_qp = 3.14159265358979323846264338327950288Q;   // 4*atan(1) in binary128
+  // 4*atan(1) in binary128, as the exact sum of three doubles (the Q literal
+  // suffix is a GNU extension that -std=c++20 under nvcc_wrapper rejects)
+  const __float128 pi_qp = __float128(0x1.921fb54442d18p+1) + __float128(0x1.1a62633145c07p-53) +
+                           __float128(-0x1.f1976b7ed8fbcp-109);
   return double(__float128(hurr_rotate) * (pi_qp / __float128(180.0)));
 }
 
