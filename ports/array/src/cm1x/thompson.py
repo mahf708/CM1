@@ -32,6 +32,8 @@ can never trigger, because ``mp_thompson`` returns ``qv1d >= 1e-10``.
 
 from __future__ import annotations
 
+from . import constants as C
+from .kessler import _hw
 from . import thompson_tables as T
 
 _DEFAULTS = dict(
@@ -1323,3 +1325,241 @@ def _snow_mom1(tc0):
     b_ = (sb[0] + sb[1] * tc0 + sb[2] + sb[3] * tc0 + sb[4] * tc0 * tc0 + sb[5]
           + sb[6] * tc0 * tc0 + sb[7] * tc0 + sb[8] * tc0 * tc0 * tc0 + sb[9])  # fmt: skip
     return 10.0**loga_, b_
+
+
+# ---------------------------------------------------------------------------
+# 3-D wrapper and the mp_driver branch
+
+
+def mp_gt_driver(
+    bk,
+    g,
+    cfg=None,
+    tb=None,
+    *,
+    qv,
+    qc,
+    qr,
+    qi,
+    qs,
+    qg,
+    ni,
+    nr,
+    t3d,
+    p,
+    w,
+    dz,
+    dt,
+    rain,
+    prate,
+    tcond,
+    tevac,
+    tevar,
+    train,
+    ruh,
+    rvh,
+    rmh,
+    rr,
+    getvt=False,
+    vt=None,
+    nstep_max=None,
+):
+    """thompson.F ``mp_gt_driver`` as CM1 calls it (non-aerosol, no
+    reflectivity or effective radii): ``mp_thompson`` on every interior
+    column at once, then CM1's rain/prate/budget bookkeeping.
+
+    3-D arrays ``g.s_shape`` (``w`` may be ``g.w_shape``), ``rain``
+    ``[nrain, j, i]``, ``prate`` ``[j, i]``, budgets scalars.  ``vt``: the
+    (vtc, vtr, vti, vts, vtg) arrays filled on the interior when ``getvt``.
+    Budget sums use ``xp.sum`` (not CM1's i-then-j order).  Returns dict
+    with the updated qv..nr, t3d, rain, prate, tcond, tevac, tevar, train
+    and vt."""
+    xp = bk.xp
+    if tb is None:
+        tb = thompson_init(bk, cfg)
+    S = (g.K, g.J, g.I)
+    pt = p[S]
+    tt = t3d[S]
+    qvt = qv[S]
+    rho = 0.622 * pt / (T.R * tt * (qvt + 0.622))
+    r = mp_thompson(
+        bk,
+        tb,
+        cfg,
+        qv1d=qvt,
+        qc1d=qc[S],
+        qi1d=qi[S],
+        qr1d=qr[S],
+        qs1d=qs[S],
+        qg1d=qg[S],
+        ni1d=ni[S],
+        nr1d=nr[S],
+        nc1d=tb.Nt_c / rho,
+        t1d=tt,
+        p1d=pt,
+        w1d=w[S],
+        dzq=dz[S],
+        dt=dt,
+        nstep_max=nstep_max,
+    )
+    ppt = r["pptrain"] + r["pptsnow"] + r["pptgraul"] + r["pptice"]
+    rain_i = rain[:, g.J, g.I] + (0.1 * ppt)[None]
+    rdt = 1.0 / dt
+    ru, rv = _hw(g, ruh, rvh)
+    ru2, rv2 = ru[0], rv[0]
+    bud1 = xp.sum(ppt * ru2 * rv2 * g.dx * g.dy)
+    tem1 = g.dx * g.dy * g.dz
+    tem2 = dt * rr[S] * ru * rv * rmh[S] * tem1
+    z = xp.zeros_like(tem2)
+    prw = r["prw_vcd"]
+    out = {
+        "rain": bk.set(bk.copy(rain), (slice(None), g.J, g.I), rain_i),
+        "prate": bk.set(bk.copy(prate), (g.J, g.I), rdt * ppt),
+        "train": train + bud1,
+        "tevar": tevar + xp.sum(tem2 * r["prv_rev"]),
+        "tcond": tcond + xp.sum(tem2 * xp.maximum(prw, z)),
+        "tevac": tevac - xp.sum(tem2 * xp.minimum(prw, z)),
+    }
+    for name, key in (("qv", "qv1d"), ("qc", "qc1d"), ("qr", "qr1d"), ("qi", "qi1d"),
+                      ("qs", "qs1d"), ("qg", "qg1d"), ("ni", "ni1d"), ("nr", "nr1d"),
+                      ("t3d", "t1d")):  # fmt: skip
+        src = {"qv": qv, "qc": qc, "qr": qr, "qi": qi, "qs": qs, "qg": qg,
+               "ni": ni, "nr": nr, "t3d": t3d}[name]  # fmt: skip
+        out[name] = bk.set(bk.copy(src), S, r[key])
+    if getvt and vt is not None:
+        nk = g.nk
+        out["vt"] = tuple(
+            bk.set(bk.copy(a), S, r[key][:nk])
+            for a, key in zip(vt, ("vtck", "vtrk", "vtik", "vtsk", "vtgk"))
+        )
+    else:
+        out["vt"] = vt
+    return out
+
+
+def mp_driver_ptype3(
+    bk,
+    g,
+    cfg=None,
+    *,
+    dt,
+    qbudget,
+    asq,
+    ruh,
+    rvh,
+    rmh,
+    rain,
+    prate,
+    pi0,
+    th0,
+    rho,
+    prs,
+    pp3d,
+    th3d,
+    q3d,
+    w3d,
+    qten=None,
+    thten=None,
+    dum1=None,
+    dum3=None,
+    getvt=False,
+    nstep_max=None,
+    **unused,
+):
+    """mp_driver.F ``mp_driver`` for ptype=3 (Thompson).
+
+    ``q3d``/``qten`` ``[8, k, j, i]`` (qv qc qr qi qs qg nci ncr), other
+    shapes as ``mp_driver_kessler``; ``w3d`` ``g.w_shape``.  Sequence: T ->
+    dum1 and thten, qv -> qten(nqv), rho -> dum3; pdefq(q1..q6);
+    mp_gt_driver; then prs/pp3d/th3d (eqtset=2) or th3d/rho (eqtset=1)
+    where T or qv changed.  ``getvt`` stores the fall speeds in
+    qten(nqc..nqg).  The reflectivity diagnostic (getdbz) and radopt=2
+    effective radii are not ported.  Returns dict with q3d, th3d, pp3d,
+    prs, rho, qbudget, asq, rain, prate, qten, thten, dum1, dum3."""
+    from .pdef import pdefq
+
+    if int(_opt(cfg, "efall")) != 0 or int(_opt(cfg, "axisymm")) != 0:
+        raise NotImplementedError("mp_driver ptype=3: efall/axisymm not ported")
+    if int(_opt(cfg, "radopt")) == 2:
+        raise NotImplementedError("mp_driver ptype=3: radopt=2 (calc_effectRad)")
+    xp = bk.xp
+    S = (g.K, g.J, g.I)
+    qsmall = float(_opt(cfg, "qsmall"))
+    tsmall = float(_opt(cfg, "tsmall"))
+    eqtset = int(_opt(cfg, "eqtset"))
+    if nstep_max is None and int(_opt(cfg, "nstep_max") or 0) > 0:
+        nstep_max = int(_opt(cfg, "nstep_max"))
+
+    def z(a, shape):
+        return bk.zeros(shape) if a is None else bk.copy(a)
+
+    nq = q3d.shape[0]
+    qten = z(qten, (nq,) + tuple(g.s_shape))
+    thten = z(thten, g.s_shape)
+    dum1 = z(dum1, g.s_shape)
+    dum3 = z(dum3, g.s_shape)
+    t = (th0[S] + th3d[S]) * (pi0[S] + pp3d[S])
+    dum1 = bk.set(dum1, S, t)
+    thten = bk.set(thten, S, t)
+    qten = bk.set(qten, (0,) + S, q3d[(0,) + S])
+    dum3 = bk.set(dum3, S, rho[S])
+
+    q = [q3d[n] for n in range(nq)]
+    asq_l = [asq[n] for n in range(asq.shape[0])]
+    for n in range(6):
+        o = pdefq(bk, g, cfg, rmax=0.0 if n == 0 else qsmall, asq=asq_l[n],
+                  ruh=ruh, rvh=rvh, rmh=rmh, rho=rho, q3d=q[n])  # fmt: skip
+        q[n], asq_l[n] = o["q3d"], o["asq"]
+
+    dum4 = g.dz * rmh
+    qb = [qbudget[n] for n in range(qbudget.shape[0])]
+    vt = tuple(qten[n] for n in (1, 2, 3, 4, 5))  # qc qr qi qs qg slots
+    o = mp_gt_driver(
+        bk, g, cfg, qv=q[0], qc=q[1], qr=q[2], qi=q[3], qs=q[4], qg=q[5],
+        ni=q[6], nr=q[7], t3d=dum1, p=prs, w=w3d, dz=dum4, dt=dt, rain=rain,
+        prate=prate, tcond=qb[0], tevac=qb[1], tevar=qb[4], train=qb[5],
+        ruh=ruh, rvh=rvh, rmh=rmh, rr=dum3, getvt=getvt,
+        vt=(vt[0], vt[1], vt[2], vt[3], vt[4]), nstep_max=nstep_max,
+    )  # fmt: skip
+    q = [o[k] for k in ("qv", "qc", "qr", "qi", "qs", "qg", "ni", "nr")]
+    dum1 = o["t3d"]
+    rain, prate = o["rain"], o["prate"]
+    qb[0], qb[1], qb[4], qb[5] = o["tcond"], o["tevac"], o["tevar"], o["train"]
+    if getvt:
+        # vtc, vtr, vti, vts, vtg -> qten(nqc, nqr, nqi, nqs, nqg)
+        for slot, a in zip((1, 2, 3, 4, 5), o["vt"]):
+            qten = bk.set(qten, slot, a)
+
+    tn = dum1[S]
+    qvn = q[0][S]
+    chg = (xp.abs(tn - thten[S]) >= tsmall) | (xp.abs(qvn - qten[(0,) + S]) >= qsmall)
+    p0, t0 = pi0[S], th0[S]
+    if eqtset == 2:
+        prs_n = rho[S] * (C.rd + C.rv * qvn) * tn
+        pp_n = (prs_n * C.rp00) ** C.rovcp - p0
+        th_n = tn / (p0 + pp_n) - t0
+        prs = bk.set(bk.copy(prs), S, xp.where(chg, prs_n, prs[S]))
+        pp3d = bk.set(bk.copy(pp3d), S, xp.where(chg, pp_n, pp3d[S]))
+        th3d = bk.set(bk.copy(th3d), S, xp.where(chg, th_n, th3d[S]))
+    else:
+        th_n = tn / (p0 + pp3d[S]) - t0
+        rho_n = prs[S] / (C.rd * tn * (1.0 + qvn * C.reps))
+        th3d = bk.set(bk.copy(th3d), S, xp.where(chg, th_n, th3d[S]))
+        rho = bk.set(bk.copy(rho), S, xp.where(chg, rho_n, rho[S]))
+
+    dt_ = qbudget.dtype
+    return {
+        "q3d": xp.stack(q, axis=0),
+        "th3d": th3d,
+        "pp3d": pp3d,
+        "prs": prs,
+        "rho": rho,
+        "qbudget": xp.stack([xp.asarray(b, dtype=dt_) for b in qb]),
+        "asq": xp.stack([xp.asarray(a, dtype=dt_) for a in asq_l]),
+        "rain": rain,
+        "prate": prate,
+        "qten": qten,
+        "thten": thten,
+        "dum1": dum1,
+        "dum3": dum3,
+    }

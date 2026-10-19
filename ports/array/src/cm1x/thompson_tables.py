@@ -21,9 +21,9 @@ equality with CM1's double-precision tables:
 * ``real ** integer`` is libgcc's ``__powidf2`` (square-and-multiply),
   ``x ** 2.0`` with a constant exponent is ``x*x`` (as GCC folds it).
 
-The 4-D collection tables cost ~1-2 min of numpy time; ``tables()`` caches
-the result in ``$CM1X_THOMPSON_CACHE`` (default ``~/.cache/cm1x``) keyed by
-``TABLE_VERSION``.
+All tables together cost ~3-4 min of numpy time; ``tables()`` caches the
+result in ``$CM1X_THOMPSON_CACHE`` (default ``~/.cache/cm1x``) keyed by
+nt_c, the numpy version and this module's source.
 
 Arrays keep the Fortran index order with 0-based indices, e.g.
 ``tcg_racg[i, j, k, m]`` is Fortran ``tcg_racg(i+1, j+1, k+1, m+1)``.
@@ -895,8 +895,9 @@ def _cache_dir():
 
 def tables(nt_c_in=100.0, cache=True):
     """``compute_tables`` with an on-disk cache (npz)."""
+    src = Path(__file__).read_bytes()  # any change to this module -> new key
     key = hashlib.sha1(
-        f"v{TABLE_VERSION}:{float(nt_c_in)!r}:{np.__version__}".encode()
+        f"v{TABLE_VERSION}:{float(nt_c_in)!r}:{np.__version__}:".encode() + src
     ).hexdigest()[:12]
     path = _cache_dir() / f"thompson_tables_{key}.npz"
     if cache and path.exists():
