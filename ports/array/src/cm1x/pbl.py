@@ -422,6 +422,12 @@ PRINV = 1.0  # 1/prandtl
 DMIN = 1.0e-10
 
 
+def _atleast(xp, a, b):
+    """Fortran max(a, b) with a Python-float b (torch's maximum needs two
+    tensors)."""
+    return xp.where(a > b, a, b)
+
+
 def turbparam_horiz(bk, g, cfg, *, defh, kmh, khh, dissten, xland, psfc):
     """turb.F ``turbparam_horiz`` (cm1setup=2, horizturb=1): kmh = tlh^2
     sqrt(max(defh, dmin)) on k=2..nk (bcw; k=1 extrapolated), khh = kmh/Pr,
@@ -448,7 +454,9 @@ def turbparam_horiz(bk, g, cfg, *, defh, kmh, khh, dissten, xland, psfc):
         xp.zeros_like(ps) + l_h,
     )[None]
     R = Reg(g, (2, nk), (1, nj), (1, ni))
-    kmh = bk.set(bk.copy(kmh), R.idx, (tlh * tlh) * xp.sqrt(xp.maximum(R(defh), DMIN)))
+    kmh = bk.set(
+        bk.copy(kmh), R.idx, (tlh * tlh) * xp.sqrt(_atleast(xp, R(defh), DMIN))
+    )
     kmh = bcw(bk, g, cfg, kmh, 1)
     R1 = Reg(g, (1, 1), (0, nj + 1), (0, ni + 1))
     kmh = bk.set(
@@ -488,7 +496,7 @@ def turbparam_vert(bk, g, cfg, *, zf, nm, defv, kmv, khv, dissten, zntmp, ust):
     z0 = interior2(g, zntmp)[None]
     x = karman * ((R(zf) - _zf1(g, zf)) + z0)
     lvz = xp.sqrt(1.0 / (rlinf + 1.0 / (x * x)))
-    kv = (lvz * lvz) * xp.sqrt(xp.maximum(R(defv) - R(nm) * PRINV, DMIN))
+    kv = (lvz * lvz) * xp.sqrt(_atleast(xp, R(defv) - R(nm) * PRINV, DMIN))
     kmv = bcw(bk, g, cfg, bk.set(bk.copy(kmv), R.idx, kv), 1)
     RA = Reg(g, (1, nk + 1), (0, nj + 1), (0, ni + 1))
     khv = bk.set(bk.copy(khv), RA.idx, RA(kmv) * PRINV)
