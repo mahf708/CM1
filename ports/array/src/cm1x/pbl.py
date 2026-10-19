@@ -61,12 +61,15 @@ from .turbtend import _cat
 
 PBL_SCHEMES = {
     2: "cm1x.pbl",  # CM1 simple scheme (Bryan and Rotunno 2009)
+    4: "cm1x.pbl_mynn",  # MYNN-EDMF level 2.5
+    5: "cm1x.pbl_mynn",  # MYNN-EDMF level 3
 }
 
 SURFACE_LAYERS = {
     1: "cm1x.sfcphys",  # CM1 simple scheme (getcecd, sfcflux, sfcdiags)
     2: "cm1x.sfclay",  # MM5 similarity (sf_sfclay) + SLAB
     3: "cm1x.sfclay",  # revised MM5 (sf_sfclayrev) + SLAB
+    6: "cm1x.sfc_mynn",  # MYNN surface layer + SLAB
 }
 
 

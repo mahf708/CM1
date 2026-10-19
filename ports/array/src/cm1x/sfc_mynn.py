@@ -429,10 +429,19 @@ def sfclay_mynn(
     dz8w1d, dz2w1d = dz8w[0], dz8w[1]
     u1d, v1d, u1d2, v1d2 = u3d[0], v3d[0], u3d[1], v3d[1]
     qv1d, p1d, t1d, rho1d = qv3d, p3d, t3d, rho3d
-    if itimestep == 1:
-        ust = _fmax(xp, 0.04 * sqrt(u1d * u1d + v1d * v1d), 0.001)
-        mol = xp.zeros_like(u1d)
-        qsfc = qv3d / (1.0 + qv3d)
+    # itimestep: a Python int, or a 0-d array (a step counter carried in the
+    # model state, so that a compiled step sees the current value)
+    static = isinstance(itimestep, (int, float))
+    if static:
+        if itimestep == 1:
+            ust = _fmax(xp, 0.04 * sqrt(u1d * u1d + v1d * v1d), 0.001)
+            mol = xp.zeros_like(u1d)
+            qsfc = qv3d / (1.0 + qv3d)
+    else:
+        first = itimestep == 1
+        ust = xp.where(first, _fmax(xp, 0.04 * sqrt(u1d * u1d + v1d * v1d), 0.001), ust)
+        mol = xp.where(first, xp.zeros_like(u1d), mol)
+        qsfc = xp.where(first, qv3d / (1.0 + qv3d), qsfc)
 
     psfc = psfcpa / 1000.0
     thgb = tsk * (100.0 / psfc) ** rovcp
@@ -482,7 +491,10 @@ def sfclay_mynn(
     wspd = sqrt(wspd * wspd + wstar * wstar + vsgd * vsgd)
     wspd = _fmax(xp, wspd, WMIN)
     br = govrth * za * dthvdz / (wspd * wspd)
-    lim = 2.0 if itimestep == 1 else 4.0
+    if static:
+        lim = 2.0 if itimestep == 1 else 4.0
+    else:
+        lim = xp.where(itimestep == 1, 2.0 + 0.0 * br, 4.0 + 0.0 * br)
     br = _fmin(xp, _fmax(xp, br, -lim), lim)
 
     visc = 1.326e-5 * (
@@ -525,7 +537,7 @@ def sfclay_mynn(
     unstable = br < 0.0
     neutral = br == 0.0
     # first guess of z/L
-    if itimestep <= 1:
+    if static and itimestep <= 1:
         zg = li_etal_2010(xp, br, za / zntstoch, zratio)
         zg_s = zg
         zg_u = zg
@@ -534,6 +546,10 @@ def sfclay_mynn(
         zg_s = _fmin(xp, _fmax(xp, zg_s, 0.0), 20.0)
         zg_u = za * KARMAN * g * mol / (th1d * _fmax(xp, ust * ust, 0.001))
         zg_u = _fmin(xp, _fmax(xp, zg_u, -20.0), 0.0)
+        if not static:
+            zg = li_etal_2010(xp, br, za / zntstoch, zratio)
+            zg_s = xp.where(itimestep <= 1, zg, zg_s)
+            zg_u = xp.where(itimestep <= 1, zg, zg_u)
     zg = xp.where(stable, zg_s, zg_u)
     zr = zolrib(bk, T, br, za, zntstoch, z_t, gz1oz0, gz1ozt, zg)
     zr_s = _fmin(xp, _fmax(xp, zr, 0.0), 20.0)
@@ -678,3 +694,88 @@ def sfclay_mynn(
         "cd": cd,
         "cda": cda,
     }
+
+
+# ---------------------------------------------------------------------------
+# the model glue (cm1x.pbl registry: SURFACE_LAYERS[6])
+
+# the surface arrays SFCLAY_mynn writes that cm1x.pbl.SFC_KEYS and SLAB's
+# init_state do not create (cm1.F allocates them as 0)
+_OWN_2D = ("ustm", "chs", "chs2", "cqs2", "regime", "qgh", "ck", "cka", "snowh")
+# carried step counter (itimestep = nstep; see surface_layer)
+NSTEP_KEY = "sfc_mynn_nstep"
+DUMP_KEYS = ("mol", "rmol", "zol", "ustm", "tslb")
+
+
+def init_state(ctx):
+    """The MYNN surface layer's own 2-D arrays (0, as cm1.F allocates them)
+    and the step counter (-1: the startup pass makes it 0)."""
+    bk, g, s = ctx.bk, ctx.g, ctx.s
+    # distinct arrays (bk.set works in place on numpy/torch)
+    out = {k: bk.zeros(g.s_shape[1:]) for k in _OWN_2D if k not in s}
+    out[NSTEP_KEY] = bk.zeros(()) - 1.0
+    return out
+
+
+def surface_layer(ctx):
+    """turb.F, sfcmodel=6: the k2=2 "variables for wrf physics", the
+    mynn_sf_j_loop (SFCLAY_mynn with isfflx=1, itimestep=nstep, DX=dx), then
+    SLAB (update_sfc) or the qsfc diagnosis, ch = chs2 / cq = cqs2 and s10,
+    ch = cq = ck (sfcmodel=6), thflux / qvflux with dosfcflx or
+    output_sfcflx (``cm1x.pbl.wrf_sfc_epilogue``).
+
+    itimestep comes from a counter carried in the state (startup pass 0,
+    then 1, 2, ...), equal to CM1's nstep, so that a compiled step uses the
+    current value."""
+    from .pbl import interior2, wrf_sfc_epilogue
+
+    bk, g, cfg, s = ctx.bk, ctx.g, ctx.cfg, ctx.s
+    n, z = g.ngxy, g.ngz
+    J, I = slice(n, n + g.nj), slice(n, n + g.ni)
+    K2 = slice(z, z + 2)
+    w = ctx.w
+
+    def i2(k):
+        return interior2(g, s[k])
+
+    nstep = s[NSTEP_KEY] + 1.0
+    r = sfclay_mynn(
+        bk,
+        cfg,
+        _tables(bk),
+        u3d=w["u"][K2, J, I],
+        v3d=w["v"][K2, J, I],
+        dz8w=w["dz8w"][K2, J, I],
+        t3d=w["t"][z, J, I],
+        qv3d=w["qv"][z, J, I],
+        p3d=ctx.prs[z, J, I],
+        rho3d=ctx.rho[z, J, I],
+        psfcpa=i2("psfc"),
+        pblh=i2("hpbl"),
+        mavail=i2("mavail"),
+        xland=i2("xland"),
+        tsk=i2("tsk"),
+        snowh=i2("snowh"),
+        **{k: i2(k) for k in _STATE_IN},
+        itimestep=nstep,
+        dx=float(cfg.dx),
+        isfflx=1,
+    )
+    r["cpmm"] = r.pop("cpm")
+    r["tsk"] = i2("tsk")
+    out = wrf_sfc_epilogue(ctx, r)
+    # turb.F (sfcmodel=6): ch = cq = ck, after ch = chs2, cq = cqs2
+    # (copies: wrf_sfc_epilogue writes the state arrays in place, so they
+    # must not alias)
+    out["ch"] = bk.copy(out["ck"])
+    out["cq"] = bk.copy(out["ck"])
+    out[NSTEP_KEY] = nstep
+    return out
+
+
+_STATE_IN = ("ust", "mol", "qsfc", "znt", "ustm", "hfx", "qfx", "zol", "rmol", "wspd")
+
+
+def _tables(bk):
+    # rebuilt per call (4 x 1001 values): nothing cached across jit traces
+    return psi_init(bk)

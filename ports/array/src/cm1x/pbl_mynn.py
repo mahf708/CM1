@@ -1858,3 +1858,109 @@ def mynnedmf_wrapper_run(bk, cfg, *, initflag, delt, dxc, inp, sfc, st):
         }
     )  # fmt: skip
     return sfo, sto, tend
+
+
+# ---------------------------------------------------------------------------
+# the model glue (cm1x.pbl registry: PBL_SCHEMES[4], PBL_SCHEMES[5])
+
+# 3-D arrays the scheme carries (cm1.F allocations, 0) besides STATE_NAMES'
+# qke_adv (CM1's work array: the wrapper's in/out, refilled by solve2)
+_CARRIED_3D = tuple(k for k in STATE_NAMES if k != "qke_adv") + (
+    "qke3d",
+    "xkzh",
+    "xkzm",
+)
+_CARRIED_2D = ("kpbl", "nupdraft", "maxmf", "ktop_plume")
+_SFC_IN = (
+    "znt",
+    "xland",
+    "tsk",
+    "qsfc",
+    "psfc",
+    "ust",
+    "ch",
+    "hfx",
+    "qfx",
+    "wspd",
+    "rmol",
+    "hpbl",
+)
+DUMP_KEYS = (
+    "hpbl", "xkzh", "xkzm", "qke", "qke3d", "tsq", "qsq", "cov", "sh3d", "sm3d",
+    "el_pbl", "qc_bl", "qi_bl", "cldfra_bl", "dqke",
+)  # fmt: skip
+WRF_INPUTS = True
+
+
+def options(cfg):
+    """param.F for ipbl=4, 5: idiss = 0 (cm1setup /= 4) and the fixed
+    bl_mynn_* settings (edmf = edmf_mom = 1; tkeadvect, cloudpdf = 2,
+    mixlength = 1, cloudmix = 1, mixqt = 0 are what the port implements)."""
+    if int(_opt(cfg, "ipbl", 0)) not in (4, 5):
+        return
+    if int(_opt(cfg, "idiss", 0)) >= 1 and int(_opt(cfg, "cm1setup", 1)) != 4:
+        cfg.idiss = 0
+    cfg.bl_mynn_edmf = 1
+    cfg.bl_mynn_edmf_mom = 1
+
+
+def init_state(ctx):
+    """The MYNN arrays (cm1.F allocates them as 0): STATE_NAMES (but
+    qke_adv), qke3d, xkzh, xkzm on ``g.s_shape``; kpbl, nupdraft, maxmf,
+    ktop_plume 2-D."""
+    bk, g = ctx.bk, ctx.g
+    # distinct arrays (bk.set works in place on numpy/torch)
+    out = {k: bk.zeros(g.s_shape) for k in _CARRIED_3D}
+    out.update({k: bk.zeros(g.s_shape[1:]) for k in _CARRIED_2D})
+    return out
+
+
+def pbl(ctx):
+    """turb.F get_vars + the domynn block: mynnedmf_wrapper_run on every
+    column (initflag = nstep == 0, the startup pass), with qke_adv = qke3d
+    (solve2's advected qke).  Returns the PBL tendencies (thpten, qvpten,
+    qcpten, qipten, upten, vpten: not rho-weighted, as MYNN gives them and
+    CM1 stores them), xkzh, xkzm, hpbl, rmol and the carried arrays."""
+    from .pbl import interior2, put2
+
+    bk, g, cfg, s = ctx.bk, ctx.g, ctx.cfg, ctx.s
+    n, z, nk = g.ngxy, g.ngz, g.nk
+    J, I, K = slice(n, n + g.nj), slice(n, n + g.ni), slice(z, z + nk)
+    Kp = slice(z + 1, z + nk + 1)
+    R = (K, J, I)
+    w = ctx.w
+    inp = {
+        "dz": w["dz8w"][R],
+        "u": w["u"][R],
+        "v": w["v"][R],
+        "w": 0.5 * (ctx.w3d[R] + ctx.w3d[Kp, J, I]),
+        "th": w["th"][R],
+        "qv": w["qv"][R],
+        "qc": w["qc"][R],
+        "qi": w["qi"][R],
+        "p": ctx.prs[R],
+        "exner": w["pi"][R],
+        "rho": ctx.rho[R],
+        "t3d": w["t"][R],
+    }
+    st = {k: s["qke3d" if k == "qke_adv" else k][R] for k in STATE_NAMES}
+    sfc = {k: interior2(g, s[k]) for k in _SFC_IN}
+    r_sfc, r_st, r_te = mynnedmf_wrapper_run(
+        bk,
+        cfg,
+        initflag=ctx.nstep == 0,
+        delt=float(ctx.dt),
+        dxc=float(cfg.dx),
+        inp=inp,
+        sfc=sfc,
+        st=st,
+    )
+    out = {}
+    for k in STATE_NAMES:
+        if k != "qke_adv":
+            out[k] = bk.set(bk.copy(s[k]), R, r_st[k])
+    for k in ("thpten", "qvpten", "qcpten", "qipten", "upten", "vpten", "xkzh", "xkzm"):
+        out[k] = bk.set(bk.copy(s[k]), R, r_te[k])
+    for k in ("hpbl", "rmol") + _CARRIED_2D:
+        out[k] = put2(bk, g, bk.copy(s[k]), r_sfc[k])
+    return out
