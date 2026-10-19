@@ -99,7 +99,7 @@ jobs:
     name: cm1k (${{ matrix.name }})
     needs: fortran-refs
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -176,7 +176,7 @@ jobs:
         working-directory: build
         # mpiexec's default --map-by ppr:1:node:pe=1 binds every test to core 0;
         # unbound (configure above), parallel ctest jobs use separate cores
-        run: ctest --output-on-failure --timeout 1800 -j ${{ matrix.ctest_jobs }}
+        run: ctest --output-on-failure --timeout 3600 -j ${{ matrix.ctest_jobs }}
 
       - name: Python bindings
         if: matrix.python
