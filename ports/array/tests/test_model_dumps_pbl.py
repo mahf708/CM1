@@ -79,6 +79,13 @@ PBL_TENDENCIES = {
     "qipten": "qa_qi",
 }
 TOL_TENDENCY_OTHER_BACKENDS = 1e-9
+# jax / torch, moisture: a species whose maximum is tiny next to qv carries
+# qv's last-bit libm differences as a large relative error (mynn3_land_kessler
+# qa_qc through step 70: max|qc| ~1e-12 kg/kg cloud residue, error ~5e-22,
+# 5.4e-10 relative on torch and 4.2e-10 on numpy with its SIMD libm, versus
+# ~3e-18 for one ulp of qv; 3e-13 once cloud forms at step 80).  There a qa_*
+# array passes a step if its error is <= max(TOL * max|ref|,
+# ULP_FACTOR * eps * max|qv|).
 ULP_FACTOR = 8.0
 
 
@@ -103,7 +110,7 @@ from cm1x.model import Model
 
 case_dir, namelist, backend, max_step = Path(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4])
 prognostic = set(json.loads(sys.argv[5]))
-tend, tend_tol, tend_ulp = json.loads(sys.argv[6])
+tend, tend_tol, tend_ulp, tol = json.loads(sys.argv[6])
 m = Model(namelist, backend=backend, fortran_dp=True)
 bk, g = m.bk, m.grid
 n = g.ngxy
@@ -139,7 +146,7 @@ def inner(a):
 base = {k: v for k, v in ((k, host(v)) for k, v in m.base.items()) if isinstance(v, np.ndarray) and v.ndim in (2, 3)}
 steps = sorted(int(p.name.split("_")[1]) for p in case_dir.glob("step_*"))
 steps = [s for s in steps if s <= max_step]
-res = {"steps": steps, "errors": [], "compared": {}, "missing": [], "tend_ratio": {}}
+res = {"steps": steps, "errors": [], "compared": {}, "missing": [], "tend_ratio": {}, "qa_ratio": {}}
 prev = None
 for step in steps:
     while m.nstep < step:
@@ -175,6 +182,14 @@ for step in steps:
         if not np.isfinite(e):
             e = float("inf")  # max(0.0, nan) would hide a NaN
         res["compared"][k] = max(res["compared"].get(k, 0.0), e)
+        if k.startswith("qa_") and "qa_qv" in qnames:
+            # error in units of the round-off floor 8*eps*max|qv|
+            qv = inner(cur[qnames["qa_qv"]])
+            floor = tend_ulp * np.finfo(np.float64).eps * float(np.abs(qv).max())
+            abserr = float(np.abs(ai - bi).max())
+            r = abserr / floor if floor > 0 else float("inf")
+            r = min(r, e / tol) if np.isfinite(e) else float("inf")
+            res["qa_ratio"][k] = max(res["qa_ratio"].get(k, 0.0), r)
         if k in tend and prev is not None and step > 0:
             # error in units of the round-off floor 8*eps*max|X|/dt (X: the
             # prognostic this tendency changes, at the step it was computed)
@@ -233,7 +248,7 @@ def test_pbl_case_vs_cm1_dumps(case, bk, tmp_path):
             bk.name,
             max_step,
             json.dumps(PROGNOSTIC),
-            json.dumps([PBL_TENDENCIES, TOL_TENDENCY_OTHER_BACKENDS, ULP_FACTOR]),
+            json.dumps([PBL_TENDENCIES, TOL_TENDENCY_OTHER_BACKENDS, ULP_FACTOR, TOL]),
         ],
         cwd=tmp_path,
         env=env,
@@ -252,6 +267,10 @@ def test_pbl_case_vs_cm1_dumps(case, bk, tmp_path):
             if res["tend_ratio"][k] <= 1.0:
                 continue
             e = f"{e:.2e} (worst step at {res['tend_ratio'][k]:.2f}x its tolerance)"
+        elif bk.name != "numpy" and k.startswith("qa_") and k in res["qa_ratio"]:
+            if res["qa_ratio"][k] <= 1.0:
+                continue
+            e = f"{e:.2e} (worst step at {res['qa_ratio'][k]:.2f}x its tolerance)"
         bad[k] = e
     assert not res["errors"], res["errors"]
     assert not bad, f"{case}: max relative error over steps {res['steps'][-1]}: {bad}"
