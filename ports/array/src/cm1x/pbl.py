@@ -60,7 +60,9 @@ import importlib
 from .turbtend import _cat
 
 PBL_SCHEMES = {
+    1: "cm1x.pbl_ysu",  # YSU (bl_ysu.F)
     2: "cm1x.pbl",  # CM1 simple scheme (Bryan and Rotunno 2009)
+    3: "cm1x.pbl_gfs",  # GFS-EDMF (as configured in HWRF)
     4: "cm1x.pbl_mynn",  # MYNN-EDMF level 2.5
     5: "cm1x.pbl_mynn",  # MYNN-EDMF level 3
     6: "cm1x.pbl_myj",  # Mellor-Yamada-Janjic
@@ -70,6 +72,7 @@ SURFACE_LAYERS = {
     1: "cm1x.sfcphys",  # CM1 simple scheme (getcecd, sfcflux, sfcdiags)
     2: "cm1x.sfclay",  # MM5 similarity (sf_sfclay) + SLAB
     3: "cm1x.sfclay",  # revised MM5 (sf_sfclayrev) + SLAB
+    4: "cm1x.sfc_gfdl",  # GFDL surface layer (over water)
     6: "cm1x.sfc_mynn",  # MYNN surface layer + SLAB
     7: "cm1x.sfc_myj",  # Mellor-Yamada-Janjic (MYJSFC) + SLAB
 }

@@ -51,6 +51,11 @@ CASES = [
     "sfc_sfclay_land_z0t1",
     "myj_dry",
     "myj_kessler",
+    "gfs_kessler",
+    "gfs_dry",
+    "gfs_sfclay_land",
+    "ysu_dry",
+    "ysu_kessler",
 ]
 if os.environ.get("CM1X_PBL_CASES"):
     CASES = os.environ["CM1X_PBL_CASES"].split(",")
@@ -58,16 +63,23 @@ if os.environ.get("CM1X_PBL_CASES"):
 # the PBL scheme in sfc_and_turb, so it is compared with the state after N-1
 PROGNOSTIC = ("ua", "va", "wa", "tha", "ppi", "prs", "rho", "rain", "tkea", "qke3d")
 TOL = 1e-10  # max |cm1x - cm1| / max |cm1| per array and step
-# jax / torch: the PBL tendencies are (new - old)/dt differences, whose
-# cancellation amplifies last-bit libm differences (numpy keeps TOL)
-PBL_TENDENCIES = ("thpten", "qvpten", "qcpten", "qipten", "upten", "vpten")
+# jax / torch: the PBL tendencies are (new - old)/dt differences of the
+# prognostic they tend, so a last-bit libm difference in that prognostic
+# (|X| ~ 300 K for theta) becomes ~eps*|X|/dt in the tendency, which can be
+# far above 1e-10 of a tiny tendency maximum (GFS thpten: max 7.7e-6 K/s,
+# error ~2e-14 K/s, one ulp of theta over dt).  There a tendency passes a
+# step if its error is <= max(1e-9 * max|ref|, 8 * eps * max|X| / dt);
+# numpy keeps TOL for everything.
+PBL_TENDENCIES = {
+    "thpten": "theta",  # th0 + tha
+    "upten": "ua",
+    "vpten": "va",
+    "qvpten": "qa_qv",
+    "qcpten": "qa_qc",
+    "qipten": "qa_qi",
+}
 TOL_TENDENCY_OTHER_BACKENDS = 1e-9
-
-
-def _tol(name, backend):
-    if backend != "numpy" and name in PBL_TENDENCIES:
-        return TOL_TENDENCY_OTHER_BACKENDS
-    return TOL
+ULP_FACTOR = 8.0
 
 
 # Non-numpy backends: the last step where last-bit differences stay at
@@ -91,6 +103,7 @@ from cm1x.model import Model
 
 case_dir, namelist, backend, max_step = Path(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4])
 prognostic = set(json.loads(sys.argv[5]))
+tend, tend_tol, tend_ulp = json.loads(sys.argv[6])
 m = Model(namelist, backend=backend, fortran_dp=True)
 bk, g = m.bk, m.grid
 n = g.ngxy
@@ -126,7 +139,7 @@ def inner(a):
 base = {k: v for k, v in ((k, host(v)) for k, v in m.base.items()) if isinstance(v, np.ndarray) and v.ndim in (2, 3)}
 steps = sorted(int(p.name.split("_")[1]) for p in case_dir.glob("step_*"))
 steps = [s for s in steps if s <= max_step]
-res = {"steps": steps, "errors": [], "compared": {}, "missing": []}
+res = {"steps": steps, "errors": [], "compared": {}, "missing": [], "tend_ratio": {}}
 prev = None
 for step in steps:
     while m.nstep < step:
@@ -162,6 +175,20 @@ for step in steps:
         if not np.isfinite(e):
             e = float("inf")  # max(0.0, nan) would hide a NaN
         res["compared"][k] = max(res["compared"].get(k, 0.0), e)
+        if k in tend and prev is not None and step > 0:
+            # error in units of the round-off floor 8*eps*max|X|/dt (X: the
+            # prognostic this tendency changes, at the step it was computed)
+            xn = tend[k]
+            if xn == "theta":
+                x = prev["tha"] + base["th0"]
+            else:
+                x = prev.get(qnames.get(xn, xn))
+            if x is not None:
+                floor = tend_ulp * np.finfo(np.float64).eps * float(np.abs(inner(x)).max()) / m.dt
+                abserr = float(np.abs(ai - bi).max())
+                r = abserr / floor if floor > 0 else float("inf")
+                r = min(r, e / tend_tol) if np.isfinite(e) else float("inf")
+                res["tend_ratio"][k] = max(res["tend_ratio"].get(k, 0.0), r)
 print("RESULT" + json.dumps(res))
 """
 
@@ -206,6 +233,7 @@ def test_pbl_case_vs_cm1_dumps(case, bk, tmp_path):
             bk.name,
             max_step,
             json.dumps(PROGNOSTIC),
+            json.dumps([PBL_TENDENCIES, TOL_TENDENCY_OTHER_BACKENDS, ULP_FACTOR]),
         ],
         cwd=tmp_path,
         env=env,
@@ -216,7 +244,15 @@ def test_pbl_case_vs_cm1_dumps(case, bk, tmp_path):
     assert p.returncode == 0 and lines, p.stderr[-4000:]
     res = json.loads(lines[-1][len("RESULT") :])
     assert res["steps"], f"no steps compared for {case}"
-    bad = {k: e for k, e in res["compared"].items() if not e <= _tol(k, bk.name)}
+    bad = {}
+    for k, e in res["compared"].items():
+        if e <= TOL:
+            continue
+        if bk.name != "numpy" and k in PBL_TENDENCIES and k in res["tend_ratio"]:
+            if res["tend_ratio"][k] <= 1.0:
+                continue
+            e = f"{e:.2e} (worst step at {res['tend_ratio'][k]:.2f}x its tolerance)"
+        bad[k] = e
     assert not res["errors"], res["errors"]
     assert not bad, f"{case}: max relative error over steps {res['steps'][-1]}: {bad}"
     assert any(k in res["compared"] for k in ("ua", "tha")), res
