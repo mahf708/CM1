@@ -473,10 +473,20 @@ def _sgp(mtime, xp):
         (14.5 * h, 12.0 * h, 14.5 * h, -0.160, 0.000, -0.160, -0.160, -0.100, -0.300),
         (99.0 * h, 14.5 * h, 99.0 * h, -0.160, -0.100, -0.300, -0.160, -0.100, -0.300),
     )
-    vals = list(table[-1][1:])
+    if isinstance(mtime, (int, float)):  # a Python number: no array select
+        for row in table:
+            if mtime <= row[0]:
+                return list(row[1:])
+        return list(table[-1][1:])
+    # an array (traced) mtime: select with where, on arrays of mtime's dtype
+    # (torch.where on two Python floats would give its default float32)
+    vals = [xp.asarray(v, dtype=mtime.dtype) for v in table[-1][1:]]
     for row in reversed(table[:-1]):
         cond = mtime <= row[0]
-        vals = [xp.where(cond, a, b) for a, b in zip(row[1:], vals)]
+        vals = [
+            xp.where(cond, xp.asarray(a, dtype=mtime.dtype), b)
+            for a, b in zip(row[1:], vals)
+        ]
     return vals
 
 
