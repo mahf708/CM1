@@ -42,8 +42,14 @@
 //   * sfcmodel = 1: cm1setup = 1 with ipbl = 0 (LES), or cm1setup = 2 with
 //     ipbl = 2 (the simple PBL scheme, physics/pbl), which adds gethpbl2
 //     (bulk-Ri boundary-layer depth hpbl, before getcecd)
-//   * testcase = 0 (so use_avg_sfc = .false.; without ipbl=2, hpbl stays at
-//     its initial 100 m), imove = 0, no terrain, axisymm = 0
+//   * testcase = 0 (without ipbl=2, hpbl stays at its initial 100 m), or,
+//     with sfcmodel = 1, testcase = 1..15 (physics/testcase): the testcase
+//     branches of sfcflux (2, 6: no heat flux after 3000 s; 7: RICO bulk
+//     fluxes from the lowest-level wind; 11: SAS fluxes), use_avg_sfc
+//     (testcase 1, 2, 9, 11, 14: getavgsfc, then getcecd on the domain
+//     average and sfcstress from it), the testcase 7 surface stress, the
+//     max-gradient hpbl of testcase 1..7, and the testcase 13 roughness
+//   * imove = 0, no terrain, axisymm = 0
 //   * imoist = 0, or imoist = 1 with qv = qa(:,:,:,1)
 //
 // Not ported (diagnostics that never feed back): the qv budget in sfcflux
@@ -77,6 +83,8 @@ struct Options {
   int cm1setup = 1, ipbl = 0;
   Real tsk0 = 299.28, tmn0 = 297.28, xland0 = 2.0, cnstce = 0.0011, cnstcd = 0.0011;
   Real cnst_shflx = 0.24, cnst_lhflx = 5.2e-5, cnst_znt = 0.16, cnst_ust = 0.25;
+  bool use_avg_sfc = false;   // param.F: testcase 1, 2, 9, 11, 14 with sfcmodel 1 (5)
+  int nx = 0, ny = 0;         // (testcase 13 roughness)
   bool dosfcflx = false;   // init_surface.F
   int output_sfcflx = 0;    // turb.F: thflux/qvflux from hfx/qfx also without dosfcflx
 
@@ -107,7 +115,16 @@ struct SfcState {
   // not in the dumps: zntmp (znt with halos, for tkebc and the surface
   // dissipation), t1, hpbl, dsxy, and sfcdiags' other outputs
   FArray3 zntmp, t1, hpbl, dsxy, br, cda, gz1oz0, th2, t2, q2;
+  // testcase forcing (configure): ground-relative winds at k = 1 (turb.F
+  // ugr, vgr) and the domain averages of getavgsfc (avgsfcu, avgsfcv,
+  // avgsfcs, avgsfcsu, avgsfcsv, avgsfct, avgsfcq, avgsfcp: avgsfc(1..8))
+  FArray3 ugr, vgr;
+  FArray1 avgsfc;
+  int testcase = 0;
+  bool use_avg_sfc = false;
   void allocate(const Bounds& b);
+  // the testcase settings (sfcmodel = 1): allocates ugr, vgr, avgsfc
+  void configure(const Bounds& b, const Options& o);
   // (name, array) of every dumped array, in src/cm1dump_state.inc order
   std::vector<std::pair<std::string, FArray3>> dumped() const;
 };
@@ -135,7 +152,7 @@ void set_dsxy(const Options& o, const Grid& g, const SfcState& s);
 void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
                Real cgs1, Real cgs2, Real cgs3, const FArray3& ua, const FArray3& va,
                const FArray3& tha, const FArray4& qa, const FArray3& prs, const FArray3& rf,
-               const SfcState& s);
+               const SfcState& s, Real rtime = 0.0);
 
 // The part of turb.F sfc_and_turb's surface block every surface layer
 // shares (lines 290-332 and 532-597): psfc (cgs extrapolation), u1/v1/s1/t1
@@ -153,21 +170,31 @@ void gethpbl2(const Options& o, const Constants& c, const Bounds& b, const FArra
               const FArray3& th0, const FArray3& tha, const FArray4& qa, const FArray3& ua,
               const FArray3& va, const FArray3& u0, const FArray3& v0, const SfcState& s);
 
-// sfcphys.F getcecd (use_avg_sfc = .false.). za: height of the lowest
+// sfcphys.F getavgsfc (use_avg_sfc): domain averages into s.avgsfc.
+void getavgsfc(const Options& o, const Bounds& b, const FArray4& qa, const SfcState& s);
+
+// turb.F, testcase 1..7: boundary-layer depth hpbl from the maximum of the
+// virtual-temperature gradient (instead of gethpbl2).
+// (liquid water: qa(nql1:nql2), Kessler qc + qr; none with ptype = 0)
+void hpbl_maxgrad(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
+                  const FArray3& tha, const FArray4& qa, const SfcState& s);
+
+// sfcphys.F getcecd (with use_avg_sfc only (1,1), from the averages). za: height of the lowest
 // model level above the surface, here zh(i,j,1).
 void getcecd(const Options& o, const Bounds& b, const FArray3& zh, const SfcState& s);
 
 // sfcphys.F sfcflux (testcase = 0). qv: qa(:,:,:,nqv), or unused when imoist=0.
 void sfcflux(const Options& o, const Constants& c, const Bounds& b, const FArray3& th0,
-             const FArray3& tha, const FArray4& qa, const SfcState& s);
+             const FArray3& tha, const FArray4& qa, const SfcState& s, Real rtime = 0.0);
 
 // sfcphys.F sfcdiags. qa(:,:,1,nqv) is CM1's divx (0 when imoist=0).
 void sfcdiags(const Options& o, const Constants& c, const Bounds& b, const FArray3& zh,
               const FArray3& th0, const FArray3& tha, const FArray4& qa, const FArray3& rf,
               const SfcState& s);
 
-// turb.F sfcstress, bbc=3 (Cartesian, use_avg_sfc = .false., testcase /= 7):
-// t13, t23 at k=1 on 1..ni+1 x 1..nj+1 (needs the halos of ust, u1, v1, s1).
+// turb.F sfcstress, bbc=3 (Cartesian): t13, t23 at k=1 on 1..ni+1 x
+// 1..nj+1 (needs the halos of ust, u1, v1, s1), from the domain averages
+// with use_avg_sfc, and replaced by the RICO stress with testcase = 7.
 void sfcstress(const Bounds& b, const FArray3& rf, const SfcState& s,
                const FArray3& t13, const FArray3& t23);
 

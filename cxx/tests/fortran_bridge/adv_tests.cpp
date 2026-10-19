@@ -412,7 +412,8 @@ TEST_CASE("advection options: unsupported values throw", "[adv]") {
   { auto x = o; x.terrain_flag = true; REQUIRE_NOTHROW(x.check()); }   // terrain branches are ported
   { auto x = o; x.axisymm = 1; REQUIRE_THROWS(x.check()); }
   { auto x = o; x.do_ib = true; REQUIRE_THROWS(x.check()); }
-  { auto x = o; x.dolsw = true; REQUIRE_THROWS(x.check()); }
+  { auto x = o; x.dolsw = true; REQUIRE_NOTHROW(x.check()); }   // wsub is ported
+  { auto x = o; x.dolsw = true; x.terrain_flag = true; REQUIRE_THROWS(x.check()); }
   { auto x = o; x.advwenos = 1; x.weno_order = 7; REQUIRE_THROWS(x.check()); }
   { auto x = o; x.hadvordrs = 11; REQUIRE_THROWS(x.check()); }
   { auto x = o; x.wbc = 5; REQUIRE_THROWS(x.check()); }

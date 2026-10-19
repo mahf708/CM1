@@ -22,7 +22,10 @@ void set_extrap_coeffs(Grid& g) {
 }
 } // namespace
 
-Model::Model(const Namelist& nl) : m_nl(nl) {
+// param.F: the test case forces imoist (testcase::param_overrides), so the
+// model works from the adjusted namelist
+Model::Model(const Namelist& nl_in) : m_nl(testcase::param_overrides(nl_in)) {
+  const Namelist& nl = m_nl;
   m_c = Constants::make(nl.geti("testcase", 0));
   const auto b = Bounds::from_namelist(nl);
   if (b.nx <= 0 || b.ny <= 0 || b.nz <= 0)
@@ -54,6 +57,7 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   m_sfc_opt = sfc::Options::from_namelist(nl);
   if (m_sfc_opt.has_layer()) {
     m_sfc.allocate(b);
+    m_sfc.configure(b, m_sfc_opt);   // testcase: ugr/vgr, avgsfc
     sfc::set_defaults(m_sfc);   // cm1.F
   }
   // sfcmodel=2,3: the WRF surface-layer state (tables, tmn, emiss, thc)
@@ -84,6 +88,12 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
       m_rad = std::make_unique<rrtmg::Radiation>();
       m_rad->setup(ro, m_c, b, m_sfc.tsk, m_sfc.xland, m_wsfc.gsw, m_wsfc.glw, m_wsfc.emiss);
     }
+  }
+  // testcase forcing / lspgrad = 2..4: the 1D profiles of base.F
+  m_tc_opt = testcase::Options::from_namelist(nl);
+  if (m_tc_opt.active()) {
+    m_tc_opt.check();
+    m_tc.allocate(b, m_tc_opt);
   }
   build_registry();
 }
@@ -135,6 +145,13 @@ void Model::build_registry() {
   }
   if (m_rad)
     for (auto& [name, a] : m_rad->dumped()) m_reg.add(name, a);
+  if (m_tc.allocated()) {   // src/cm1dump_state.inc: testcase >= 1 or lspgrad >= 2
+    for (auto& [name, a] : m_tc.dumped1()) m_reg.add(name, a);
+    for (auto& [name, a] : m_tc.dumped3()) m_reg.add(name, a);
+  }
+  // max-gradient hpbl of testcase 1..7 (bbc = 3, no PBL scheme)
+  if (m_tc_opt.testcase >= 1 && m_tc_opt.testcase <= 7 && m_sfc_opt.has_layer() && !m_use_pbl)
+    m_reg.add("hpbl", m_sfc.hpbl);
   if (m_use_myj) {
     for (auto& [name, a] : m_myj.dumped_sfc()) m_reg.add(name, a);
     m_reg.add("hpbl", m_sfc.hpbl);
@@ -276,6 +293,7 @@ void Model::init() {
   set_extrap_coeffs(m_grid);
   init::init_base(m_nl, m_c, m_grid, info, m_base);
   init::init_state(m_nl, m_c, m_grid, info, m_base, m_state);
+  if (m_tc.allocated()) testcase::init_profiles(m_tc_opt, m_grid, m_base, m_tc);   // base.F
   if (m_sfc_opt.has_layer()) sfc::init_surface(m_sfc_opt, m_grid, m_sfc);   // init_surface.F
   if (m_sfc_opt.wrf()) sfclay::init_soil(m_grid.b, m_wsfc);                 // tslb
   if (m_rad) m_rad->init_state();                                           // o30, radtim
@@ -305,6 +323,7 @@ Dyncore& Model::dyncore() {
     if (m_use_myj) m_dyn->set_myj(m_myj);
     if (m_sfc_opt.gfdl()) m_dyn->set_gfdl_surface(m_gsfc);
     if (m_use_pbl && m_ipbl == 3) m_dyn->set_gfs(m_gfs);
+    if (m_tc.allocated()) m_dyn->set_testcase(m_tc);
     if (m_adapt.active) {   // the current (adapted) time step
       double d = m_dt;
       const int ns = m_dyn->dtsmall(d);

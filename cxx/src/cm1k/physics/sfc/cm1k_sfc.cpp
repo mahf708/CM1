@@ -8,6 +8,7 @@
 
 #include "init/cm1k_cm1libs.hpp"
 
+#include <cmath>
 #include <stdexcept>
 #include <string>
 
@@ -109,6 +110,16 @@ Options Options::from_namelist(const Namelist& nl) {
   o.cnst_lhflx = nl.getr("cnst_lhflx", 5.2e-5);
   o.cnst_znt = nl.getr("cnst_znt", 0.16);
   o.cnst_ust = nl.getr("cnst_ust", 0.25);
+  o.nx = nl.geti("nx", 0);
+  o.ny = nl.geti("ny", 0);
+  // param.F: testcase 1, 2 are dry; 3, 4, 5, 7, 8, 11 moist
+  if (o.testcase == 1 || o.testcase == 2) o.imoist = 0;
+  if (o.testcase == 3 || o.testcase == 4 || o.testcase == 5 || o.testcase == 7 || o.testcase == 8 ||
+      o.testcase == 11)
+    o.imoist = 1;
+  // param.F: average surface conditions for some test cases
+  if (o.sfcmodel == 1 || o.sfcmodel == 5)
+    o.use_avg_sfc = (o.testcase == 1 || o.testcase == 2 || o.testcase == 9 || o.testcase == 11 || o.testcase == 14);
   // param.F: sfcmodel = 2..7 requires isfcflx = 1
   if (o.sfcmodel >= 2 && o.sfcmodel <= 7) o.isfcflx = 1;
   // param.F: sfcmodel >= 1 (or a PBL scheme, or the ocean model) needs bbc=3
@@ -167,7 +178,15 @@ void Options::check() const {
   if (season != 1 && season != 2) fail("season must be 1 or 2");
   if (lu0 < 0 || lu0 > 33) fail("lu0 must be 0..33 (LANDUSE.TBL)");
   if (tbc != 1) fail("tbc=" + std::to_string(tbc) + " is not ported with the surface layer (only 1)");
-  if (testcase != 0) fail("testcase=" + std::to_string(testcase) + " is not ported (only 0)");
+  // the WRF surface layers (2, 3) have no testcase branches, but the
+  // testcases 1..7 (max-gradient hpbl, sfcflux, stress), 11 (no SLAB) and 13
+  // (init_surface znt) are only ported with sfcmodel=1
+  const bool tc_wrf_ok = testcase == 8 || testcase == 9 || testcase == 10 || testcase == 12 || testcase == 14 ||
+                         testcase == 15;
+  if (testcase != 0 && sfcmodel != 1 && !((sfcmodel == 2 || sfcmodel == 3) && tc_wrf_ok))
+    fail("testcase=" + std::to_string(testcase) + " is not ported with sfcmodel=" + std::to_string(sfcmodel) +
+         " (sfcmodel=1 always; 2, 3 only for testcase 8, 9, 10, 12, 14, 15)");
+  if (testcase < 0 || testcase > 15) fail("testcase=" + std::to_string(testcase) + " does not exist");
   if (imove != 0) fail("imove=1 (ground-relative winds with a moving domain) is not ported");
   if (axisymm != 0) fail("axisymm=1 is not ported");
   if (terrain_flag) fail("terrain is not ported");
@@ -229,6 +248,16 @@ void SfcState::allocate(const Bounds& b) {
   br = mk("br"); cda = mk("cda"); gz1oz0 = mk("gz1oz0"); th2 = mk("th2"); t2 = mk("t2"); q2 = mk("q2");
 }
 
+void SfcState::configure(const Bounds& b, const Options& o) {
+  testcase = o.testcase;
+  use_avg_sfc = o.use_avg_sfc && o.sfcmodel == 1;
+  if (use_avg_sfc || testcase == 7) {
+    ugr = FArray3("ugr", {b.ib, b.jb, 1}, {b.ie, b.je, 1});
+    vgr = FArray3("vgr", {b.ib, b.jb, 1}, {b.ie, b.je, 1});
+  }
+  if (use_avg_sfc) avgsfc = FArray1("avgsfc", {1}, {11});   // 9..11: u1, v1, s1(1,1) saved by getcecd
+}
+
 std::vector<std::pair<std::string, FArray3>> SfcState::dumped() const {
   return {{"tsk", tsk}, {"znt", znt}, {"xland", xland}, {"mavail", mavail}, {"ust", ust},
           {"u1", u1}, {"v1", v1}, {"s1", s1}, {"cd", cd}, {"ch", ch}, {"cq", cq},
@@ -286,6 +315,16 @@ void init_surface(const Options& o, const Grid& g, const SfcState& s) {
     // 171020:
     if (xland(i, j, 1) > 1.5) mavail(i, j, 1) = 1.0;
   });
+  if (o.testcase == 13 && o.nx > o.ny) {
+    // UF Boundary Layer Wind Tunnel case: rough upstream third
+    auto xf = g.xf.to_host();
+    const Real minx = xf(1), maxx = xf(b.ni + 1);   // serial: xfref(1), xfref(nx+1)
+    const auto xh = g.xh;
+    Kokkos::parallel_for("sfc_init_tc13", box2(b.ib, b.ie, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) {
+      if (xh(i) <= minx + (maxx - minx) / 3.0) znt(i, j, 1) = 0.011;
+      else znt(i, j, 1) = 0.001;
+    });
+  }
   set_dsxy(o, g, s);
 }
 
@@ -300,7 +339,17 @@ void getcecd(const Options& o, const Bounds& b, const FArray3& zh, const SfcStat
   const auto u1 = s.u1, v1 = s.v1, s1 = s.s1, u10 = s.u10, v10 = s.v10, s10 = s.s10;
   const auto xland = s.xland, znt = s.znt, ust = s.ust, cd = s.cd, ch = s.ch, cq = s.cq;
   int nfail = 0;
-  Kokkos::parallel_reduce("sfc_getcecd", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j, int& bad) {
+  const bool avg = s.use_avg_sfc;
+  const auto avgsfc = s.avgsfc;
+  if (avg) {
+    // only (1,1), on the domain-average wind
+    Kokkos::parallel_for("sfc_getcecd_avg0", Kokkos::RangePolicy<ExeSpace>(0, 1), KOKKOS_LAMBDA(int) {
+      avgsfc(9) = u1(1, 1, 1); avgsfc(10) = v1(1, 1, 1); avgsfc(11) = s1(1, 1, 1);
+      u1(1, 1, 1) = avgsfc(1); v1(1, 1, 1) = avgsfc(2); s1(1, 1, 1) = avgsfc(3);
+    });
+  }
+  const int i2 = avg ? 1 : b.ni, j2 = avg ? 1 : b.nj;
+  Kokkos::parallel_reduce("sfc_getcecd", box2(1, i2, 1, j2), KOKKOS_LAMBDA(int i, int j, int& bad) {
     const Real za = zh(i, j, 1);
     Real rznt, var;
     if (set_znt == 1) {
@@ -394,6 +443,74 @@ void getcecd(const Options& o, const Bounds& b, const FArray3& zh, const SfcStat
   }, nfail);
   if (nfail > 0)
     throw std::runtime_error("cm1k sfc::getcecd: the z0 iteration did not converge in 20 steps (CM1 stops)");
+  if (avg) {
+    Kokkos::parallel_for("sfc_getcecd_avg1", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+      if (i == 1 && j == 1) return;
+      u10(i, j, 1) = u10(1, 1, 1); v10(i, j, 1) = v10(1, 1, 1); s10(i, j, 1) = s10(1, 1, 1);
+      znt(i, j, 1) = znt(1, 1, 1); ust(i, j, 1) = ust(1, 1, 1);
+      cd(i, j, 1) = cd(1, 1, 1); ch(i, j, 1) = ch(1, 1, 1); cq(i, j, 1) = cq(1, 1, 1);
+    });
+    Kokkos::parallel_for("sfc_getcecd_avg2", Kokkos::RangePolicy<ExeSpace>(0, 1), KOKKOS_LAMBDA(int) {
+      u1(1, 1, 1) = avgsfc(9); v1(1, 1, 1) = avgsfc(10); s1(1, 1, 1) = avgsfc(11);
+    });
+  }
+}
+
+void getavgsfc(const Options& o, const Bounds& b, const FArray4& qa, const SfcState& s) {
+  Kokkos::fence();
+  auto ugr = s.ugr.to_host(), vgr = s.vgr.to_host();
+  auto s1 = s.s1.to_host(), t1 = s.t1.to_host(), psfc = s.psfc.to_host();
+  double u = 0.0, v = 0.0, ss = 0.0, su = 0.0, sv = 0.0, t = 0.0, p = 0.0, q = 0.0;
+  for (int j = 1; j <= b.nj; ++j)
+    for (int i = 1; i <= b.ni; ++i) {
+      u = u + ugr(i, j, 1);
+      v = v + vgr(i, j, 1);
+      const Real va4 = 0.25 * ((vgr(i, j, 1) + vgr(i, j + 1, 1)) + (vgr(i - 1, j, 1) + vgr(i - 1, j + 1, 1)));
+      su = su + std::sqrt(ugr(i, j, 1) * ugr(i, j, 1) + va4 * va4);
+      const Real ua4 = 0.25 * ((ugr(i, j, 1) + ugr(i + 1, j, 1)) + (ugr(i, j - 1, 1) + ugr(i + 1, j - 1, 1)));
+      sv = sv + std::sqrt(vgr(i, j, 1) * vgr(i, j, 1) + ua4 * ua4);
+      ss = ss + s1(i, j, 1);
+      t = t + t1(i, j, 1);
+      p = p + psfc(i, j, 1);
+    }
+  if (o.imoist == 1) {
+    auto hq = qa.to_host();
+    for (int j = 1; j <= b.nj; ++j)
+      for (int i = 1; i <= b.ni; ++i) q = q + hq(i, j, 1, 1);   // q1 = divx(:,:,1) = qv
+  }
+  const double temd = 1.0 / double(b.nx * b.ny);
+  auto a = s.avgsfc.to_host();
+  a(1) = u * temd; a(2) = v * temd; a(3) = ss * temd; a(4) = su * temd; a(5) = sv * temd;
+  a(6) = t * temd; a(7) = q * temd; a(8) = p * temd;
+  s.avgsfc.deep_copy_from(a);
+}
+
+void hpbl_maxgrad(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
+                  const FArray3& tha, const FArray4& qa, const SfcState& s) {
+  const auto& b = g.b;
+  const int nk = b.nk;
+  const bool moist = (o.imoist == 1);
+  const int nql1 = (moist && o.ptype == 1) ? 2 : 0, nql2 = (moist && o.ptype == 1) ? 3 : -1;
+  const Real repsm1 = c.repsm1, rdz = g.rdz;
+  const auto th0 = base.th0, mf = g.mf, zf = g.zf, hpbl = s.hpbl;
+  Kokkos::parallel_for("sfc_hpbl_maxgrad", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+    // divx = qv, dum7 = ql (+ qi), 0 when dry
+    auto fac = [&](int k) {
+      Real ql = 0.0;
+      for (int n = nql1; n <= nql2; ++n) ql = ql + qa(i, j, k, n);
+      const Real qv = moist ? qa(i, j, k, 1) : 0.0;
+      return (1.0 + repsm1 * qv - ql);
+    };
+    Real dmax = -1.0e30;
+    for (int k = nk; k >= 2; --k) {
+      const Real dtdz = ((th0(i, j, k) + tha(i, j, k)) * fac(k) - (th0(i, j, k - 1) + tha(i, j, k - 1)) * fac(k - 1))
+                        * rdz * mf(i, j, k);
+      if (dtdz >= dmax) {
+        dmax = dtdz;
+        hpbl(i, j, 1) = zf(i, j, k);
+      }
+    }
+  });
 }
 
 void gethpbl2(const Options& o, const Constants& c, const Bounds& b, const FArray3& zh,
@@ -483,9 +600,13 @@ void gethpbl2(const Options& o, const Constants& c, const Bounds& b, const FArra
 }
 
 void sfcflux(const Options& o, const Constants& c, const Bounds& b, const FArray3& th0,
-             const FArray3& tha, const FArray4& qa, const SfcState& s) {
+             const FArray3& tha, const FArray4& qa, const SfcState& s, Real rtime) {
   const auto thflux = s.thflux, qvflux = s.qvflux, qsfc = s.qsfc;
   const bool moist = (o.imoist == 1);
+  const Real rovcp = c.rovcp, eps = c.eps;
+  constexpr Real rp00 = phys::rp00;
+  const int ptype = o.ptype;
+  const auto psfc = s.psfc, ch = s.ch, cq = s.cq, s10 = s.s10, tsk = s.tsk, mavail = s.mavail, s1 = s.s1;
   if (o.set_flx == 1) {
     // specified fluxes
     const Real shf = o.cnst_shflx, lhf = o.cnst_lhflx;
@@ -493,23 +614,48 @@ void sfcflux(const Options& o, const Constants& c, const Bounds& b, const FArray
       thflux(i, j, 1) = shf;
       if (moist) qvflux(i, j, 1) = lhf;
     });
-    return;
+  } else {
+    Kokkos::parallel_for("sfc_flux", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+      // sensible heat flux
+      const Real pisfc = Kokkos::pow(psfc(i, j, 1) * rp00, rovcp);
+      thflux(i, j, 1) = ch(i, j, 1) * s10(i, j, 1) * (tsk(i, j, 1) / pisfc - th0(i, j, 1) - tha(i, j, 1));
+      // latent heat flux
+      if (moist) {
+        const Real qvsat = cm1libs::rslf(ptype, eps, psfc(i, j, 1), tsk(i, j, 1));
+        qsfc(i, j, 1) = qvsat;
+        qvflux(i, j, 1) = cq(i, j, 1) * s10(i, j, 1) * (qvsat - qa(i, j, 1, 1)) * mavail(i, j, 1);
+      }
+    });
   }
-  const Real rovcp = c.rovcp, eps = c.eps;
-  constexpr Real rp00 = phys::rp00;
-  const int ptype = o.ptype;
-  const auto psfc = s.psfc, ch = s.ch, cq = s.cq, s10 = s.s10, tsk = s.tsk, mavail = s.mavail;
-  Kokkos::parallel_for("sfc_flux", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
-    // sensible heat flux
-    const Real pisfc = Kokkos::pow(psfc(i, j, 1) * rp00, rovcp);
-    thflux(i, j, 1) = ch(i, j, 1) * s10(i, j, 1) * (tsk(i, j, 1) / pisfc - th0(i, j, 1) - tha(i, j, 1));
-    // latent heat flux
-    if (moist) {
-      const Real qvsat = cm1libs::rslf(ptype, eps, psfc(i, j, 1), tsk(i, j, 1));
-      qsfc(i, j, 1) = qvsat;
-      qvflux(i, j, 1) = cq(i, j, 1) * s10(i, j, 1) * (qvsat - qa(i, j, 1, 1)) * mavail(i, j, 1);
-    }
-  });
+  // test cases: turn off the surface heat flux after a spin-up time, or
+  // replace the fluxes
+  if (o.testcase == 2 || o.testcase == 6) {
+    // shear-driven PBL (Moeng and Sullivan 1994), hurricane PBL (Bryan et al 2017)
+    if (rtime > 3000.0) thflux.fill(0.0);
+  } else if (o.testcase == 7) {
+    // RICO: fluxes from the lowest-model-level wind speed
+    Kokkos::parallel_for("sfc_flux_tc7", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+      const Real pisfc = Kokkos::pow(psfc(i, j, 1) * rp00, rovcp);
+      thflux(i, j, 1) = 0.001094 * s1(i, j, 1) * (tsk(i, j, 1) / pisfc - th0(i, j, 1) - tha(i, j, 1));
+      if (moist) {
+        const Real qvsat = cm1libs::rslf(ptype, eps, psfc(i, j, 1), tsk(i, j, 1));
+        qsfc(i, j, 1) = qvsat;
+        qvflux(i, j, 1) = 0.001133 * s1(i, j, 1) * (qvsat - qa(i, j, 1, 1)) * mavail(i, j, 1);
+      }
+    });
+  } else if (o.testcase == 11) {
+    // SAS
+    constexpr Real pi = phys::pi;
+    Real thmag, qvmag;
+    if (rtime <= 3600.0) thmag = 0.0;
+    else thmag = 0.1 * std::sin(pi * (rtime - 3600.0) / (3600.0 * (19.5 - 6.0)));
+    if (rtime <= 7200.0) qvmag = 0.0;
+    else qvmag = 0.15e-3 * std::sin(pi * (rtime - 7200.0) / (3600.0 * (19.5 - 7.0)));
+    Kokkos::parallel_for("sfc_flux_tc11", box2(1, b.ni, 1, b.nj), KOKKOS_LAMBDA(int i, int j) {
+      thflux(i, j, 1) = thmag;
+      qvflux(i, j, 1) = qvmag;
+    });
+  }
 }
 
 void sfcdiags(const Options& o, const Constants& c, const Bounds& b, const FArray3& zh,
@@ -579,35 +725,74 @@ void sfc_prelude(const Options& o, const Constants& c, const Grid& g, const Base
     s1(i, j, 1) = Kokkos::sqrt(u1(i, j, 1) * u1(i, j, 1) + v1(i, j, 1) * v1(i, j, 1));
     t1(i, j, 1) = th0(i, j, 1) + tha(i, j, 1);
   });
-  // bulk-Ri boundary-layer depth (testcase=0), before getcecd
-  if (o.ipbl == 2) gethpbl2(o, c, b, g.zh, th0, tha, qa, ua, va, u0, v0, s);
+  // ground-relative winds at k = 1 (turb.F ugr, vgr), when a testcase needs them
+  if (s.ugr.is_allocated()) {
+    const auto ugr = s.ugr, vgr = s.vgr;
+    Kokkos::parallel_for("sfc_ugr", box2(b.ib, b.ie, b.jb, b.je), KOKKOS_LAMBDA(int i, int j) {
+      ugr(i, j, 1) = pert ? ua(i, j, 1) - u0(i, j, 1) : ua(i, j, 1);
+      vgr(i, j, 1) = pert ? va(i, j, 1) - v0(i, j, 1) : va(i, j, 1);
+    });
+  }
+  // boundary-layer depth before getcecd: the max-gradient method of the
+  // simple LES test cases (testcase 1..7), else bulk-Ri (ipbl=2)
+  if (o.testcase >= 1 && o.testcase <= 7) hpbl_maxgrad(o, c, g, base, tha, qa, s);
+  else if (o.ipbl == 2) gethpbl2(o, c, b, g.zh, th0, tha, qa, ua, va, u0, v0, s);
 }
 
 void sfc_layer(const Options& o, const Constants& c, const Grid& g, const BaseState& base,
                Real cgs1, Real cgs2, Real cgs3, const FArray3& ua, const FArray3& va,
                const FArray3& tha, const FArray4& qa, const FArray3& prs, const FArray3& rf,
-               const SfcState& s) {
+               const SfcState& s, Real rtime) {
   o.check();
   if (!o.active()) return;
   const auto& b = g.b;
   const auto th0 = base.th0;
   sfc_prelude(o, c, g, base, cgs1, cgs2, cgs3, ua, va, tha, qa, prs, s);
+  if (s.use_avg_sfc) getavgsfc(o, b, qa, s);
   getcecd(o, b, g.zh, s);
-  if (o.isfcflx == 1) sfcflux(o, c, b, th0, tha, qa, s);
+  if (o.isfcflx == 1) sfcflux(o, c, b, th0, tha, qa, s, rtime);
   sfcdiags(o, c, b, g.zh, th0, tha, qa, rf, s);
 }
 
 void sfcstress(const Bounds& b, const FArray3& rf, const SfcState& s,
                const FArray3& t13, const FArray3& t23) {
   const auto ust = s.ust, u1 = s.u1, v1 = s.v1, s1 = s.s1;
-  Kokkos::parallel_for("sfc_stress", box2(1, b.ni + 1, 1, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
-    t13(i, j, 1) = 0.25 * ((ust(i - 1, j, 1) * ust(i - 1, j, 1)) * (u1(i - 1, j, 1) / fmax2(s1(i - 1, j, 1), 0.01))
-                          + (ust(i, j, 1) * ust(i, j, 1)) * (u1(i, j, 1) / fmax2(s1(i, j, 1), 0.01)))
-                   * (rf(i - 1, j, 1) + rf(i, j, 1));
-    t23(i, j, 1) = 0.25 * ((ust(i, j - 1, 1) * ust(i, j - 1, 1)) * (v1(i, j - 1, 1) / fmax2(s1(i, j - 1, 1), 0.01))
-                          + (ust(i, j, 1) * ust(i, j, 1)) * (v1(i, j, 1) / fmax2(s1(i, j, 1), 0.01)))
-                   * (rf(i, j - 1, 1) + rf(i, j, 1));
-  });
+  if (!s.use_avg_sfc) {
+    Kokkos::parallel_for("sfc_stress", box2(1, b.ni + 1, 1, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
+      t13(i, j, 1) = 0.25 * ((ust(i - 1, j, 1) * ust(i - 1, j, 1)) * (u1(i - 1, j, 1) / fmax2(s1(i - 1, j, 1), 0.01))
+                            + (ust(i, j, 1) * ust(i, j, 1)) * (u1(i, j, 1) / fmax2(s1(i, j, 1), 0.01)))
+                     * (rf(i - 1, j, 1) + rf(i, j, 1));
+      t23(i, j, 1) = 0.25 * ((ust(i, j - 1, 1) * ust(i, j - 1, 1)) * (v1(i, j - 1, 1) / fmax2(s1(i, j - 1, 1), 0.01))
+                            + (ust(i, j, 1) * ust(i, j, 1)) * (v1(i, j, 1) / fmax2(s1(i, j, 1), 0.01)))
+                     * (rf(i, j - 1, 1) + rf(i, j, 1));
+    });
+  } else {
+    // cm1r20.3: stresses from the domain-average surface conditions,
+    // directly at the staggered points
+    const auto ugr = s.ugr, vgr = s.vgr;
+    const auto avgsfc = s.avgsfc;
+    Kokkos::parallel_for("sfc_stress_avg", box2(1, b.ni + 1, 1, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
+      const Real avgsfcu = avgsfc(1), avgsfcv = avgsfc(2), avgsfcsu = avgsfc(4), avgsfcsv = avgsfc(5);
+      const Real tem1 = ust(1, 1, 1) * ust(1, 1, 1)
+                        / (fmax2(1.0e-8, avgsfcsu * Kokkos::sqrt(avgsfcu * avgsfcu + avgsfcv * avgsfcv)));
+      const Real tem2 = ust(1, 1, 1) * ust(1, 1, 1)
+                        / (fmax2(1.0e-8, avgsfcsv * Kokkos::sqrt(avgsfcu * avgsfcu + avgsfcv * avgsfcv)));
+      const Real va4 = 0.25 * ((vgr(i, j, 1) + vgr(i, j + 1, 1)) + (vgr(i - 1, j, 1) + vgr(i - 1, j + 1, 1)));
+      const Real s8u = Kokkos::sqrt(ugr(i, j, 1) * ugr(i, j, 1) + va4 * va4);
+      const Real ua4 = 0.25 * ((ugr(i, j, 1) + ugr(i + 1, j, 1)) + (ugr(i, j - 1, 1) + ugr(i + 1, j - 1, 1)));
+      const Real s8v = Kokkos::sqrt(vgr(i, j, 1) * vgr(i, j, 1) + ua4 * ua4);
+      t13(i, j, 1) = 0.5 * (rf(i - 1, j, 1) + rf(i, j, 1)) * tem1 * (s8u * avgsfcu + avgsfcsu * (ugr(i, j, 1) - avgsfcu));
+      t23(i, j, 1) = 0.5 * (rf(i, j - 1, 1) + rf(i, j, 1)) * tem2 * (s8v * avgsfcv + avgsfcsv * (vgr(i, j, 1) - avgsfcv));
+    });
+  }
+  if (s.testcase == 7) {
+    // RICO: stress from the lowest-model-level wind speed
+    const auto ugr = s.ugr, vgr = s.vgr;
+    Kokkos::parallel_for("sfc_stress_tc7", box2(1, b.ni + 1, 1, b.nj + 1), KOKKOS_LAMBDA(int i, int j) {
+      t13(i, j, 1) = (0.001229 * 0.5 * (s1(i - 1, j, 1) + s1(i, j, 1)) * ugr(i, j, 1)) * 0.5 * (rf(i - 1, j, 1) + rf(i, j, 1));
+      t23(i, j, 1) = (0.001229 * 0.5 * (s1(i, j - 1, 1) + s1(i, j, 1)) * vgr(i, j, 1)) * 0.5 * (rf(i, j - 1, 1) + rf(i, j, 1));
+    });
+  }
 }
 
 } // namespace cm1k::sfc

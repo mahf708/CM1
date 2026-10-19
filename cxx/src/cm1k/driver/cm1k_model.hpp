@@ -9,6 +9,7 @@
 #include "physics/sfc/cm1k_sfc.hpp"
 #include "physics/sfc_gfdl/cm1k_gfdl_driver.hpp"
 #include "physics/sfclay/cm1k_sfclay_driver.hpp"
+#include "physics/testcase/cm1k_testcase.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
 #include "share/cm1k_namelist.hpp"
@@ -108,6 +109,8 @@ public:
   // RRTMG radiation (radopt=2; its arrays are registered fields, as
   // src/cm1dump_state.inc dumps them). nullptr with radopt=0.
   rrtmg::Radiation* radiation() { return m_rad.get(); }
+  // testcase forcing profiles (allocated with testcase >= 1 or lspgrad >= 2)
+  const testcase::Forcing& testcase_forcing() const { return m_tc; }
 
   int nstep() const { return m_nstep; }
   double mtime() const { return m_mtime; }
@@ -136,6 +139,8 @@ private:
   pbl_mynn::Carried m_mynn;
   bool m_use_myj = false;
   myj::Carried m_myj;
+  testcase::Options m_tc_opt;   // testcase forcing / lspgrad >= 2
+  testcase::Forcing m_tc;
   FieldRegistry m_reg;
 
   int m_nstep = 0;

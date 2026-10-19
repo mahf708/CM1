@@ -12,6 +12,7 @@
 #include "physics/sfc_gfdl/cm1k_gfdl_driver.hpp"
 #include "physics/pbl_ysu/cm1k_pbl_ysu.hpp"
 #include "physics/sfclay/cm1k_sfclay_driver.hpp"
+#include "physics/testcase/cm1k_testcase.hpp"
 #include "physics/turb/cm1k_turb.hpp"
 #include "share/cm1k_constants.hpp"
 #include "share/cm1k_grid.hpp"
@@ -65,6 +66,7 @@ struct DynConfig {
   // physics/myj/cm1k_myj_coupling.hpp
   bool myj = false;
   myj::Coupling myj_opt;
+  testcase::Options tc_opt;   // testcase forcing, lspgrad = 2..4 (physics/testcase)
 
   // explicit diffusion: 6th order inside advection, or diff2.F
   bool diff6() const { return idiff >= 1 && difforder == 6; }
@@ -159,6 +161,9 @@ public:
   // MYJ's carried arrays (DynConfig::myj), owned by the Model (most are in
   // the dumps). Call after setup().
   void set_myj(const myj::Carried& c);
+  // testcase forcing profiles (testcase >= 1 or lspgrad >= 2; Model::init
+  // or a dump fills them)
+  void set_testcase(const testcase::Forcing& f);
   // solve2.F: qke advection for the MYNN PBL, one RK stage (public: it
   // launches device lambdas)
   void advect_qke(int nrk, Real dttmp);
@@ -267,6 +272,9 @@ private:
   myj::Carried m_myc;       // MYJ (DynConfig::myj)
   myj::Work m_myw;
   bool m_has_myj = false;
+  testcase::Forcing m_tcf;
+  bool m_has_tc = false;
+  double m_mtime = 0;       // model time at sfc_and_turb (solve1's mtime)
   int m_nstep = 0;          // model step at sfc_and_turb (MYNN initflag, SFCLAY_mynn itimestep)
   Real m_cgs1 = 0, m_cgs2 = 0, m_cgs3 = 0, m_cgt1 = 0, m_cgt2 = 0, m_cgt3 = 0;
 

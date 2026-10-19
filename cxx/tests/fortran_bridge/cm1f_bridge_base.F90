@@ -44,7 +44,7 @@ subroutine cm1f_base(iparams, rparams, zh_in, mh_in, rmh_in, c1_in, c2_in, zf_in
   umove = rparams(4); vmove = rparams(5); tsk0 = rparams(6)
   hurr_vg = rparams(7); hurr_rotate = rparams(8); hurr_rad = rparams(9); hurr_vgpl = rparams(10)
   ! param.F sets hurr_angle for lspgrad = 3 only
-  pi_dp = 4.0d0*atan(1.0d0)
+  pi_dp = 4.0_dp*atan(1.0_dp)   ! as param.F (kind dp: quad precision)
   hurr_angle = 0.0
   if (lspgrad == 3) hurr_angle = dble(hurr_rotate) * ( pi_dp / 180.0d0 )
   cgs1 = rparams(11); cgs2 = rparams(12); cgs3 = rparams(13)
