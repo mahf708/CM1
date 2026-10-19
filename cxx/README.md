@@ -37,7 +37,7 @@ Options: `CM1K_ENABLE_FORTRAN_BRIDGE` (default ON, needs gfortran),
 |---|---|
 | `src/cm1k/share` | types, `FArray` (Fortran-indexed arrays), constants, namelist, grid, state, dump I/O |
 | `src/cm1k/dynamics` | dynamical core: advection, acoustic solver, boundary conditions, solve1/2/3 |
-| `src/cm1k/physics/<scheme>` | physics (e.g. `kessler`) |
+| `src/cm1k/physics/<scheme>` | physics (e.g. `kessler`; `morrison`: Morrison two-moment microphysics, `ptype = 5`, with `efall`, both `eqtset`s and the effective radii; radar reflectivity not ported) |
 | `src/cm1k/init` | native initialization (grid, base state, initial perturbations) |
 | `src/cm1k/driver` | `Model` (the public API) and the `cm1k` executable |
 | `python/` | pybind11 module `cm1k` |
