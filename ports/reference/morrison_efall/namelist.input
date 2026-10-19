@@ -59,7 +59,7 @@
  icor      =  0,
  betaplane =  0,
  lspgrad   =  0,
- eqtset    =  1,
+ eqtset    =  2,
  idiss     =  0,
  efall     =  1,
  rterm     =  0,

@@ -62,7 +62,7 @@ jobs:
             ports/reference/supercell_kessler/namelist.input > "$sc/namelist.input"
           echo 5 > "$sc/every"
           # Morrison (ptype=5): morrison_bubble 300 steps dumped every 30,
-          # morrison_efall (eqtset=1, efall=1) 200 steps dumped every 50
+          # morrison_efall (efall=1, ihail=0) 200 steps dumped every 50
           for c in morrison_bubble:30 morrison_efall:50; do
             mc=../kokkos-ref/cxx/cases/${c%%:*}
             mkdir -p "$mc"

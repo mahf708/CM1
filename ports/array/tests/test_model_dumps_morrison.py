@@ -4,7 +4,7 @@ state dumps (cm1dump, -DDP build; see test_model_dumps.py).
 Needs CM1X_DUMP_DIR_MORRISON pointing at a directory with one dump
 directory per case (make_refs.sh output): morrison_bubble (32x32x20,
 periodic, eqtset=2, ihail=1, 300 steps dumped every 30) and morrison_efall
-(eqtset=1, efall=1, ihail=0, 200 steps dumped every 50); namelists in
+(eqtset=2, efall=1, ihail=0, 200 steps dumped every 50); namelists in
 ports/reference/<case>.
 
 numpy runs in a subprocess with numpy's AVX-512 libm disabled (as
