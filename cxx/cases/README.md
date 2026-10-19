@@ -56,10 +56,14 @@ perturbations (`irandp = 0`), and the time-split compressible solver
 | `tc9_sbl` | 24×24×30, 12.5 m, 10 m | 60 steps (30 s, `dtl = 0.5 s`) | every 10 steps | `testcase = 9` (stable BL): `use_avg_sfc`, initial TKE below 255 m, perturbations below 50 m, `iwnd = 6` (8 m/s) |
 | `tc10_nudge` | 4×4×30, 200 m, 50 m | 100 steps (200 s) | every 10 steps | `testcase = 10`: the θ/qv nudging towards the base state (`tqnudge`), `lspgrad = 3`, the simple PBL (`cm1setup = 2`, `ipbl = 2`), Kessler, `isnd = 8`, `iwnd = 8` (from the dump in cm1k) |
 | `tc11_sas` | 24×24×40, 100 m, 50 m | 60 steps (120 s) | every 10 steps | `testcase = 11` (SAS): the `sfcflux` branch (`thmag`), `use_avg_sfc`, initial TKE, `iwnd = 6` (2 m/s), Kessler |
-| `tc12_windtunnel` | 24×16×20, 2 mm, 2 mm | 30 steps (1.2 ms, `dtl = 40 µs`) | every 10 steps | `testcase = 12` (wind tunnel): `lspgrad = 4` (`ulspg = 36`), `iwnd = 6` (20 m/s), velocity perturbations (`ii = 5..nx-4`), no surface layer |
+| `tc12_windtunnel` | 24×16×20, 2 mm, 2 mm | 30 steps (1.2 ms, `dtl = 40 µs`) | every 10 steps | `testcase = 12` (wind tunnel): `lspgrad = 4` (`ulspg = 36`), `isnd = 9`, `iwnd = 6` (20 m/s), velocity perturbations (`ii = 5..nx-4`), no surface layer |
 | `tc13_blwt` | 32×16×30, 50 m, 20 m | 60 steps (30 s, `dtl = 0.5 s`) | every 10 steps | `testcase = 13` (BL wind tunnel): `u0 = ug = 18 m/s`, `lspgrad = 4`, the upstream-third roughness (`nx > ny`), velocity perturbations, `isfcflx = 0` |
 | `tc14_sgp` | 24×24×40, 100 m, 50 m | 60 steps (240 s, `dtl = 4 s`) | every 10 steps | `testcase = 14` (SGP shallow Cu): time-dependent `thfrc`/`qvfrc`, `use_avg_sfc`, `iwnd = 6`, Kessler |
 | `tc15_hurr` | 24×24×30, 300 m, 50 m | 60 steps (240 s) | every 10 steps | `testcase = 15` (hurricane coast): `lspgrad = 3`, perturbations, `isfcflx = 0`, `isnd = 8`, `iwnd = 8` (from the dump in cm1k) |
+| `tc3_nosfc`, `tc7_nosfc`, `tc9_nosfc`, `tc11_nosfc`, `tc13_nosfc`, `tc14_nosfc` | as `tc3_shcu`, `tc7_dycoms`, `tc9_sbl`, `tc11_sas`, `tc13_blwt`, `tc14_sgp` | 60 steps | every 10 steps | the same test cases without a surface layer (`sfcmodel = 0`, `isfcflx = 0`, `bbc = 1`): the configurations the array port (cm1x, isnd = 5, 9, no surface fluxes with TKE) runs too |
+| `tc4_nosfc` | as `tc5_simplerad_nosfc` | 60 steps (120 s) | every 10 steps | `tc5_simplerad_nosfc` with `testcase = 4` (its constants) |
+| `tc6_nosfc` | as `tc3_shcu` | 60 steps (120 s) | every 10 steps | `testcase = 6` on the `tc3_shcu` grid with `isnd = 5`, `iwnd = 2`, dry, no surface layer: `lspgrad = 3` mesoscale tendencies from the domain-mean (sheared) wind, rotated by `hurr_rotate = 30`, `dolsw`, perturbations below 100 m |
+| `tc10_les` | as `tc3_shcu` | 60 steps (120 s) | every 10 steps | `testcase = 10` with LES TKE instead of the PBL scheme, no surface layer, Kessler: θ/qv nudging (`get_avg_uvtq`), `lspgrad = 3` |
 diffusion (`idiff = 0`; except the `*_cor_*`/`*diff*` cases below), periodic lateral boundaries (`wbc = ebc = sbc = nbc = 1`;
 except the `*_openbc*` cases),
 

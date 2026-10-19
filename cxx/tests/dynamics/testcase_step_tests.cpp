@@ -173,6 +173,17 @@ TEST_CASE("testcase 15 (hurricane coast: lspgrad=3, perturbations) vs Fortran", 
   run_case("tc15_hurr");   // isnd=8, iwnd=8: from the dump only
 }
 
+// the same test cases without a surface layer (sfcmodel = 0, bbc = 1): the
+// configurations the array port (cm1x) runs too
+TEST_CASE("testcases without a surface layer vs Fortran, from the dump and from Model::init",
+          "[dyn][step][init][testcase][nosfc]") {
+  for (const char* c : {"tc3_nosfc", "tc4_nosfc", "tc6_nosfc", "tc7_nosfc", "tc9_nosfc", "tc10_les", "tc11_nosfc",
+                        "tc13_nosfc", "tc14_nosfc"}) {
+    run_case(c);
+    run_case(c, true);
+  }
+}
+
 TEST_CASE("testcase options: unsupported combinations throw", "[testcase]") {
   const std::string c = "tc3_shcu";
   // sfcmodel=5 (cm1most) has its own testcase branches

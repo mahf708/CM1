@@ -72,7 +72,7 @@
  irbc      =  4,
  roflux    =  0,
  nudgeobc  =  0,
- isnd      =  1,
+ isnd      =  9,
  iwnd      =  6,
  itern     =  0,
  iinit     =  0,
