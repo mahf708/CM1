@@ -19,7 +19,15 @@ from __future__ import annotations
 from . import constants as C
 from .grid import Grid
 
-__all__ = ["extrap_coeffs", "param_grid", "vertical_grid", "zgrid", "rslf", "extrapbcs", "base"]
+__all__ = [
+    "extrap_coeffs",
+    "param_grid",
+    "vertical_grid",
+    "zgrid",
+    "rslf",
+    "extrapbcs",
+    "base",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +146,9 @@ def _zheight(dzbot, r, nz, dzmax, n1, zctop, ztopr, dzmax2):
     return total
 
 
-def zgrid(dz, dz_stretch, nz, nbndlyr, dzmax, ztopstr=100000.0, rtop=1.0, dzmaxtop=700.0):
+def zgrid(
+    dz, dz_stretch, nz, nbndlyr, dzmax, ztopstr=100000.0, rtop=1.0, dzmaxtop=700.0
+):
     """param.F SUBROUTINE ZGRID (stretch_z = 2): w levels ``gze[1..nz]`` of
     a geometric stretch (bisection for the factor); returns a list indexed
     0..nz+1 with gze[0] and gze[nz+1] left at 0."""
@@ -150,7 +160,16 @@ def zgrid(dz, dz_stretch, nz, nbndlyr, dzmax, ztopstr=100000.0, rtop=1.0, dzmaxt
                 zx = zx * 0.5
                 xmid = stretch + zx
                 fmid = (
-                    _zheight(dz_stretch, xmid, nz - 1, dzmax, nbndlyr, ztopstr, rtop, dzmaxtop)
+                    _zheight(
+                        dz_stretch,
+                        xmid,
+                        nz - 1,
+                        dzmax,
+                        nbndlyr,
+                        ztopstr,
+                        rtop,
+                        dzmaxtop,
+                    )
                     - ztop
                 )
                 if fmid <= 0.0:
@@ -163,7 +182,9 @@ def zgrid(dz, dz_stretch, nz, nbndlyr, dzmax, ztopstr=100000.0, rtop=1.0, dzmaxt
         )
     gze = [0.0] * (nz + 2)
     for k in range(1, nz):
-        gze[k + 1] = _zheight(dz_stretch, stretch, k, dzmax, nbndlyr, ztopstr, rtop, dzmaxtop)
+        gze[k + 1] = _zheight(
+            dz_stretch, stretch, k, dzmax, nbndlyr, ztopstr, rtop, dzmaxtop
+        )
     return gze
 
 
@@ -217,11 +238,17 @@ def vertical_grid(cfg, nk):
         nk3 = nint((ztop - str_top) / dz_top)
         nk2 = nk - (nk1 + nk3)
         if abs(nk1 * dz_bot - str_bot) > 0.01:
-            raise ValueError("stretch_z=1: depth of bottom layer does not divide by dz_bot")
+            raise ValueError(
+                "stretch_z=1: depth of bottom layer does not divide by dz_bot"
+            )
         if abs(nk2 * nominal_dz - (str_top - str_bot)) >= 0.01:
-            raise ValueError("stretch_z=1: depth of middle layer does not divide by nominal_dz")
+            raise ValueError(
+                "stretch_z=1: depth of middle layer does not divide by nominal_dz"
+            )
         if abs(nk3 * dz_top - (ztop - str_top)) > 0.01:
-            raise ValueError("stretch_z=1: depth of top layer does not divide by dz_top")
+            raise ValueError(
+                "stretch_z=1: depth of top layer does not divide by dz_top"
+            )
         nominal_dz = (str_top - str_bot) / nk2
         c2 = (nominal_dz - dz_bot) / (nominal_dz * nominal_dz * float(nk2 - 1))
         c1 = (dz_bot / nominal_dz) - c2 * nominal_dz
@@ -231,14 +258,19 @@ def vertical_grid(cfg, nk):
             or min(nk1, nk2, nk3) < 0
             or abs(ztop - test_len) > 1.0e-6 * ztop
         ):
-            raise ValueError("stretch_z=1: inconsistent nz/ztop/str_bot/str_top/dz_bot/dz_top")
+            raise ValueError(
+                "stretch_z=1: inconsistent nz/ztop/str_bot/str_top/dz_bot/dz_top"
+            )
         col = list(zf)
         for k in range(1, nk1 + 2):
             col[k] = float(k - 1) * dz_bot
         for k in range(nk1 + 1, nk1 + nk2 + 2):
-            col[k] = col[nk1 + 1] + (c1 + c2 * float(k - 1 - nk1) * nominal_dz) * float(
-                k - 1 - nk1
-            ) * nominal_dz
+            col[k] = (
+                col[nk1 + 1]
+                + (c1 + c2 * float(k - 1 - nk1) * nominal_dz)
+                * float(k - 1 - nk1)
+                * nominal_dz
+            )
         for k in range(nk1 + nk2 + 2, nk1 + nk2 + nk3 + 2):
             col[k] = col[k - 1] + dz_top
         zf = col
@@ -291,7 +323,6 @@ def vertical_grid(cfg, nk):
     return zf, zh, mh, mf, sigmaf
 
 
-
 def param_grid(cfg, bk, g: Grid | None = None) -> dict:
     """Grid/metric arrays of param.F for a uniform grid without terrain.
 
@@ -306,12 +337,14 @@ def param_grid(cfg, bk, g: Grid | None = None) -> dict:
         wbe*, wte*, minx, maxx, miny, maxy, centerx, centery, maxz
     """
     if cfg.stretch_x or cfg.stretch_y:
-        raise NotImplementedError("horizontal grid stretching (stretch_x/y) is not ported")
+        raise NotImplementedError(
+            "horizontal grid stretching (stretch_x/y) is not ported"
+        )
     xp = bk.xp
     if g is None:
         g = Grid(cfg.ni, cfg.nj, cfg.nk, float(cfg.dx), float(cfg.dy), float(cfg.dz))
     ni, nj, nk, ng = g.ni, g.nj, g.nk, g.ngxy
-    dx, dy, dz = float(cfg.dx), float(cfg.dy), float(cfg.dz)
+    dx, dy = float(cfg.dx), float(cfg.dy)
     smeps = float(cfg.smeps)
 
     # xfdp/yfdp are double precision in CM1

@@ -106,6 +106,15 @@ class Model:
     ``step(hooks=...)`` always runs eagerly.
     Attributes: ``cfg``, ``bk``, ``grid``, ``base``, ``state`` (dict of
     arrays keyed by Fortran name), ``nstep``, ``mtime`` (s), ``dt``.
+
+    ``adapt_dt = 1`` (misclibs.F getnewdt): ``dt`` and ``cfg.nsound`` change
+    between steps (``adapt``: an ``adapt_dt.AdaptDt`` with the CFL numbers,
+    output timers and flags; host-side Python floats).  Under jax.jit the
+    step takes ``dt`` as a traced 0-d input, so a new dt is not a recompile;
+    the acoustic loop length ``nsound`` is a compile-time constant, so there
+    is one compiled step per distinct nsound (a recompile the first time
+    getnewdt moves to a new nsound; even values 4..192).  torch's
+    per-routine kernels already take dt as a traced input.
     """
 
     def __init__(
@@ -194,8 +203,16 @@ class Model:
             self.adapt.dbldt = self.dt
             self.adapt.cflmax = float(
                 calccflquick(
-                    bk, g, cfg, dt=self.dt, uh=b0["uh"], vh=b0["vh"], mh=b0["mh"],
-                    ua=st["ua"], va=st["va"], wa=st["wa"],
+                    bk,
+                    g,
+                    cfg,
+                    dt=self.dt,
+                    uh=b0["uh"],
+                    vh=b0["vh"],
+                    mh=b0["mh"],
+                    ua=st["ua"],
+                    va=st["va"],
+                    wa=st["wa"],
                 )
             )
             self.adapt.ksmax = 0.0
@@ -649,8 +666,16 @@ class Model:
         if self.adapt is not None:
             # solve2.F: calccflquick after the last RK stage's acoustic steps
             s["cflmax"] = calccflquick(
-                bk, g, cfg, dt=dt, uh=b["uh"], vh=b["vh"], mh=b["mh"],
-                ua=r2["u3d"], va=r2["v3d"], wa=r2["w3d"],
+                bk,
+                g,
+                cfg,
+                dt=dt,
+                uh=b["uh"],
+                vh=b["vh"],
+                mh=b["mh"],
+                ua=r2["u3d"],
+                va=r2["v3d"],
+                wa=r2["w3d"],
             )
 
         if not self.moist:  # cm1.F: microphysics only with imoist=1
@@ -750,8 +775,15 @@ class Model:
             if self.adapt is not None:
                 # turb.F: calcksquick at the end of sfc_and_turb
                 s["ksmax"] = calcksquick(
-                    bk, g, cfg, dt=dt, uh=b["uh"], vh=b["vh"],
-                    kmh=s["kmh"], kmv=s["kmv"], khh=s["khh"],
+                    bk,
+                    g,
+                    cfg,
+                    dt=dt,
+                    uh=b["uh"],
+                    vh=b["vh"],
+                    kmh=s["kmh"],
+                    kmv=s["kmv"],
+                    khh=s["khh"],
                 )
         return s
 
