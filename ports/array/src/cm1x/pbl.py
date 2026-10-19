@@ -190,7 +190,6 @@ def wrf_inputs(ctx):
     zs = bk.zeros(S)
 
     def put(v):
-        # a fresh array each time: bk.set is in place on numpy/torch
         return bk.set(bk.zeros(S), (K, J, I), v)
 
     th = b["th0"][K, J, I] + ctx.th3d[K, J, I]
