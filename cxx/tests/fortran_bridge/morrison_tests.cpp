@@ -56,7 +56,7 @@ std::vector<Real> params_vec(const mo::Params& p) {
 }
 
 // Everything mp_driver / MP_GRAUPEL reads or writes, on the host.
-struct State {
+struct MState {
   Bounds b;
   Real dx = 1000, dy = 1000, dz = 400, dt = 6;
   H3 mh, rmh, mf, pi0, th0, rho, prs, pp3d, th3d, w3d, t, dzq;
@@ -77,8 +77,8 @@ struct State {
     prate = H2("prate", {b.ib, b.jb}, {b.ie, b.je});
   }
 
-  State clone() const {
-    State c = *this;
+  MState clone() const {
+    MState c = *this;
     c.allocate();
     for (auto [d, s] : {std::pair{&c.mh, &mh}, {&c.rmh, &rmh}, {&c.mf, &mf}, {&c.pi0, &pi0}, {&c.th0, &th0},
                         {&c.rho, &rho}, {&c.prs, &prs}, {&c.pp3d, &pp3d}, {&c.th3d, &th3d}, {&c.w3d, &w3d},
@@ -109,8 +109,8 @@ Bounds make_bounds(int ni, int nj, int nk, int ngxy, int numq) {
 // are drawn around the masses (sometimes zero with mass, or with no mass),
 // and a few values are slightly negative or below qsmall so pdefq and the
 // scheme's limiters have work to do.
-State random_state(int ni, int nj, int nk, Real dz, Real dt, int numq, unsigned seed) {
-  State s;
+MState random_state(int ni, int nj, int nk, Real dz, Real dt, int numq, unsigned seed) {
+  MState s;
   s.b = make_bounds(ni, nj, nk, 3, numq);
   s.dz = dz; s.dt = dt;
   s.allocate();
@@ -233,7 +233,7 @@ size_t count_diff(const std::string& name, const FArray<R, HostSpace>& a, const 
   return n;
 }
 
-size_t compare(const State& c, const State& f) {
+size_t compare(const MState& c, const MState& f) {
   size_t n = 0;
   n += count_diff("th3d", c.th3d, f.th3d);
   n += count_diff("pp3d", c.pp3d, f.pp3d);
@@ -254,12 +254,12 @@ struct Opts {
   Real ndcnst = 250.0;
 };
 
-void setup_fortran(const State& s, const Opts& o) {
+void setup_fortran(const MState& s, const Opts& o) {
   cm1f_morrison_setup(s.b.ni, s.b.nj, s.b.nk, s.b.ngxy, s.b.ngz, s.b.nrain, o.eqtset, o.efall, o.radopt, o.ihail,
                       o.ndcnst, o.inum, s.dx, s.dy, s.dz);
 }
 
-void work_to_host(const mo::Work& w, State& x) {
+void work_to_host(const mo::Work& w, MState& x) {
   x.prate = w.prate.to_host();
   const FArray3* vts[5] = {&w.vtc, &w.vtr, &w.vti, &w.vts, &w.vtg};
   for (int n = 0; n < 5; ++n)
@@ -270,26 +270,34 @@ void work_to_host(const mo::Work& w, State& x) {
 }
 
 // MP_GRAUPEL alone (the Fortran copy, so INUM=0 is reachable).
-size_t run_mp_graupel(const State& init, const Opts& o, size_t* nchanged = nullptr) {
-  State f = init.clone(), x = init.clone();
+size_t run_mp_graupel(const MState& init, const Opts& o, size_t* nchanged = nullptr) {
+  MState f = init.clone(), x = init.clone();
   setup_fortran(f, o);
   cm1f_morrison_mp_graupel(f.dt, o.dorad ? 1 : 0, f.t.data(), f.q.data(), f.prs.data(), f.rho.data(), f.dzq.data(),
                            f.w3d.data(), f.rain.data(), f.prate.data(), f.vt.data(), f.eff.data());
 
   mo::Work w;
   w.allocate(x.b, mo::Params::init(o.ihail, o.ndcnst, o.inum));
-  auto t = to_dev(x.t), q = to_dev(x.q), rain = to_dev(x.rain);
+  auto t = to_dev(x.t), rain = to_dev(x.rain);
+  auto q = to_dev(x.q);
   mo::mp_graupel(w.p, x.b, o.eqtset, o.radopt, x.dt, 1.0e-12, o.dorad, t, q, to_dev(x.prs), to_dev(x.rho),
                  to_dev(x.dzq), to_dev(x.w3d), rain, w);
   x.t = t.to_host(); x.q = q.to_host(); x.rain = rain.to_host();
   work_to_host(w, x);
   if (nchanged) *nchanged = count_diff("changed q", x.q, init.q);
+  if (o.inum == 0) {   // the predicted droplet number must be live
+    size_t nncc = 0;
+    for (int k = 1; k <= x.b.nk; ++k)
+      for (int j = 1; j <= x.b.nj; ++j)
+        for (int i = 1; i <= x.b.ni; ++i) nncc += x.q(i, j, k, mo::nncc) != init.q(i, j, k, mo::nncc);
+    CHECK(nncc > 0);
+  }
   return compare(x, f);
 }
 
 // The full mp_driver path (real module, INUM=1).
-size_t run_mp_driver(const State& init, const Opts& o, size_t* nchanged = nullptr) {
-  State f = init.clone(), x = init.clone();
+size_t run_mp_driver(const MState& init, const Opts& o, size_t* nchanged = nullptr) {
+  MState f = init.clone(), x = init.clone();
   setup_fortran(f, o);
   cm1f_morrison_mp_driver(f.dt, o.dorad ? 1 : 0, f.mh.data(), f.rmh.data(), f.mf.data(), f.pi0.data(),
                           f.th0.data(), f.rho.data(), f.prs.data(), f.pp3d.data(), f.th3d.data(), f.w3d.data(),
@@ -301,7 +309,8 @@ size_t run_mp_driver(const State& init, const Opts& o, size_t* nchanged = nullpt
   mo::Work w;
   w.allocate(x.b, mo::Params::init(o.ihail, o.ndcnst, o.inum));
   auto rho = to_dev(x.rho), prs = to_dev(x.prs), pp3d = to_dev(x.pp3d), th3d = to_dev(x.th3d);
-  auto q = to_dev(x.q), rain = to_dev(x.rain);
+  auto q = to_dev(x.q);
+  auto rain = to_dev(x.rain);
   mo::mp_driver(opt, Constants::make(0), x.b, x.dt, x.dz, 1.0 / x.dz, to_dev(x.rmh), to_dev(x.mf), to_dev(x.pi0),
                 to_dev(x.th0), to_dev(x.w3d), rho, prs, pp3d, th3d, q, rain, w, o.dorad);
   x.rho = rho.to_host(); x.prs = prs.to_host(); x.pp3d = pp3d.to_host(); x.th3d = th3d.to_host();
@@ -314,7 +323,7 @@ size_t run_mp_driver(const State& init, const Opts& o, size_t* nchanged = nullpt
 } // namespace
 
 TEST_CASE("morrison GRAUPEL_INIT constants match morrison.F", "[bridge][morrison]") {
-  const State s = random_state(2, 2, 4, 400.0, 6.0, 10, 1u);
+  const MState s = random_state(2, 2, 4, 400.0, 6.0, 10, 1u);
   for (int ihail : {0, 1})
     for (Real ndcnst : {250.0, 100.0}) {
       Opts o;
@@ -356,7 +365,7 @@ TEST_CASE("morrison GAMMA and DERF1 match morrison.F", "[bridge][morrison]") {
 }
 
 TEST_CASE("morrison satadj2 matches morrison.F", "[bridge][morrison]") {
-  const State s = random_state(2, 2, 4, 400.0, 6.0, 10, 2u);
+  const MState s = random_state(2, 2, 4, 400.0, 6.0, 10, 2u);
   Opts o;
   setup_fortran(s, o);
   const auto p = mo::Params::init(1, 250.0, 1);
@@ -403,7 +412,7 @@ TEST_CASE("morrison MP_GRAUPEL matches morrison.F on random columns (INUM=1 and 
         o.dorad = (dt > 10.0);
         o.radopt = eqtset;   // effective radii in both unit conventions
         INFO("inum " << inum << " eqtset " << eqtset << " dt " << dt << " ihail " << o.ihail << " dorad " << o.dorad);
-        const State s = random_state(8, 6, 40, 400.0, dt, inum == 0 ? 11 : 10, seed++);
+        const MState s = random_state(8, 6, 40, 400.0, dt, inum == 0 ? 11 : 10, seed++);
         size_t nchanged = 0;
         REQUIRE(run_mp_graupel(s, o, &nchanged) == 0);
         CHECK(nchanged > 0);
@@ -421,7 +430,7 @@ TEST_CASE("morrison mp_driver matches mp_driver.F on random columns", "[bridge][
         o.dorad = (efall == 1);
         o.radopt = (dt > 10.0) ? 2 : 1;
         INFO("eqtset " << eqtset << " efall " << efall << " dt " << dt);
-        const State s = random_state(8, 6, 40, 400.0, dt, 10, seed++);
+        const MState s = random_state(8, 6, 40, 400.0, dt, 10, seed++);
         size_t nchanged = 0;
         REQUIRE(run_mp_driver(s, o, &nchanged) == 0);
         CHECK(nchanged > 0);
@@ -442,7 +451,7 @@ TEST_CASE("morrison mp_driver matches mp_driver.F on reference states", "[bridge
       const auto dir = DumpReader::step_dir(ref, step);
       if (!std::filesystem::exists(dir)) { WARN("missing " << dir); continue; }
       DumpReader d(dir);
-      State s;
+      MState s;
       s.b = Bounds::from_namelist(nl);
       s.dx = nl.getr("dx", 0); s.dy = nl.getr("dy", 0); s.dz = nl.getr("dz", 0); s.dt = nl.getr("dtl", 0);
       s.allocate();

@@ -31,6 +31,7 @@ enum WorkVar {
   W_LAMI, W_NC, W_P,
   W_FR, W_FI, W_FNI, W_FS, W_FNS, W_FNR, W_FC, W_FNC, W_FG, W_FNG,
   W_DUMI, W_DUMQS, W_DUMR, W_DUMFNI, W_DUMFNS, W_DUMFNR, W_DUMC, W_DUMFNC, W_DUMG, W_DUMFNG,
+  W_EFFC, W_EFFI, W_EFFS, W_EFFR, W_EFFG, W_EFFIS,   // EFF*1D (dorad)
   NWORK
 };
 
@@ -172,12 +173,12 @@ KOKKOS_INLINE_FUNCTION int Column::micro(int i, int j, Real& precrt, Real* /*eff
 
   if (dorad) {
     for (int k = KTS; k <= KTE; ++k) {
-      effc(i, j, k) = 25.0;
-      effi(i, j, k) = 25.0;
-      effs(i, j, k) = 25.0;
-      effr(i, j, k) = 25.0;
-      effg(i, j, k) = 25.0;
-      effis(i, j, k) = 25.0;
+      wk(i, j, k, W_EFFC) = 25.0;
+      wk(i, j, k, W_EFFI) = 25.0;
+      wk(i, j, k, W_EFFS) = 25.0;
+      wk(i, j, k, W_EFFR) = 25.0;
+      wk(i, j, k, W_EFFG) = 25.0;
+      wk(i, j, k, W_EFFIS) = 25.0;
     }
   }
 
@@ -1601,19 +1602,19 @@ KOKKOS_INLINE_FUNCTION int Column::micro(int i, int j, Real& precrt, Real* /*eff
     // 500 CONTINUE
 
     if (dorad) {
-      effi(i, j, k) = (QI3D(k) >= P.qsmall) ? 3.0 / LAMI(k) / 2.0 * 1.0e6 : 25.0;
-      effs(i, j, k) = (QNI3D(k) >= P.qsmall) ? 3.0 / LAMS / 2.0 * 1.0e6 : 25.0;
-      effr(i, j, k) = (QR3D(k) >= P.qsmall) ? 3.0 / LAMR / 2.0 * 1.0e6 : 25.0;
-      effc(i, j, k) = (QC3D(k) >= P.qsmall)
+      wk(i, j, k, W_EFFI) = (QI3D(k) >= P.qsmall) ? 3.0 / LAMI(k) / 2.0 * 1.0e6 : 25.0;
+      wk(i, j, k, W_EFFS) = (QNI3D(k) >= P.qsmall) ? 3.0 / LAMS / 2.0 * 1.0e6 : 25.0;
+      wk(i, j, k, W_EFFR) = (QR3D(k) >= P.qsmall) ? 3.0 / LAMR / 2.0 * 1.0e6 : 25.0;
+      wk(i, j, k, W_EFFC) = (QC3D(k) >= P.qsmall)
                           ? impl::gamma(PGAM + 4.0) / impl::gamma(PGAM + 3.0) / LAMC / 2.0 * 1.0e6
                           : 25.0;
-      effg(i, j, k) = (QG3D(k) >= P.qsmall) ? 3.0 / LAMG / 2.0 * 1.0e6 : 25.0;
+      wk(i, j, k, W_EFFG) = (QG3D(k) >= P.qsmall) ? 3.0 / LAMG / 2.0 * 1.0e6 : 25.0;
       if (QI3D(k) >= P.qsmall && QNI3D(k) >= P.qsmall)
-        effis(i, j, k) = 3.0 / 2.0 * 1.0e6 * (1.0 / pow4(LAMI(k)) + 1.0 / pow4(LAMS)) /
+        wk(i, j, k, W_EFFIS) = 3.0 / 2.0 * 1.0e6 * (1.0 / pow4(LAMI(k)) + 1.0 / pow4(LAMS)) /
                          (1.0 / cube(LAMI(k)) + 1.0 / cube(LAMS));
-      if (QI3D(k) >= P.qsmall && QNI3D(k) < P.qsmall) effis(i, j, k) = effi(i, j, k);
-      if (QI3D(k) < P.qsmall && QNI3D(k) >= P.qsmall) effis(i, j, k) = effs(i, j, k);
-      if (QI3D(k) < P.qsmall && QNI3D(k) < P.qsmall) effis(i, j, k) = 25.0;
+      if (QI3D(k) >= P.qsmall && QNI3D(k) < P.qsmall) wk(i, j, k, W_EFFIS) = wk(i, j, k, W_EFFI);
+      if (QI3D(k) < P.qsmall && QNI3D(k) >= P.qsmall) wk(i, j, k, W_EFFIS) = wk(i, j, k, W_EFFS);
+      if (QI3D(k) < P.qsmall && QNI3D(k) < P.qsmall) wk(i, j, k, W_EFFIS) = 25.0;
     }
 
     NI3D(k) = fmin2(NI3D(k), 0.3e6 / rho_k);
@@ -1644,12 +1645,12 @@ KOKKOS_INLINE_FUNCTION void Column::operator()(int i, int j, int& err) const {
   }
   if (dorad) {
     for (int k = 1; k <= nk; ++k) {
-      effc(i, j, k) = 0.0;
-      effi(i, j, k) = 0.0;
-      effs(i, j, k) = 0.0;
-      effr(i, j, k) = 0.0;
-      effg(i, j, k) = 0.0;
-      effis(i, j, k) = 0.0;
+      wk(i, j, k, W_EFFC) = 0.0;
+      wk(i, j, k, W_EFFI) = 0.0;
+      wk(i, j, k, W_EFFS) = 0.0;
+      wk(i, j, k, W_EFFR) = 0.0;
+      wk(i, j, k, W_EFFG) = 0.0;
+      wk(i, j, k, W_EFFIS) = 0.0;
     }
   }
   Real precprt = 0.0;
@@ -1659,15 +1660,21 @@ KOKKOS_INLINE_FUNCTION void Column::operator()(int i, int j, int& err) const {
   if (dorad) {
     if (radopt == 1) {
       for (int k = 1; k <= nk; ++k) {
+        effc(i, j, k) = wk(i, j, k, W_EFFC);
+        effi(i, j, k) = wk(i, j, k, W_EFFI);
+        effs(i, j, k) = wk(i, j, k, W_EFFS);
+        effr(i, j, k) = wk(i, j, k, W_EFFR);
+        effg(i, j, k) = wk(i, j, k, W_EFFG);
+        effis(i, j, k) = wk(i, j, k, W_EFFIS);
         effi(i, j, k) = fmin2(effi(i, j, k), 400.0);
         effs(i, j, k) = fmin2(effs(i, j, k), 400.0);
         effis(i, j, k) = fmin2(effis(i, j, k), 400.0);
       }
     } else if (radopt == 2) {
       for (int k = 1; k <= nk; ++k) {
-        effc(i, j, k) = effc(i, j, k) * 1.0e-6;
-        effi(i, j, k) = fmin2(140.0, effi(i, j, k)) * 1.0e-6;
-        effs(i, j, k) = effs(i, j, k) * 1.0e-6;
+        effc(i, j, k) = wk(i, j, k, W_EFFC) * 1.0e-6;
+        effi(i, j, k) = fmin2(140.0, wk(i, j, k, W_EFFI)) * 1.0e-6;
+        effs(i, j, k) = wk(i, j, k, W_EFFS) * 1.0e-6;
       }
     }
   }
