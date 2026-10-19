@@ -157,6 +157,22 @@ surface-layer variant namelists without a C++ case live in
 `ports/reference/pbl/`. On numpy the ipbl=2, cbl_sfc and sfcmodel=2/3 cases
 match the float64 Fortran to 1e-12 or bitwise through 150 steps.
 
+<<<<<<< HEAD
+### YSU (ipbl=1)
+
+`pbl_ysu.py` ports `bl_ysu.F` (`bl_ysu_run`, `tridin_ysu`/`tridi2n`) as turb.F
+calls it through `ysu_wrapper`, every column at once: the three bulk-Richardson
+searches of the PBL height in closed form (first level above the critical
+Richardson number), the values at the PBL top as `take_along_axis` gathers, the
+per-column branches as `xp.where`, and the tridiagonal solves through
+`bk.scan`; plus turb.F's `ysudiss` (idiss=1). Harness `drv_ysu` (ysu_wrapper
+row by row on convective, stable land/water, neutral, calm and cloudy
+columns; `tests/test_pbl_ysu.py`): <=5e-13 of each field's maximum on numpy,
+jax and torch (numpy ~1e-14; the differences are pow/exp ulps), reverse-mode
+gradients finite. Not ported (as in CM1's call): ysu_topdown_pblmix=.true.
+(`NotImplementedError`), the BEP urban terms, ctopo/uox/vox, qmix; the xkzh/xkzm
+outputs are returned as diagnostics.
+=======
 ### MYJ (ipbl=6, sfcmodel=7)
 
 `sfc_myj.py` ports module_sf_myjsfc.F (`myjsfcinit`'s psi tables, built
@@ -172,6 +188,7 @@ Harness: `drv_myjsfc`, `drv_myjpbl` (`tests/test_myj.py`): 1e-12 on numpy and
 differences are the last bit of exp/log/pow. Over land, CM1 never sets zntmyj
 (it stays 0), so the Fortran goes NaN; the land path is tested only per routine,
 with positive roughness. Not ported: sfcmodel=7 without ipbl=6, cm1setup 4, terrain.
+>>>>>>> e64f3b8
 
 ## Performance
 
