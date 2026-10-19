@@ -424,7 +424,8 @@ TEST_CASE("radiation options: unsupported ones throw", "[rrtmg]") {
   CHECK_THROWS(with([](auto& p) { p.ipbl = 3; p.sfcmodel = 4; }).check());   // GFDL surface layer
   CHECK_THROWS(with([](auto& p) { p.sfcmodel = 6; }).check());               // MYNN surface layer
   REQUIRE_NOTHROW(with([](auto& p) { p.ipbl = 3; p.sfcmodel = 3; }).check()); // GFS-EDMF
-  CHECK_THROWS(with([](auto& p) { p.testcase = 8; }).check());
+  CHECK_THROWS(with([](auto& p) { p.testcase = 4; }).check());                 // simple radiation
+  REQUIRE_NOTHROW(with([](auto& p) { p.testcase = 8; }).check());              // fixed solcon, coszen
   CHECK_THROWS(with([](auto& p) { p.rterm = 1; }).check());
   REQUIRE_NOTHROW(with([](auto& p) { p.radopt = 0; p.ptype = 0; }).check());
 }

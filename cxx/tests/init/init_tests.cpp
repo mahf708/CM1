@@ -89,13 +89,18 @@ TEST_CASE("init: unsupported options throw", "[init]") {
   const std::vector<std::pair<std::string, std::string>> bad = {
       {"isnd", "7"},      {"iwnd", "5"},           {"iinit", "4"},  {"stretch_z", "2"},
       {"stretch_x", "1"}, {"irandp", "2"}, {"ibalance", "2"},
-      {"testcase", "1"},  {"iorigin", "3"},        {"wbc", "5"}};
+      {"iorigin", "3"},   {"wbc", "5"}};
   for (const auto& kv : bad) {
     INFO(kv.first << " = " << kv.second);
     auto nl = nl0;
     nl.set(kv.first, kv.second);
     Model m(nl);
     REQUIRE_THROWS_AS(m.init(), std::runtime_error);
+  }
+  {   // no such test case: the Model constructor already throws
+    auto nl = nl0;
+    nl.set("testcase", "16");
+    REQUIRE_THROWS_AS(Model(nl), std::runtime_error);
   }
   // terrain: itern=1,2,3 are ported; 0 and 4 (GrADS perts.dat) throw
   for (const char* it : {"0", "4"}) {
