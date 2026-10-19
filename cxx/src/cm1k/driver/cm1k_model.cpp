@@ -1,10 +1,13 @@
 #include "cm1k_model.hpp"
+#include "share/cm1k_moist.hpp"
 
 #include "dynamics/cm1k_dyncore.hpp"
 #include "init/cm1k_init.hpp"
 #include "share/cm1k_dump_io.hpp"
 
 #include "physics/kessler/cm1k_kessler.hpp"
+#include "physics/morrison/cm1k_morrison.hpp"
+#include "physics/thompson/cm1k_thompson.hpp"
 
 #include <stdexcept>
 
@@ -27,8 +30,7 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   m_state.allocate(b);
   if (nl.geti("imoist", 0) == 1) {
     const int ptype = nl.geti("ptype", 0);
-    if (ptype == 0) m_state.qname = {"qv"};
-    else if (ptype == 1) m_state.qname = {"qv", "qc", "qr"};
+    if (MoistLayout::known(ptype)) m_state.qname = MoistLayout::make(1, ptype).qname;
   }
   m_dt = nl.getr("dtl", 0.0);
   m_sfc_opt = sfc::Options::from_namelist(nl);
@@ -285,6 +287,24 @@ void Model::microphysics() {
     const auto opt = kessler::Options::from_namelist(m_nl);
     kessler::mp_driver(opt, m_c, m_grid, m_base, m_dt, m_state.rho, m_state.prs, dyn.pp3d, dyn.th3d,
                        dyn.q3d, m_state.rain, *std::static_pointer_cast<kessler::Work>(m_mp));
+  } else if (ptype == 3) {
+    const auto opt = thompson::Options::from_namelist(m_nl);
+    if (!m_mp) {
+      auto w = std::make_shared<thompson::Work>();
+      w->allocate(m_grid.b, opt);   // thompson_init's tables (cached, see thompson::get)
+      m_mp = w;
+    }
+    thompson::mp_driver(opt, m_c, m_grid, m_base, m_dt, dyn.w3d, m_state.rho, m_state.prs, dyn.pp3d, dyn.th3d,
+                        dyn.q3d, m_state.rain, *std::static_pointer_cast<thompson::Work>(m_mp));
+  } else if (ptype == 5) {
+    const auto opt = morrison::Options::from_namelist(m_nl);
+    if (!m_mp) {
+      auto w = std::make_shared<morrison::Work>();
+      w->allocate(m_grid.b, morrison::Params::init(opt.ihail, opt.ndcnst, opt.inum));   // GRAUPEL_INIT
+      m_mp = w;
+    }
+    morrison::mp_driver(opt, m_c, m_grid, m_base, m_dt, dyn.w3d, m_state.rho, m_state.prs, dyn.pp3d, dyn.th3d,
+                        dyn.q3d, m_state.rain, *std::static_pointer_cast<morrison::Work>(m_mp));
   } else {
     throw std::runtime_error("cm1k: microphysics ptype=" + std::to_string(ptype) + " is not ported");
   }

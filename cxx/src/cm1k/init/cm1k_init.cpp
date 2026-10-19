@@ -1,4 +1,5 @@
 #include "init/cm1k_init.hpp"
+#include "share/cm1k_moist.hpp"
 
 #include "init/cm1k_cm1libs.hpp"
 
@@ -326,7 +327,7 @@ void init_base(const Namelist& nl, const Constants& c, const Grid& g, InitInfo& 
   const int psolver = nl.geti("psolver", 3), imove = nl.geti("imove", 0);
   if (nl.geti("testcase", 0) != 0) unsupported("testcase != 0");
   if (nl.getb("do_adapt_move", false)) unsupported("do_adapt_move = .true.");
-  if (imoist == 1 && ptype != 0 && ptype != 1) unsupported("ptype = " + std::to_string(ptype));
+  if (imoist == 1 && !MoistLayout::known(ptype)) unsupported("ptype = " + std::to_string(ptype));
 
   const Real g_ = c.g, cp = c.cp, rd = c.rd, cpdrd = c.cpdrd, reps = c.reps, eps = c.eps;
   auto rslf = [&](Real p, Real t) { return cm1libs::rslf(ptype, eps, p, t); };
@@ -665,7 +666,9 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
   if (idoles && ((idopbl && (ipbl == 4 || ipbl == 5)) || nl.geti("sfcmodel", 0) == 6))
     unsupported("MYNN tke with LES (cm1setup=1, 4)");
   const bool iusetke = idoles && (sgsmodel == 1 || sgsmodel == 3 || sgsmodel == 4 || sgsmodel == 5);
-  const int nqv = 1, nqc = 2;
+  if (imoist == 1 && !MoistLayout::known(ptype)) unsupported("ptype = " + std::to_string(ptype));
+  const MoistLayout ml = MoistLayout::make(imoist == 1 ? 1 : 0, ptype);
+  const int nqv = 1, nqc = ml.nqc, nqi = ml.nqi;
 
   auto xh = g.xh.to_host(), yh = g.yh.to_host();
   auto zh = g.zh.to_host();
@@ -714,6 +717,13 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
       for (int k = B.kbm; k <= B.kem; ++k)
         for (int j = B.jbm; j <= B.jem; ++j)
           for (int i = B.ibm; i <= B.iem; ++i) qc(i, j, k) = qc0(i, j, k);
+    }
+    if (ptype >= 1 && (isnd == 4 || isnd == 9 || isnd == 10) && ml.iice == 1) {
+      auto qi0 = bs.qi0.to_host();
+      auto qi = q3(nqi);
+      for (int k = B.kbm; k <= B.kem; ++k)
+        for (int j = B.jbm; j <= B.jem; ++j)
+          for (int i = B.ibm; i <= B.iem; ++i) qi(i, j, k) = qi0(i, j, k);
     }
   }
 
@@ -764,14 +774,16 @@ void init_state(const Namelist& nl, const Constants& c, const Grid& g, const Ini
   if (ibalance == 0) {
   } else if (ibalance == 1) {
     // hydrostatic balance, integrated top-down
-    if (imoist == 1 && ptype != 1) unsupported("ibalance = 1 with imoist = 1 and ptype != 1");
+    if (imoist == 1 && ptype == 0) unsupported("ibalance = 1 with imoist = 1 and ptype = 0");
     std::vector<Real> thvnew(nk + 1), pinew(nk + 1);
     for (int j = 1; j <= nj; ++j)
       for (int i = 1; i <= ni; ++i) {
         if (imoist == 1) {
           for (int k = 1; k <= nk; ++k) {
             Real qt = 0.0;
-            for (int n = 2; n <= 3; ++n) qt = qt + qa(i, j, k, n);   // nql1..nql2 (Kessler)
+            for (int n = ml.nql1; n <= ml.nql2; ++n) qt = qt + qa(i, j, k, n);
+            if (ml.iice == 1)
+              for (int n = ml.nqs1; n <= ml.nqs2; ++n) qt = qt + qa(i, j, k, n);
             thvnew[k] = (th0(i, j, k) + tha(i, j, k)) * (1.0 + c.reps * qa(i, j, k, nqv)) / (1.0 + qa(i, j, k, nqv) + qt);
           }
         } else {

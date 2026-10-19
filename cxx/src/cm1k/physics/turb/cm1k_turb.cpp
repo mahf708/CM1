@@ -7,6 +7,7 @@
 // other's results at other points (e.g. flux, then boundary copy, then
 // divergence), so the values are identical.
 #include "physics/turb/cm1k_turb.hpp"
+#include "share/cm1k_moist.hpp"
 
 #include "init/cm1k_cm1libs.hpp"
 
@@ -84,10 +85,12 @@ Options Options::from_namelist(const Namelist& nl) {
   const int psolver = nl.geti("psolver", 3);
   if (psolver >= 4 && psolver <= 7 && o.eqtset == 2) o.eqtset = 1;
   if (o.imoist == 1) {
-    if (o.ptype != 1)
+    if (o.ptype != 1 && o.ptype != 3 && o.ptype != 5)
       throw std::runtime_error("cm1k turb: imoist=1 with ptype=" + std::to_string(o.ptype) + " is not ported");
-    // param.F, ptype=1 (Kessler)
-    o.numq = 3; o.nqv = 1; o.nqc = 2; o.nql1 = 2; o.nql2 = 3; o.iice = 0; o.nqi = 0; o.nqs1 = -2; o.nqs2 = -2;
+    // param.F (ptype=1 Kessler, 3 Thompson, 5 Morrison; share/cm1k_moist)
+    const MoistLayout ml = MoistLayout::make(1, o.ptype);
+    o.numq = ml.numq; o.nqv = ml.nqv; o.nqc = ml.nqc; o.nql1 = ml.nql1; o.nql2 = ml.nql2;
+    o.iice = ml.iice; o.nqi = ml.nqi; o.nqs1 = ml.nqs1; o.nqs2 = ml.nqs2;
   } else {
     o.numq = 1; o.nqv = 0; o.nqc = 0; o.nql1 = 0; o.nql2 = 0; o.iice = 0;
   }

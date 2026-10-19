@@ -44,7 +44,8 @@ jobs:
   fortran-refs:
     name: Fortran reference dumps
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # each Thompson case (ptype=3) spends ~6 min building its lookup tables
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
