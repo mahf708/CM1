@@ -71,7 +71,14 @@ def _tol(name, backend):
 # them as cloud forms there; a one-ulp perturbation of tha at t=0 in the
 # numpy run grows identically (1e-12 at step 130, ~1e-6 at step 150, same
 # column), so this is sensitivity, not a porting difference.
-OTHER_MAX_STEP = {"myj_kessler": 130}
+# ysu_dry: as its PBL decays the largest thpten falls to ~3e-6 K/s while the
+# round-off of the state (tha ~3e-14 K) stays the same, so thpten's error
+# relative to its maximum grows from 1e-10 (step 100) to 1.7e-9 (step 150).
+# A one-ulp perturbation of tha at t=0 in the numpy run gives the same
+# numbers (1.0e-10, 1.3e-9, 1.7e-9 at steps 100, 120, 150). On identical
+# inputs the jax YSU matches numpy bitwise and torch matches to 9e-11
+# (torch reaches 1.08e-9 at step 110).
+OTHER_MAX_STEP = {"myj_kessler": 130, "ysu_dry": 100}
 
 
 NPY_DISABLE = (
