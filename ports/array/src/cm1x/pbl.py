@@ -61,12 +61,14 @@ from .turbtend import _cat
 
 PBL_SCHEMES = {
     2: "cm1x.pbl",  # CM1 simple scheme (Bryan and Rotunno 2009)
+    6: "cm1x.pbl_myj",  # Mellor-Yamada-Janjic
 }
 
 SURFACE_LAYERS = {
     1: "cm1x.sfcphys",  # CM1 simple scheme (getcecd, sfcflux, sfcdiags)
     2: "cm1x.sfclay",  # MM5 similarity (sf_sfclay) + SLAB
     3: "cm1x.sfclay",  # revised MM5 (sf_sfclayrev) + SLAB
+    7: "cm1x.sfc_myj",  # Mellor-Yamada-Janjic (MYJSFC) + SLAB
 }
 
 
@@ -188,7 +190,8 @@ def wrf_inputs(ctx):
     zs = bk.zeros(S)
 
     def put(v):
-        return bk.set(zs, (K, J, I), v)
+        # a fresh array each time: bk.set is in place on numpy/torch
+        return bk.set(bk.zeros(S), (K, J, I), v)
 
     th = b["th0"][K, J, I] + ctx.th3d[K, J, I]
     pi = b["pi0"][K, J, I] + ctx.pp3d[K, J, I]
