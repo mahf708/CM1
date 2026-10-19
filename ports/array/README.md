@@ -31,9 +31,17 @@ tables for ptype=3/5, `iice=1` paths in solve2/turb/pdef/getcvm/init3d) is in
   `drv_morrison.F90` calls GRAUPEL_INIT, GAMMA, DERF1, satadj2 and MP_GRAUPEL
   directly; `drv_morrison_mp.F90` runs CM1's mp_driver. numpy reproduces them
   bit for bit (with numpy's AVX-512 libm disabled, `NPY_DISABLE_CPU_FEATURES`),
-  jax to ~1e-14. Whole-model cases: `ports/reference/morrison_bubble`,
-  `morrison_efall` (`tests/test_model_dumps_morrison.py`,
-  `CM1X_DUMP_DIR_MORRISON`).
+  jax to ~1e-14. Whole-model cases: `ports/reference/morrison_bubble`
+  (300 steps, ihail=1) and `morrison_efall` (200 steps, efall=1;
+  `tests/test_model_dumps_morrison.py`, `CM1X_DUMP_DIR_MORRISON`): numpy is
+  bitwise against CM1's float64 dumps at every dumped step, jax ~1e-11.
+* Real powers go through `_pow` (libm `pow`, as gfortran calls it even for
+  `x**0.5`): `np.pow`/`**` with a scalar exponent of 0.5, 2 or -1 (and
+  torch's `pow` with several more) take a sqrt/square/reciprocal fast path
+  that can differ from `pow` in the last bit, so `_pow` passes those
+  exponents as a full array. One such bit in the graupel fall speed
+  (`DLAMG**BG`, BG=0.5) was enough to make morrison_bubble diverge after
+  step 246.
 
 ```bash
 pip install -e ports/array[test]     # plus jax and/or torch if wanted

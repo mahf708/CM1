@@ -48,9 +48,10 @@ jobs:
           rm -rf ref/*/build_*
       - name: Float64 state dumps (cm1dump, from the C++/Kokkos branch)
         env:
-          # pinned commit of claude/project-thread-uq9w9c with src/cm1dump.F
-          # and cxx/scripts/make_refs.sh (-DDP gfortran build)
-          KOKKOS_REF_SHA: 6e13594cdc9223d7cd945b4c9e847703c4ecc816
+          # pinned commit of claude/project-thread-wanaau (C++/Kokkos branch) with
+          # src/cm1dump.F, cxx/scripts/make_refs.sh and the Morrison/Thompson cases
+          # (-DDP gfortran build); the cm1x Morrison cases are copied over its own
+          KOKKOS_REF_SHA: 1250f9821be771894f426aa8a1a712af0304e279
         run: |
           git fetch --no-tags --depth=1 origin "$KOKKOS_REF_SHA"
           git worktree add ../kokkos-ref FETCH_HEAD
