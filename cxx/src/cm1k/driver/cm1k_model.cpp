@@ -26,6 +26,11 @@ Model::Model(const Namelist& nl) : m_nl(nl) {
   const auto b = Bounds::from_namelist(nl);
   if (b.nx <= 0 || b.ny <= 0 || b.nz <= 0)
     throw std::runtime_error("cm1k: nx, ny and nz must be set in the namelist");
+  // restarts (irst=1 reads a CM1 restart file) are not ported; Model's
+  // init_from_dump starts from a cm1k/cm1dump dump instead
+  if (nl.geti("irst", 0) != 0)
+    throw std::runtime_error("cm1k: irst=" + std::to_string(nl.geti("irst", 0)) +
+                             " (CM1 restart files) is not ported; use init_from_dump");
   m_grid.allocate(b);
   // grid spacings (param.F)
   m_grid.dx = nl.getr("dx", 0.0);

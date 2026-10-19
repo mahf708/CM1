@@ -4,6 +4,7 @@
 #include "cm1k_types.hpp"
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -19,8 +20,15 @@ namespace cm1k {
 class Namelist {
 public:
   Namelist() = default;
+  // from_file also checks every group and variable against the ones CM1
+  // reads (check_cm1_names), as CM1's namelist read would stop on them;
+  // from_string parses any namelist text.
   static Namelist from_file(const std::string& path);
   static Namelist from_string(const std::string& text);
+
+  // Throw if a group is not one CM1 reads or a variable is not in its group
+  // (cm1k_namelist_groups.inc, generated from src/input.F and param.F).
+  void check_cm1_names() const;
 
   bool has(const std::string& key) const;
   int geti(const std::string& key, int def) const;
@@ -39,6 +47,7 @@ public:
 private:
   std::map<std::string, std::vector<std::string>> m_values;
   std::map<std::string, std::string> m_group;
+  std::set<std::string> m_seen_groups;
 };
 
 } // namespace cm1k

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -51,7 +53,32 @@ Namelist Namelist::from_file(const std::string& path) {
   if (!f) throw std::runtime_error("cm1k: cannot open namelist file '" + path + "'");
   std::stringstream ss;
   ss << f.rdbuf();
-  return from_string(ss.str());
+  auto nl = from_string(ss.str());
+  try {
+    nl.check_cm1_names();
+  } catch (const std::exception& e) {
+    throw std::runtime_error(std::string(e.what()) + " (in '" + path + "')");
+  }
+  return nl;
+}
+
+void Namelist::check_cm1_names() const {
+  static const std::pair<const char*, const char*> known[] = {
+#include "cm1k_namelist_groups.inc"
+  };
+  std::map<std::string, std::string> group_of;
+  std::set<std::string> groups;
+  for (const auto& [g, n] : known) { group_of[n] = g; groups.insert(g); }
+  for (const auto& g : m_seen_groups)
+    if (!groups.count(g)) throw std::runtime_error("cm1k: namelist group &" + g + " is not read by CM1");
+  for (const auto& [key, g] : m_group) {
+    const std::string base = key.substr(0, key.find('('));
+    auto it = group_of.find(base);
+    if (it == group_of.end())
+      throw std::runtime_error("cm1k: &" + g + ": unknown namelist variable '" + key + "'");
+    if (it->second != g)
+      throw std::runtime_error("cm1k: &" + g + ": namelist variable '" + key + "' belongs to &" + it->second);
+  }
 }
 
 Namelist Namelist::from_string(const std::string& text) {
@@ -81,6 +108,7 @@ Namelist Namelist::from_string(const std::string& text) {
     if (amp == std::string::npos) break;
     auto eol = clean.find_first_of(" \t\r\n", amp);
     group = lower(clean.substr(amp + 1, eol - amp - 1));
+    nl.m_seen_groups.insert(group);
     // group body ends at a '/' outside quotes
     size_t end = eol;
     char q = 0;
