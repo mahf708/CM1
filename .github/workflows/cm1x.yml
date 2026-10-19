@@ -61,7 +61,16 @@ jobs:
           sed -e 's/^ *timax *=.*/ timax  =  60.0,/' -e 's/^ *tapfrq *=.*/ tapfrq =  60.0,/' \
             ports/reference/supercell_kessler/namelist.input > "$sc/namelist.input"
           echo 5 > "$sc/every"
-          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler
+          # Thompson (ptype=3): thompson_bubble 300 steps dumped every 30,
+          # built with this branch's src/thompson.F (!GCC$ NOVECTOR on the
+          # table-init loops, so the tables do not depend on libmvec)
+          tc=../kokkos-ref/cxx/cases/thompson_bubble
+          mkdir -p "$tc"
+          cp ports/reference/thompson_bubble/namelist.input "$tc/namelist.input"
+          echo 30 > "$tc/every"
+          cp src/thompson.F ../kokkos-ref/src/thompson.F
+          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler \
+            thompson_bubble
           rm -f ref/dumps/*/cm1out*.nc
       - uses: actions/upload-artifact@v4
         with:
@@ -84,6 +93,8 @@ jobs:
       GLIBC_TUNABLES: glibc.cpu.hwcaps=-AVX512F,-AVX2,-FMA,-FMA4
       CM1X_TEST_ALL_BACKENDS: "1"
       CM1X_FORTRAN_CACHE: ${{ github.workspace }}/.fortran_cache
+      # numpy Thompson tables (~4 min to build), cached with the harness objects
+      CM1X_THOMPSON_CACHE: ${{ github.workspace }}/.fortran_cache/thompson_py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -116,6 +127,7 @@ jobs:
           CM1X_REF_DIR_LONG: ${{ github.workspace }}/ref/kessler_periodic_long_r8
           CM1X_DUMP_DIR: ${{ github.workspace }}/ref/dumps/kessler_periodic
           CM1X_DUMP_DIR_SC: ${{ github.workspace }}/ref/dumps/supercell_kessler
+          CM1X_DUMP_DIR_THOMPSON: ${{ github.workspace }}/ref/dumps
           CM1X_REF_DIR_SC: ${{ github.workspace }}/ref/supercell_kessler_r8
           CM1X_REF_DIR_SC_LONG: ${{ github.workspace }}/ref/supercell_kessler_long_r8
         run: python -m pytest ports/array -v -rs --durations=15
