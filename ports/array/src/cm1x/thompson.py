@@ -500,9 +500,8 @@ def mp_thompson(
 
     au = rc > 0.01e-3
     Dc_g = ((nuc_g(ccg[2], nu_c) * nuc_g(tb.g_ocg2, nu_c)) ** tb.obmr / lamc) * 1.0e6
-    Dc_b = (
-        xDc * xDc * xDc * Dc_g * Dc_g * Dc_g - xDc * xDc * xDc * xDc * xDc * xDc
-    ) ** (1.0 / 6.0)
+    Dc_b3 = xDc * xDc * xDc * Dc_g * Dc_g * Dc_g - xDc * xDc * xDc * xDc * xDc * xDc
+    Dc_b = o.safe(au, Dc_b3, 1.0) ** (1.0 / 6.0)  # masked lanes: no NaN warning
     zt = 6.25e-6 * xDc * Dc_b * Dc_b * Dc_b - 0.4
     zeta1 = 0.5 * (zt + xp.abs(zt))
     zeta = 0.027 * rc * zeta1

@@ -7,9 +7,14 @@ directory per case (make_refs.sh output): thompson_bubble (cm1k's case:
 300 steps dumped every 30); namelist in ports/reference/thompson_bubble.
 
 numpy runs in a subprocess with numpy's AVX-512 libm disabled (as
-test_model_dumps_supercell.py), so it calls glibc like the Fortran; jax and
-torch use their own exp/pow/log (and XLA contracts a*b+c into FMAs), whose
-last-bit differences grow through the microphysics thresholds.
+test_model_dumps_supercell.py), so it calls glibc like the Fortran, and
+reproduces every dump bit for bit (step 300: 9e-25 in qg).  jax and torch use
+their own exp/pow/log (and XLA contracts a*b+c into FMAs): through step 240
+the run stays at ~1e-11 of each field's maximum, but ice initiation between
+steps 240 and 270 (nci grows from 2e4 to 2e7 per kg) turns those last-bit
+differences into O(1) local differences at threshold points.  numpy with its
+own AVX-512 libm shows the same jump, so it is sensitivity, not a port
+difference; non-glibc backends are therefore checked through step 240 only.
 """
 
 import json
@@ -22,7 +27,8 @@ import pytest
 
 DUMP_DIR = os.environ.get("CM1X_DUMP_DIR_THOMPSON")
 REF = Path(__file__).resolve().parents[2] / "reference"
-TOL = {"numpy": 1e-10, "jax": 1e-9, "torch": 1e-9}
+TOL = {"numpy": 1e-10, "jax": 1e-10, "torch": 1e-10}
+LAST_STEP = {"numpy": 10**9, "jax": 240, "torch": 240}
 NPY_NO_AVX512 = (
     "AVX512F AVX512CD AVX512_SKX AVX512_CLX AVX512_CNL AVX512_ICL AVX512_SPR X86_V4"
 )
@@ -39,7 +45,7 @@ nml, ddir, backend = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
 F = ("ua", "va", "wa", "tha", "ppi", "prs", "rho")
 I = (slice(1, -1), slice(3, -3), slice(3, -3))
 steps = sorted(int(p.name.split("_")[1]) for p in ddir.glob("step_*"))
-steps = [n for n in steps if n > 0]
+steps = [n for n in steps if 0 < n <= int(sys.argv[4])]
 m = Model(nml, backend=backend, fortran_dp=True, jit=backend == "jax")
 Q = m.cfg.qname
 out = {}
@@ -81,6 +87,7 @@ def test_thompson_vs_cm1_dumps(bk, case):
             str(REF / case / "namelist.input"),
             str(ddir),
             bk.name,
+            str(LAST_STEP[bk.name]),
         ],
         env=env,
         capture_output=True,

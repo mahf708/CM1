@@ -10,6 +10,38 @@ implicit acoustic steps, 5th-order flux-form advection) and Kessler warm-rain
 microphysics, on a uniform periodic grid without terrain. Reference case:
 `ports/reference/kessler_periodic/namelist.input`.
 
+Thompson microphysics (`ptype=3`, `cm1x/thompson.py`, `cm1x/thompson_tables.py`)
+runs through the same `mp_driver` (`mp_driver_ptype3`). Notes:
+
+* `thompson_init`'s lookup tables (collection, freezing, ice autoconversion,
+  collision efficiencies, ~80 MB) are built once in numpy float64 with scalar
+  libm, in the Fortran's summation order, and match CM1's bit for bit
+  (`test_tables_bitwise`). They take ~4 min, so they are cached in
+  `$CM1X_THOMPSON_CACHE` (default `~/.cache/cm1x`), keyed by `nt_c`, the numpy
+  version and the module source, then moved to the backend.
+  `src/thompson.F` has `!GCC$ NOVECTOR` on its table loops so gfortran does
+  not route them through libmvec (CPU-dependent results).
+* `mp_thompson` works on every column at once. Branches become masks, and
+  lookups are flat integer gathers (`xp.take`). The fall-speed fill below the
+  precipitation top is a k loop. Sedimentation runs masked sub-steps through
+  `bk.fori_loop` (`nstep_max` gives a static trip count for reverse-mode AD).
+* CM1 calls the scheme without aerosols (`nc = nt_c`). Not ported: the
+  aerosol-aware path, the reflectivity diagnostic (`calc_refl10cm`, `getdbz`)
+  and effective radii (`calc_effectRad`, `radopt=2`). The scheme uses no
+  random numbers.
+* Harness: `drv_thompson_init` (tables; also writes the `.dat` table files
+  that later drivers read instead of recomputing, see `tests/thompson_ref.py`),
+  `drv_thompson_column` (the module's private `mp_thompson`, via the public
+  variant) and `drv_thompson_mp` (CM1's mp_driver).
+* Accuracy: on numpy with glibc libm (`NPY_DISABLE_CPU_FEATURES` without
+  AVX-512), `mp_thompson` and the whole `thompson_bubble` run (300 steps) are
+  bit for bit. jax is within ~1e-13 of each field's maximum per call. The
+  whole run stays within ~1e-11 until ice initiation (steps 240-270), which
+  turns last-bit differences into O(1) local differences. numpy with its
+  AVX-512 libm shows the same jump, so non-glibc backends are compared
+  through step 240 only. Whole-model case: `ports/reference/thompson_bubble`
+  (`tests/test_model_dumps_thompson.py`, `CM1X_DUMP_DIR_THOMPSON`).
+
 ```bash
 pip install -e ports/array[test]     # plus jax and/or torch if wanted
 pytest ports/array                    # every test runs on each installed backend
