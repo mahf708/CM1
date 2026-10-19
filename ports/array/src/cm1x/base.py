@@ -19,7 +19,7 @@ from __future__ import annotations
 from . import constants as C
 from .grid import Grid
 
-__all__ = ["extrap_coeffs", "param_grid", "rslf", "extrapbcs", "base"]
+__all__ = ["extrap_coeffs", "param_grid", "vertical_grid", "zgrid", "rslf", "extrapbcs", "base"]
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +104,194 @@ def extrap_coeffs(sigma, sigmaf, nk):
     return out
 
 
+def _powi(x: float, m: int) -> float:
+    """x**m (real x, integer m) as gfortran evaluates it (libgcc __powidf2:
+    binary exponentiation), not C pow()."""
+    n = -m if m < 0 else m
+    y = x if n % 2 else 1.0
+    n >>= 1
+    while n:
+        x = x * x
+        if n % 2:
+            y = y * x
+        n >>= 1
+    return 1.0 / y if m < 0 else y
+
+
+def _zheight(dzbot, r, nz, dzmax, n1, zctop, ztopr, dzmax2):
+    """param.F FUNCTION ZHEIGHT (geometrically stretched grid height)."""
+    total = 0.0
+    n2 = 0
+    dzm = 0.0
+    for k in range(1, nz + 1):
+        if k <= n1:
+            dznew = dzbot
+        else:
+            k2 = k - n1
+            dznew = min(dzbot * _powi(r, k2 - 1), dzmax)
+            if total >= zctop:
+                if n2 == 0:
+                    dzm = min(dznew, dzmax)
+                n2 = n2 + 1
+                dznew = min(dzm * _powi(ztopr, n2), dzmax2)
+        total = total + dznew
+    return total
+
+
+def zgrid(dz, dz_stretch, nz, nbndlyr, dzmax, ztopstr=100000.0, rtop=1.0, dzmaxtop=700.0):
+    """param.F SUBROUTINE ZGRID (stretch_z = 2): w levels ``gze[1..nz]`` of
+    a geometric stretch (bisection for the factor); returns a list indexed
+    0..nz+1 with gze[0] and gze[nz+1] left at 0."""
+    ztop = dz * (nz - 1)
+    zx, stretch = 1.0, 1.0
+    if dz > dz_stretch:
+        for _ in range(50):
+            if abs(zx) > 1.0e-12:
+                zx = zx * 0.5
+                xmid = stretch + zx
+                fmid = (
+                    _zheight(dz_stretch, xmid, nz - 1, dzmax, nbndlyr, ztopstr, rtop, dzmaxtop)
+                    - ztop
+                )
+                if fmid <= 0.0:
+                    stretch = xmid
+                if fmid == 0.0:
+                    break
+    if stretch > 1.1:
+        raise ValueError(
+            f"stretch_z=2: stretch factor too big ({stretch}); increase nz or dz_bot"
+        )
+    gze = [0.0] * (nz + 2)
+    for k in range(1, nz):
+        gze[k + 1] = _zheight(dz_stretch, stretch, k, dzmax, nbndlyr, ztopstr, rtop, dzmaxtop)
+    return gze
+
+
+def _read_grid_z(cfg, n):
+    """The first value of each of the first ``n`` lines of ``input_grid_z``
+    (list-directed ``read(40,*)``), next to the namelist file."""
+    import os
+
+    path = os.path.join(str(cfg.get("namelist_dir", "") or "."), "input_grid_z")
+    vals = []
+    with open(path) as f:
+        for line in f:
+            tok = line.replace(",", " ").split()
+            if not tok:
+                continue
+            vals.append(float(tok[0].lower().replace("d", "e")))
+            if len(vals) == n:
+                break
+    if len(vals) < n:
+        raise ValueError(f"{path}: expected {n} values, found {len(vals)}")
+    return vals
+
+
+def vertical_grid(cfg, nk):
+    """param.F's vertical grid columns (Python floats, Python index ==
+    Fortran k): zf (k = 0..nk+2), zh, mh (0..nk+1), mf (0..nk+2) and the
+    nominal heights sigmaf (0..nk+2), for stretch_z = 0 (uniform dz), 1
+    (analytic), 2 (ZGRID, dz = ztop/nk), 3 (scalar levels) and 4 (w levels)
+    from ``input_grid_z``.  Every column is the same (no terrain here)."""
+    stretch_z = int(cfg.get("stretch_z", 0) or 0)
+    if stretch_z not in (0, 1, 2, 3, 4):
+        raise NotImplementedError(f"stretch_z={stretch_z} is not a CM1 option")
+    dz = float(cfg.dz)
+    ztop = float(cfg.get("ztop", 0.0) or 0.0)
+    zf = [dz * (k - 1) for k in range(0, nk + 3)]
+    zh = [0.5 * (zf[k] + zf[k + 1]) for k in range(0, nk + 2)]
+    mh = [1.0] * (nk + 2)
+    mf = [1.0] * (nk + 3)
+    sigmaf = list(zf)
+    if stretch_z == 0:
+        return zf, zh, mh, mf, sigmaf
+    if stretch_z == 1:
+        str_bot, str_top = float(cfg.str_bot), float(cfg.str_top)
+        dz_bot, dz_top = float(cfg.dz_bot), float(cfg.dz_top)
+        nominal_dz = 0.5 * (dz_bot + dz_top)
+
+        def nint(x):
+            return int(x + 0.5) if x >= 0 else -int(-x + 0.5)
+
+        nk1 = nint(str_bot / dz_bot)
+        nk3 = nint((ztop - str_top) / dz_top)
+        nk2 = nk - (nk1 + nk3)
+        if abs(nk1 * dz_bot - str_bot) > 0.01:
+            raise ValueError("stretch_z=1: depth of bottom layer does not divide by dz_bot")
+        if abs(nk2 * nominal_dz - (str_top - str_bot)) >= 0.01:
+            raise ValueError("stretch_z=1: depth of middle layer does not divide by nominal_dz")
+        if abs(nk3 * dz_top - (ztop - str_top)) > 0.01:
+            raise ValueError("stretch_z=1: depth of top layer does not divide by dz_top")
+        nominal_dz = (str_top - str_bot) / nk2
+        c2 = (nominal_dz - dz_bot) / (nominal_dz * nominal_dz * float(nk2 - 1))
+        c1 = (dz_bot / nominal_dz) - c2 * nominal_dz
+        test_len = dz_bot * nk1 + 0.5 * (dz_bot + dz_top) * nk2 + dz_top * nk3
+        if (
+            int(cfg.nz) != nk1 + nk2 + nk3
+            or min(nk1, nk2, nk3) < 0
+            or abs(ztop - test_len) > 1.0e-6 * ztop
+        ):
+            raise ValueError("stretch_z=1: inconsistent nz/ztop/str_bot/str_top/dz_bot/dz_top")
+        col = list(zf)
+        for k in range(1, nk1 + 2):
+            col[k] = float(k - 1) * dz_bot
+        for k in range(nk1 + 1, nk1 + nk2 + 2):
+            col[k] = col[nk1 + 1] + (c1 + c2 * float(k - 1 - nk1) * nominal_dz) * float(
+                k - 1 - nk1
+            ) * nominal_dz
+        for k in range(nk1 + nk2 + 2, nk1 + nk2 + nk3 + 2):
+            col[k] = col[k - 1] + dz_top
+        zf = col
+        sigmaf = list(col)  # same recurrences in param.F
+        sigmaf[0] = -sigmaf[2]
+        sigmaf[nk + 2] = sigmaf[nk + 1] + (sigmaf[nk + 1] - sigmaf[nk])
+    elif stretch_z == 2:
+        if cfg.get("terrain_flag", False):
+            raise NotImplementedError(
+                "stretch_z=2 with terrain (param.F: not yet compatible)"
+            )
+        dz_bot, dz_top = float(cfg.dz_bot), float(cfg.dz_top)
+        nbndlyr = max(0, int(float(cfg.str_bot) / dz_bot + 0.01) - 1)
+        ke = nk + 1
+        gze = zgrid(dz, dz_bot, ke, nbndlyr, dz_top)
+        gze[0] = -gze[2]
+        gze[ke + 1] = gze[ke] + (gze[ke] - gze[ke - 1])
+        zf = list(gze)
+        sigmaf = list(gze)
+    else:
+        # cm1r19: levels in input_grid_z; sigmaf(0), sigmaf(nk+2) keep the
+        # uniform-grid values (param.F)
+        if stretch_z == 3:
+            sig = _read_grid_z(cfg, nk)
+            sigmaf[1] = 0.0
+            for k in range(1, nk + 1):
+                sigmaf[k + 1] = 2.0 * sig[k - 1] - sigmaf[k]
+        else:
+            sf = _read_grid_z(cfg, nk + 1)
+            for k in range(1, nk + 2):
+                sigmaf[k] = sf[k - 1]
+        zf = list(zf)
+        for k in range(1, nk + 2):
+            zf[k] = sigmaf[k]
+    # param.F, common to every stretch_z
+    zf[0] = -zf[2]
+    zf[nk + 2] = zf[nk + 1] + (zf[nk + 1] - zf[nk])
+    zh = [0.5 * (zf[k + 1] + zf[k]) for k in range(0, nk + 2)]
+    mh = [dz / (zf[k + 1] - zf[k]) for k in range(0, nk + 2)]
+    zh[0] = -zh[1]
+    zh[nk + 1] = zh[nk] + 2.0 * (zf[nk + 1] - zh[nk])
+    mf = [0.0] * (nk + 3)
+    for k in range(1, nk + 2):
+        mf[k] = dz / (zh[k] - zh[k - 1])
+    mf[0] = mf[1]
+    mf[nk + 2] = mf[nk + 1]
+    for k in range(1, nk + 1):
+        if zf[k + 1] - zf[k] < 1.0e-60:
+            raise ValueError(f"vertical grid: dz <= 0 at k = {k}")
+    return zf, zh, mh, mf, sigmaf
+
+
+
 def param_grid(cfg, bk, g: Grid | None = None) -> dict:
     """Grid/metric arrays of param.F for a uniform grid without terrain.
 
@@ -117,8 +305,8 @@ def param_grid(cfg, bk, g: Grid | None = None) -> dict:
       Python-float scalars (module ``input`` in CM1): cgs1..3, cgt1..3, dgs*, dgt*,
         wbe*, wte*, minx, maxx, miny, maxy, centerx, centery, maxz
     """
-    if cfg.stretch_x or cfg.stretch_y or cfg.stretch_z:
-        raise NotImplementedError("only uniform grids (no stretching) are supported")
+    if cfg.stretch_x or cfg.stretch_y:
+        raise NotImplementedError("horizontal grid stretching (stretch_x/y) is not ported")
     xp = bk.xp
     if g is None:
         g = Grid(cfg.ni, cfg.nj, cfg.nk, float(cfg.dx), float(cfg.dy), float(cfg.dz))
@@ -162,9 +350,8 @@ def param_grid(cfg, bk, g: Grid | None = None) -> dict:
     minx, maxx = xfdp[ng], xfdp[ng + ni]
     miny, maxy = yfdp[ng], yfdp[ng + nj]
 
-    # vertical (Python index == Fortran k)
-    zf1 = [dz * (k - 1) for k in range(0, nk + 3)]
-    zh1 = [0.5 * (zf1[k] + zf1[k + 1]) for k in range(0, nk + 2)]
+    # vertical (Python index == Fortran k), param.F incl. stretch_z = 1..4
+    zf1, zh1, mh1, mf1, sigmaf = vertical_grid(cfg, nk)
     shp_s, shp_w = g.s_shape, g.w_shape
 
     def col3(vals, shp):
@@ -172,8 +359,8 @@ def param_grid(cfg, bk, g: Grid | None = None) -> dict:
 
     zf = col3(zf1, shp_w)
     zh = col3(zh1, shp_s)
-    mh = bk.full(shp_s, 1.0)
-    mf = bk.full(shp_w, 1.0)
+    mh = col3(mh1, shp_s)
+    mf = col3(mf1, shp_w)
     # cc2(k) = (zf(k)-zh(k-1))/(zh(k)-zh(k-1)) for k=1..nk+1, cc1 = 1-cc2 ; 0 at k=0
     zfa, zha = bk.asarray(zf1), bk.asarray(zh1)
     c2col = (zfa[1 : nk + 2] - zha[0 : nk + 1]) / (zha[1 : nk + 2] - zha[0 : nk + 1])
@@ -182,7 +369,6 @@ def param_grid(cfg, bk, g: Grid | None = None) -> dict:
     c1 = xp.concat([z0, c1col])[:, None, None] + bk.zeros(shp_s)
     c2 = xp.concat([z0, c2col])[:, None, None] + bk.zeros(shp_s)
 
-    sigmaf = [float(z) for z in zf1]
     sigma = [0.5 * (sigmaf[k] + sigmaf[k + 1]) for k in range(nk + 2)]
     maxz = sigmaf[nk + 1]
 
@@ -209,10 +395,10 @@ def param_grid(cfg, bk, g: Grid | None = None) -> dict:
         rdsf=bk.full((nk + 3,), 1.0),
         zh=zh,
         mh=mh,
-        rmh=1.0 / mh,
+        rmh=col3([1.0 / m for m in mh1], shp_s),
         zf=zf,
         mf=mf,
-        rmf=1.0 / mf,
+        rmf=col3([1.0 / m for m in mf1], shp_w),
         c1=c1,
         c2=c2,
         tauh=tauh,
@@ -230,6 +416,11 @@ def param_grid(cfg, bk, g: Grid | None = None) -> dict:
     out.update(extrap_coeffs(sigma, sigmaf, nk))
     if cfg.get("terrain_flag", False):
         out.update(_terrain_metrics(cfg, bk, g, out))
+    # cm1r18 ghost points for zh (param.F, after the terrain section): index
+    # 0 is the surface, nk+1 the model top
+    zh, zf = out["zh"], out["zf"]
+    zh = bk.set(zh, 0, zf[1])
+    out["zh"] = bk.set(zh, nk + 1, zf[nk + 1])
     return out
 
 

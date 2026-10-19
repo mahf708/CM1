@@ -95,6 +95,10 @@ def _derive(v: dict):
         v.update(numq=3, nqv=1, nqc=2, nqr=3, nql1=2, nql2=3, iice=0)
     elif v.get("imoist", 0) == 0:
         v.update(numq=0, nqv=0, nqc=0, nqr=0, iice=0)
+    # param.F: with stretch_z = 2 the nominal dz (mh/mf normalization) is
+    # ztop/nk
+    if v.get("stretch_z", 0) == 2 and v.get("nz", 0):
+        v["dz"] = float(v.get("ztop", 0.0)) / float(v["nz"])
 
 
 # ---------------------------------------------------------------------------
@@ -199,4 +203,6 @@ def read_namelist(path, dp: bool = False, overrides: dict | None = None) -> Conf
         flat.update(g)
     for k, v in (overrides or {}).items():
         flat[k.lower()] = v
+    # extra input files (input_grid_z, ...) are read next to the namelist
+    flat.setdefault("namelist_dir", str(Path(path).resolve().parent))
     return Config(flat, groups)
