@@ -87,7 +87,6 @@ def test_unknown_override_raises():
     [
         ({"irst": 1}, "irst"),
         ({"do_adapt_move": True}, "do_adapt_move"),
-        ({"adapt_dt": 1}, "adapt_dt"),
         ({"cm1setup": 2}, "cm1setup"),
         ({"cm1setup": 3}, "cm1setup"),
         ({"ipbl": 1}, "ipbl"),

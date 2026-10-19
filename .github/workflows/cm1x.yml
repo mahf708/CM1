@@ -63,9 +63,10 @@ jobs:
           rm -rf ref/*/build_*
       - name: Float64 state dumps (cm1dump, from the C++/Kokkos branch)
         env:
-          # pinned commit of claude/project-thread-uq9w9c with src/cm1dump.F
-          # and cxx/scripts/make_refs.sh (-DDP gfortran build)
-          KOKKOS_REF_SHA: 6e13594cdc9223d7cd945b4c9e847703c4ecc816
+          # pinned commit of the cm1k branch (claude/project-thread-e7u3y5)
+          # with src/cm1dump.F, cxx/scripts/make_refs.sh (-DDP gfortran
+          # build) and the stretched-grid / adapt_dt cases in cxx/cases
+          KOKKOS_REF_SHA: acdcc4f03b221323d0e254445bf088f4a9bd9402
         run: |
           git fetch --no-tags --depth=1 origin "$KOKKOS_REF_SHA"
           git worktree add ../kokkos-ref FETCH_HEAD
@@ -76,7 +77,9 @@ jobs:
           sed -e 's/^ *timax *=.*/ timax  =  60.0,/' -e 's/^ *tapfrq *=.*/ tapfrq =  60.0,/' \
             ports/reference/supercell_kessler/namelist.input > "$sc/namelist.input"
           echo 5 > "$sc/every"
-          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler
+          ../kokkos-ref/cxx/scripts/make_refs.sh "$PWD/ref/dumps" kessler_periodic supercell_kessler \
+            dry_stretch kessler_tke_stretch kessler_terrain_stretch cbl_sfc_stretch \
+            pbl2_kessler_stretch adapt_dry adapt_kessler_tke
           rm -f ref/dumps/*/cm1out*.nc
       - uses: actions/upload-artifact@v4
         with:
@@ -138,6 +141,7 @@ jobs:
           CM1X_REF_DIR_KH: ${{ github.workspace }}/ref/kessler_hill_r8
           CM1X_REF_DIR_KH_LONG: ${{ github.workspace }}/ref/kessler_hill_long_r8
           CM1X_REF_DIR_RAD: ${{ github.workspace }}/ref/kessler_rrtmg_r8
+          CM1X_GRID_REF_DIR: ${{ github.workspace }}/ref/dumps
         run: python -m pytest ports/array -v -rs --durations=15
 
   bench:

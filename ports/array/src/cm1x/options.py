@@ -12,8 +12,6 @@ def check_unported(cfg) -> None:
         bad.append(f"irst={cfg.irst} (restarts)")
     if bool(cfg.do_adapt_move):
         bad.append("do_adapt_move=.true.")
-    if int(cfg.adapt_dt) != 0:
-        bad.append(f"adapt_dt={cfg.adapt_dt}")
     if int(cfg.cm1setup) not in (0, 1):
         bad.append(f"cm1setup={cfg.cm1setup} (only 0, 1)")
     if int(cfg.cm1setup) == 1 and int(cfg.sgsmodel) not in (0, 1):
