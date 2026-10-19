@@ -102,3 +102,16 @@ Two levels, both required for a ported component:
 halos included; `index.txt` lists `name kind ndims lb ub ...`.
 `Model::write_dump` writes the same format, so the Python tools and tests
 can compare either side.
+
+## Thompson microphysics lookup tables
+
+Thompson (`ptype = 3`, `src/cm1k/physics/thompson`) builds the lookup
+tables of `thompson_init` itself, bit for bit equal to the double-precision
+Fortran's (the Fortran takes about 6 minutes; cm1k about 15 s with 2
+threads). They are kept in memory per process and cached on disk in
+`$CM1K_THOMPSON_CACHE` (default `$XDG_CACHE_HOME/cm1k` or
+`~/.cache/cm1k`; set it to `off` to disable). A cache file is used only if
+a recomputed sample of its entries matches it bit for bit. The component
+tests (`thompson_tests.cpp`) compare the tables with the Fortran's on a
+subset of entries the Fortran computes through its MPI decomposition hook
+(`cm1f_bridge_thomcopy.F90`), which keeps them to a few seconds.

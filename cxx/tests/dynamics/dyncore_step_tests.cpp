@@ -680,3 +680,13 @@ TEST_CASE("dyncore + Morrison: morrison_bubble vs Fortran", "[dyn][step][morriso
   // ptype=5, ihail=1 (hail), eqtset=2: warm rain, then ice by 1800 s
   run_case("morrison_bubble", 0.0);
 }
+
+TEST_CASE("dyncore + Thompson: thompson_saturated vs Fortran, every step", "[dyn][step][thompson]") {
+  // ptype=3, eqtset=1: saturated sounding, cloud water from t = 0, ice aloft
+  run_case("thompson_saturated", 0.0);
+}
+
+TEST_CASE("dyncore + Thompson: thompson_bubble vs Fortran", "[dyn][step][thompson]") {
+  // ptype=3, eqtset=2: warm rain, then ice, snow and graupel by 1800 s
+  run_case("thompson_bubble", 0.0);
+}

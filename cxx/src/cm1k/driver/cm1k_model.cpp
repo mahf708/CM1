@@ -7,6 +7,7 @@
 
 #include "physics/kessler/cm1k_kessler.hpp"
 #include "physics/morrison/cm1k_morrison.hpp"
+#include "physics/thompson/cm1k_thompson.hpp"
 
 #include <stdexcept>
 
@@ -286,6 +287,15 @@ void Model::microphysics() {
     const auto opt = kessler::Options::from_namelist(m_nl);
     kessler::mp_driver(opt, m_c, m_grid, m_base, m_dt, m_state.rho, m_state.prs, dyn.pp3d, dyn.th3d,
                        dyn.q3d, m_state.rain, *std::static_pointer_cast<kessler::Work>(m_mp));
+  } else if (ptype == 3) {
+    const auto opt = thompson::Options::from_namelist(m_nl);
+    if (!m_mp) {
+      auto w = std::make_shared<thompson::Work>();
+      w->allocate(m_grid.b, opt);   // thompson_init's tables (cached, see thompson::get)
+      m_mp = w;
+    }
+    thompson::mp_driver(opt, m_c, m_grid, m_base, m_dt, dyn.w3d, m_state.rho, m_state.prs, dyn.pp3d, dyn.th3d,
+                        dyn.q3d, m_state.rain, *std::static_pointer_cast<thompson::Work>(m_mp));
   } else if (ptype == 5) {
     const auto opt = morrison::Options::from_namelist(m_nl);
     if (!m_mp) {
